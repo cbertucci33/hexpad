@@ -35,6 +35,27 @@ class MainWindowController: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         addNewTab()
+        setupNotificationObservers()
+    }
+    
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+    
+    private func setupNotificationObservers() {
+        NotificationCenter.default.addObserver(self, selector: #selector(handleTabCloseRequested(_:)), name: NSNotification.Name("TabCloseRequested"), object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleDocumentModified(_:)), name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
+    }
+    
+    @objc private func handleTabCloseRequested(_ notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let index = userInfo["index"] as? Int else { return }
+        closeTabAtIndex(index)
+    }
+    
+    @objc private func handleDocumentModified(_ notification: Notification) {
+        refreshTabBar()
+        updateStatusBar()
     }
     
     // MARK: - UI Setup
@@ -110,7 +131,8 @@ class MainWindowController: NSViewController {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.item]
+        // Filter to text-ish files
+        panel.allowedContentTypes = [.plainText, .sourceCode, .script]
         
         guard panel.runModal() == .OK, let url = panel.url else { return }
         
@@ -140,6 +162,7 @@ class MainWindowController: NSViewController {
             } else {
                 try doc.save()
                 doc.setModified(false)
+                NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
                 refreshTabBar()
                 updateStatusBar()
             }
@@ -158,6 +181,7 @@ class MainWindowController: NSViewController {
         guard let doc = tabStore.selectedDocument else { return }
         do {
             try doc.saveAs(to: url)
+            NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
             refreshTabBar()
             updateStatusBar()
         } catch {
@@ -167,7 +191,56 @@ class MainWindowController: NSViewController {
     
     func closeSelectedTab() {
         guard tabStore.count > 0 else { return }
-        tabStore.removeDocument(at: tabStore.selectedIndex)
+        guard let doc = tabStore.selectedDocument, !doc.unsavedChanges else {
+            closeTabAtIndex(tabStore.selectedIndex)
+            return
+        }
+        
+        let alert = NSAlert()
+        alert.messageText = "Save changes to \(doc.name)?"
+        alert.informativeText = "You have unsaved changes to this document."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Don't Save")
+        alert.addButton(withTitle: "Cancel")
+        
+        alert.beginSheetModal(for: mainWindow ?? NSApplication.shared.windows.first ?? NSWindow()) { response in
+            DispatchQueue.main.async {
+                switch response {
+                case .alertFirstButtonReturn: // Save
+                    self.saveDocument(doc)
+                    self.closeTabAtIndex(self.tabStore.selectedIndex)
+                case .alertSecondButtonReturn: // Don't Save
+                    self.closeTabAtIndex(self.tabStore.selectedIndex)
+                case .alertThirdButtonReturn: // Cancel
+                    break
+                default:
+                    break
+                }
+            }
+        }
+    }
+    
+    private func saveDocument(_ doc: DocumentModel) {
+        do {
+            if doc.isUntitled {
+                // For untitled docs, try to save in place if path exists
+                try doc.save()
+            } else {
+                try doc.save()
+            }
+            doc.setModified(false)
+            NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
+            refreshTabBar()
+            updateStatusBar()
+        } catch {
+            showError("Failed to save file: \(error.localizedDescription)")
+        }
+    }
+    
+    func closeTabAtIndex(_ index: Int) {
+        guard tabStore.count > 0 else { return }
+        tabStore.removeDocument(at: index)
         refreshTabBar()
         updateEditor()
         updateStatusBar()
@@ -192,7 +265,6 @@ class MainWindowController: NSViewController {
     func updateEditor() {
         guard let editor = editorContainer else { return }
         if let doc = tabStore.selectedDocument {
-            let currentText = editor.textView.string
             editor.textView.string = doc.text
             let selRange = editor.textView.selectedRange
             editor.textView.selectedRange = selRange
