@@ -266,8 +266,8 @@ class MainWindowController: NSViewController {
     func updateEditor() {
         guard let editor = editorContainer else { return }
         if let doc = tabStore.selectedDocument {
-            editor.textView.string = doc.text
             let selRange = editor.textView.selectedRange
+            editor.textView.string = doc.text
             editor.textView.selectedRange = selRange
             applySyntaxHighlighting(to: editor, for: doc)
         } else {
@@ -277,26 +277,39 @@ class MainWindowController: NSViewController {
     }
     
     private func applySyntaxHighlighting(to editor: EditorContainer, for doc: DocumentModel) {
+        let textStorage = editor.textView.textStorage
+        guard let textStorage else { return }
+        
+        let text = doc.text
+        let nsText = text as NSString
+        let fullRange = NSRange(location: 0, length: nsText.length)
+        
+        // Plain Text = no highlighting, clear attributes
         guard let langStr = Language.allCases.first(where: { $0.rawValue == doc.language }) else {
-            let whole = NSRange(location: 0, length: editor.textView.string.count)
-            editor.textView.textStorage?.removeAttribute(.foregroundColor, range: whole)
-            editor.textView.textStorage?.removeAttribute(.backgroundColor, range: whole)
+            textStorage.beginEditing()
+            textStorage.removeAttribute(.foregroundColor, range: fullRange)
+            textStorage.removeAttribute(.backgroundColor, range: fullRange)
+            textStorage.endEditing()
             return
         }
         
-        let tokens = SyntaxTokenizer.tokenize(doc.text, language: langStr)
+        let tokens = SyntaxTokenizer.tokenize(text, language: langStr)
         let theme = HexpadTheme.dark.theme
         
-        let fullRange = NSRange(location: 0, length: doc.text.count)
-        editor.textView.textStorage?.beginEditing()
-        editor.textView.textStorage?.setAttributes([.foregroundColor: theme.foreground, .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)], range: fullRange)
+        textStorage.beginEditing()
+        // Reset to default foreground color and monospaced font
+        textStorage.setAttributes([
+            .foregroundColor: theme.foreground,
+            .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        ], range: fullRange)
         
+        // Apply per-token colors
         for token in tokens {
             guard token.type != .whitespace, token.type != .plain else { continue }
             let color = SyntaxTokenizer.color(for: token.type, theme: theme)
-            editor.textView.textStorage?.setAttributes([.foregroundColor: color], range: token.range)
+            textStorage.setAttributes([.foregroundColor: color], range: token.range)
         }
-        editor.textView.textStorage?.endEditing()
+        textStorage.endEditing()
     }
     
     func updateStatusBar() {

@@ -28,7 +28,7 @@ class EditorContainer: NSView {
         textView.backgroundColor = NSColor.textBackgroundColor
         textView.textColor = NSColor.textColor
         textView.drawsBackground = true
-        textView.isRichText = false
+        textView.isRichText = true
         textView.allowsUndo = true
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
