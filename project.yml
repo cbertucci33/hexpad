@@ -1,0 +1,30 @@
+name: Hexpad
+options:
+  bundleIdPrefix: com.hexpad
+  deploymentTarget:
+    macOS: "14.0"
+targets:
+  Hexpad:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/Hexpad
+    dependencies:
+      - package: HexpadKit
+        product: HexpadKit
+    settings:
+      base:
+        SWIFT_VERSION: "5.10"
+        MACOSX_DEPLOYMENT_TARGET: 14.0
+        PRODUCT_BUNDLE_IDENTIFIER: com.hexpad.Hexpad
+        GENERATE_INFOPLIST_FILE: YES
+    preBuildScripts:
+      - name: "Validate Swift Package"
+        script: |
+          echo "HexpadKit is provided by the Swift Package Manager at $(pwd)/.."
+        executionPosition: before
+        basedOnDependencyAnalysis: false
+
+packages:
+  HexpadKit:
+    path: .

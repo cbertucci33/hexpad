@@ -32,6 +32,7 @@ public final class DocumentModel: Identifiable, ObservableObject {
     public var eolType: String { _eolType }
     public var language: String { _language }
     public func setLanguage(_ language: String) { _language = language }
+    public func setEncoding(_ encoding: String) { _encoding = encoding }
     
     public init(text: String = "", filePath: URL? = nil, encoding: String = "UTF-8", eolType: String = "LF") {
         self.id = UUID()
