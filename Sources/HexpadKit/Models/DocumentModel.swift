@@ -98,7 +98,8 @@ public final class DocumentModel: Identifiable, ObservableObject {
             "name": self.name,
             "encoding": self.encoding,
             "eolType": self.eolType,
-            "language": self.language
+            "language": self.language,
+            "isModified": self.isModified
         ]
         if let path = self.filePath?.path {
             data["filePath"] = path
@@ -117,9 +118,18 @@ public final class DocumentModel: Identifiable, ObservableObject {
         }
         let id = UUID(uuidString: idStr) ?? UUID()
         let filePath = (data["filePath"] as? String).flatMap { URL(string: $0) }
+        let isModified = data["isModified"] as? Bool ?? false
         let doc = DocumentModel(text: text, filePath: filePath, encoding: encoding, eolType: eolType)
         doc.name = name
         doc._language = language
+        // Restore dirty state: if marked modified but file exists on disk, reset original
+        // so the in-memory diff reflects actual unsaved changes
+        if isModified, FileManager.default.fileExists(atPath: filePath?.path ?? "") {
+            // Document was modified and file exists — keep current text as-is (unsaved)
+            // _originalText stays empty so isModified returns true
+        } else if !isModified {
+            doc.setModified(false)
+        }
         return doc
     }
 }

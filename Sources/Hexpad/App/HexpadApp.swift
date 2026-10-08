@@ -27,7 +27,15 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Save any modified documents before terminating
         if let wc = windowController {
+            // First, save all modified documents with file paths
+            for doc in wc.tabStore.documents {
+                if doc.isModified, let _ = doc.filePath {
+                    try? doc.save()
+                }
+            }
+            // Then save the session state
             wc.saveSession()
         }
         return .terminateNow
@@ -37,8 +45,28 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     
     private func restoreSession() {
         guard let (tabs, index) = SessionStore.restore() else { return }
-        windowController?.tabStore.documents = tabs.documents
-        windowController?.tabStore.selectedIndex = index
+        
+        // Filter out documents whose files no longer exist on disk
+        let validDocs = tabs.documents.filter { doc -> Bool in
+            if let path = doc.filePath?.path {
+                return FileManager.default.fileExists(atPath: path)
+            }
+            // Keep untitled docs (they have no file path to validate)
+            return true
+        }
+        
+        // Restore tab store with filtered documents
+        let restoredTabs = TabStore()
+        for doc in validDocs {
+            restoredTabs.addDocument(doc)
+        }
+        
+        // Restore selected index (clamp to valid range)
+        let restoredIndex = min(index, max(0, restoredTabs.count - 1))
+        restoredTabs.selectedIndex = restoredIndex
+        
+        windowController?.tabStore.documents = restoredTabs.documents
+        windowController?.tabStore.selectedIndex = restoredIndex
         windowController?.refreshTabBar()
         windowController?.updateEditor()
     }
