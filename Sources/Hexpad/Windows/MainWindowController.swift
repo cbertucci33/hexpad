@@ -79,6 +79,7 @@ class MainWindowController: NSViewController {
         let find = FindBar()
         view.addSubview(find)
         findBar = find
+        find.setupObservers()
         
         editor.textView.delegate = self
         

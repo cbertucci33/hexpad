@@ -20,12 +20,16 @@ class FindBar: NSView {
     private var allMatches: [SearchMatch] = []
     private var searchOptions: SearchOptions = []
     
+    // Observers for document changes
+    private var documentChangeObserver: NSObjectProtocol?
+    private var tabSelectionObserver: NSObjectProtocol?
+    
     override init(frame frameRect: NSRect) {
         searchField = NSSearchField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
         replaceField = NSSearchField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
         regexButton = NSButton(frame: NSRect(x: 0, y: 0, width: 60, height: 24))
         literalButton = NSButton(frame: NSRect(x: 0, y: 0, width: 60, height: 24))
-        matchCountLabel = NSTextField(labelWithString: "0 matches")
+        matchCountLabel = NSTextField(labelWithString: "")
         findNextButton = NSButton(frame: NSRect(x: 0, y: 0, width: 70, height: 24))
         findPrevButton = NSButton(frame: NSRect(x: 0, y: 0, width: 90, height: 24))
         replaceButton = NSButton(frame: NSRect(x: 0, y: 0, width: 70, height: 24))
@@ -129,7 +133,11 @@ class FindBar: NSView {
     override func keyDown(with event: NSEvent) {
         let chars = event.characters ?? ""
         if chars == "\r" {
+            // Enter: find next
             performFind()
+        } else if event.modifierFlags.contains(.shift) && chars == "\r" {
+            // Shift+Enter: find previous
+            findPrevious()
         } else if chars == "\u{001B}" {
             // Escape key
             isHidden = true
@@ -197,13 +205,21 @@ class FindBar: NSView {
         let pattern = searchField.stringValue
         allMatches = SearchEngine.search(doc.text, pattern: pattern, options: searchOptions)
         
+        if pattern.isEmpty {
+            // Empty query: show nothing
+            matchCountLabel.stringValue = ""
+            currentMatchIndex = 0
+            return
+        }
+        
         if allMatches.isEmpty {
             matchCountLabel.stringValue = "No matches"
             currentMatchIndex = 0
             return
         }
         
-        matchCountLabel.stringValue = "\(allMatches.count) matches"
+        // Show "current of total" format
+        matchCountLabel.stringValue = "\(currentMatchIndex + 1) of \(allMatches.count)"
         
         if currentMatchIndex >= allMatches.count {
             currentMatchIndex = 0
@@ -217,17 +233,50 @@ class FindBar: NSView {
     func findNext() {
         guard !allMatches.isEmpty else { return }
         currentMatchIndex = (currentMatchIndex + 1) % allMatches.count
-        let match = allMatches[currentMatchIndex]
-        editorContainer?.textView.setSelectedRange(match.range)
-        editorContainer?.textView.scrollRangeToVisible(match.range)
+        updateMatchDisplay()
     }
     
     func findPrevious() {
         guard !allMatches.isEmpty else { return }
         currentMatchIndex = (currentMatchIndex - 1 + allMatches.count) % allMatches.count
+        updateMatchDisplay()
+    }
+    
+    private func updateMatchDisplay() {
+        guard let textView = editorContainer?.textView else { return }
         let match = allMatches[currentMatchIndex]
-        editorContainer?.textView.setSelectedRange(match.range)
-        editorContainer?.textView.scrollRangeToVisible(match.range)
+        textView.setSelectedRange(match.range)
+        textView.scrollRangeToVisible(match.range)
+        matchCountLabel.stringValue = "\(currentMatchIndex + 1) of \(allMatches.count)"
+    }
+    
+    func setupObservers() {
+        // Observe tab selection changes
+        tabSelectionObserver = NotificationCenter.default.addObserver(
+            forName: nil,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.performFind()
+        }
+        
+        // Observe document text changes
+        documentChangeObserver = NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("DocumentModifiedDidChange"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.performFind()
+        }
+    }
+    
+    deinit {
+        if let observer = documentChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = tabSelectionObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
     
     var tabStore: TabStore? {
