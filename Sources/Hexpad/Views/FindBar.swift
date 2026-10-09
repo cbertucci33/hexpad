@@ -251,9 +251,12 @@ class FindBar: NSView {
     }
     
     func setupObservers() {
-        // Observe tab selection changes
+        // Observe tab selection changes. Must listen to specific names only:
+        // forName: nil catches every notification, including the selection-change
+        // notifications performFind itself triggers, causing re-entrant performFind
+        // recursion and a stack-overflow crash.
         tabSelectionObserver = NotificationCenter.default.addObserver(
-            forName: nil,
+            forName: NSNotification.Name("TabStoreSelectedIndexDidChange"),
             object: nil,
             queue: .main
         ) { [weak self] _ in
@@ -266,7 +269,10 @@ class FindBar: NSView {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.performFind()
+            guard let self, !isFinding else { return }
+            isFinding = true
+            defer { isFinding = false }
+            performFind()
         }
     }
     
@@ -284,6 +290,7 @@ class FindBar: NSView {
     // responder chain, so without injection editorContainer resolved nil forever.
     weak var tabStoreRef: TabStore?
     weak var editorRef: EditorContainer?
+    private var isFinding = false
     
     var tabStore: TabStore? {
         if let tabStoreRef { return tabStoreRef }
