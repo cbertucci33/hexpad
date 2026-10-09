@@ -6,6 +6,8 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     
     private var mainWindow: MainWindow?
     private var windowController: MainWindowController?
+    private let recentFilesManager = RecentFilesManager()
+    private var openRecentMenu: NSMenu?
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.mainMenu = buildMainMenu()
@@ -19,6 +21,7 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         window.contentViewController = controller
         window.makeKeyAndOrderFront(nil)
         
+        controller.recentFilesManager = recentFilesManager
         restoreSession()
     }
     
@@ -115,8 +118,16 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         let closeAllItem = NSMenuItem(title: "Close All Tabs", action: #selector(closeAllTabs), keyEquivalent: "W")
         closeAllItem.target = self
         
+        // Open Recent submenu
+        let openRecentItem = NSMenuItem(title: "Open Recent", action: nil, keyEquivalent: "")
+        let openRecentMenu = NSMenu(title: "Open Recent")
+        openRecentMenu.delegate = self
+        openRecentItem.submenu = openRecentMenu
+        self.openRecentMenu = openRecentMenu
+        
         fileMenu.addItem(newItem)
         fileMenu.addItem(openItem)
+        fileMenu.addItem(openRecentItem)
         fileMenu.addItem(saveItem)
         fileMenu.addItem(saveAsItem)
         fileMenu.addItem(.separator())
@@ -303,6 +314,41 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         let langs = Language.allCases
         guard sender.tag >= 0, sender.tag < langs.count else { return }
         windowController?.setLanguage(langs[sender.tag])
+    }
+    
+    // MARK: - Open Recent
+    
+    @objc private func openRecentFile(_ sender: NSMenuItem) {
+        guard let path = sender.representedObject as? String else { return }
+        windowController?.openFile(atPath: path)
+    }
+}
+
+// MARK: - NSMenuDelegate (Open Recent)
+
+extension HexpadAppDelegate: NSMenuDelegate {
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu === openRecentMenu else { return }
+        menu.removeAllItems()
+        
+        if recentFilesManager.recents.isEmpty {
+            let emptyItem = NSMenuItem(title: "No Recent Files", action: nil, keyEquivalent: "")
+            emptyItem.isEnabled = false
+            menu.addItem(emptyItem)
+            return
+        }
+        
+        for path in recentFilesManager.recents {
+            let filename = (path as NSString).lastPathComponent
+            let item = NSMenuItem(title: filename, action: #selector(openRecentFile(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = path
+            // Grey out files that no longer exist on disk
+            if !FileManager.default.fileExists(atPath: path) {
+                item.isEnabled = false
+            }
+            menu.addItem(item)
+        }
     }
 }
 

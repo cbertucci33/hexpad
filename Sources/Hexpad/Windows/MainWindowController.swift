@@ -5,6 +5,7 @@ class MainWindowController: NSViewController {
     
     let tabStore = TabStore()
     private var mainWindow: MainWindow?
+    var recentFilesManager: RecentFilesManager?
     
     // Subviews
     private var tabBarView: TabBarView?
@@ -136,7 +137,17 @@ class MainWindowController: NSViewController {
         panel.allowedContentTypes = [.plainText, .sourceCode, .script]
         
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        
+        openFile(atURL: url)
+    }
+    
+    /// Open a file from a path string (used by Open Recent menu). No-op if file doesn't exist.
+    func openFile(atPath path: String) {
+        guard FileManager.default.fileExists(atPath: path) else { return }
+        let url = URL(fileURLWithPath: path)
+        openFile(atURL: url)
+    }
+    
+    private func openFile(atURL url: URL) {
         do {
             let data = try Data(contentsOf: url)
             let encoding = EncodingDetective.detect(data)
@@ -150,6 +161,7 @@ class MainWindowController: NSViewController {
             refreshTabBar()
             updateEditor()
             updateStatusBar()
+            recentFilesManager?.addRecent(url.path)
         } catch {
             showError("Failed to open file: \(error.localizedDescription)")
         }
@@ -180,8 +192,10 @@ class MainWindowController: NSViewController {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         
         guard let doc = tabStore.selectedDocument else { return }
+        let oldPath = doc.filePath?.path
         do {
             try doc.saveAs(to: url)
+            recentFilesManager?.replaceRecent(oldPath: oldPath, newPath: url.path)
             NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
             refreshTabBar()
             updateStatusBar()

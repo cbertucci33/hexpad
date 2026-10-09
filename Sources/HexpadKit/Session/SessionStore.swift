@@ -16,10 +16,16 @@ public final class SessionStore {
     public static func save(_ tabs: TabStore) throws {
         try FileManager.default.createDirectory(at: appSupportDir, withIntermediateDirectories: true)
         
-        var data: [String: Any] = [
-            "tabs": tabs.toSessionData(),
-            "selectedIndex": tabs.selectedIndex
-        ]
+        // Preserve keys written by other writers (e.g. "recents" from saveRecents)
+        var data: [String: Any] = [:]
+        if FileManager.default.fileExists(atPath: sessionFile.path) {
+            if let existing = try? Data(contentsOf: sessionFile),
+               let dict = (try? JSONSerialization.jsonObject(with: existing)) as? [String: Any] {
+                data = dict
+            }
+        }
+        data["tabs"] = tabs.toSessionData()
+        data["selectedIndex"] = tabs.selectedIndex
         
         let jsonData = try JSONSerialization.data(withJSONObject: data)
         try jsonData.write(to: sessionFile)
@@ -48,5 +54,44 @@ public final class SessionStore {
     /// Clear saved session
     public static func clear() throws {
         try FileManager.default.removeItem(at: sessionFile)
+    }
+    
+    // MARK: - Recent Files
+    
+    /// Load recent file paths from session.json (most recent first)
+    public static func loadRecents() -> [String] {
+        guard FileManager.default.fileExists(atPath: sessionFile.path) else { return [] }
+        do {
+            let data = try Data(contentsOf: sessionFile)
+            guard let dict = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let recents = dict["recents"] as? [String] else {
+                return []
+            }
+            return recents
+        } catch {
+            return []
+        }
+    }
+    
+    /// Save recent file paths to session.json (preserving existing tabs/selectedIndex)
+    public static func saveRecents(_ paths: [String]) throws {
+        try FileManager.default.createDirectory(at: appSupportDir, withIntermediateDirectories: true)
+        
+        var data: [String: Any] = [:]
+        
+        // Preserve existing session data if file exists
+        if FileManager.default.fileExists(atPath: sessionFile.path) {
+            do {
+                let existing = try Data(contentsOf: sessionFile)
+                data = try JSONSerialization.jsonObject(with: existing) as? [String: Any] ?? [:]
+            } catch {
+                data = [:]
+            }
+        }
+        
+        data["recents"] = paths
+        
+        let jsonData = try JSONSerialization.data(withJSONObject: data)
+        try jsonData.write(to: sessionFile)
     }
 }
