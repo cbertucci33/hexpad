@@ -36,6 +36,7 @@ public enum Language: String, CaseIterable, Identifiable {
     case markdown = "Markdown"
     case xml = "XML"
     case shell = "Shell"
+    case swift = "Swift"
     
     public var id: String { rawValue }
     
@@ -51,6 +52,7 @@ public enum Language: String, CaseIterable, Identifiable {
         case let x where x.hasSuffix(".md"): return .markdown
         case let x where x.hasSuffix(".xml"): return .xml
         case let x where x.hasSuffix(".sh") || x.hasSuffix(".bash") || x.hasSuffix(".zsh"): return .shell
+        case let x where x.hasSuffix(".swift"): return .swift
         default: return .plain
         }
     }
@@ -149,12 +151,20 @@ public final class SyntaxTokenizer {
         ],
         .shell: [
             "keyword": [#"\b(if|then|else|elif|fi|for|while|do|done|case|esac|function|select|until|in|time|coproc)\b"#],
-            "string": [#"(?:'[^']*'|\"(?:[^\\"\\]|\\.)*\")"#],
+            "string": [#"(?:"""[\s\S]*?"""|"[^"\\]*(?:\\.[^"\\]*)*")"#],
             "comment": [#"(?m)#[^\n]*"#],
             "number": [#"\b\d+\b"#],
             "variable": [#"\$\{?[\w@#*?!$]+\}?"#],
             "function": [#"\b[a-zA-Z_][\w]*\s*\(\)"#],
             "operator": [#"[|&;<>`=\]"#]
+        ],
+        .swift: [
+            "keyword": [#"\b(func|let|var|if|else|guard|for|while|switch|case|return|class|struct|enum|protocol|extension|import|public|private|internal|static|final|override|init|deinit|self|nil|try|catch|throw|throws|async|await|defer|where|in|is|as|some|any)\b"#],
+            "string": [#"(?:"""[\s\S]*?"""|"[^"\\]*(?:\\.[^"\\]*)*")"#],
+            "comment": [#"(?m)(?:^|[^\\])\/\/[^\n]*|(?ms)\/\*[\s\S]*?\*\/"#],
+            "number": [#"\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b"#],
+            "type": [#"\b(Int|String|Double|Bool|Array|Dictionary|Optional)\b"#],
+            "function": [#"\b[a-zA-Z_]\w*(?=\s*\()"#]
         ]
     ]
     

@@ -69,4 +69,19 @@ final class SyntaxTokenizerTests: XCTestCase {
             XCTAssertFalse(tokens.isEmpty)
         }
     }
+    
+    func testSwiftKeywords() {
+        let tokens = SyntaxTokenizer.tokenize("func greet() { let x: Int = 42 }", language: .swift)
+        let types = tokens.map { $0.type }
+        XCTAssertTrue(types.contains(.keyword))
+        XCTAssertTrue(types.contains(.number))
+        XCTAssertTrue(types.contains(.type))
+    }
+    
+    func testSwiftStringsAndComments() {
+        let tokens = SyntaxTokenizer.tokenize("// hello\nlet s = \"world\"", language: .swift)
+        let types = tokens.map { $0.type }
+        XCTAssertTrue(types.contains(.comment))
+        XCTAssertTrue(types.contains(.string))
+    }
 }
