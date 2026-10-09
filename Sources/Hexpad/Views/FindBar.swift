@@ -279,7 +279,14 @@ class FindBar: NSView {
         }
     }
     
+    // Direct references injected by MainWindowController. The responder-chain walks
+    // are fallbacks only: sibling views (EditorContainer) never appear in the
+    // responder chain, so without injection editorContainer resolved nil forever.
+    weak var tabStoreRef: TabStore?
+    weak var editorRef: EditorContainer?
+    
     var tabStore: TabStore? {
+        if let tabStoreRef { return tabStoreRef }
         var responder: NSResponder? = self.nextResponder
         while let r = responder {
             if let mc = r as? MainWindowController {
@@ -291,12 +298,18 @@ class FindBar: NSView {
     }
     
     var editorContainer: EditorContainer? {
-        var responder: NSResponder? = self.nextResponder
-        while let r = responder {
-            if let ec = r as? EditorContainer {
-                return ec
-            }
-            responder = r.nextResponder
+        if let editorRef { return editorRef }
+        // Sibling views are not in the responder chain; walk the view hierarchy as fallback.
+        if let root = window?.contentView {
+            if let ec = findEditorContainer(in: root) { return ec }
+        }
+        return nil
+    }
+    
+    private func findEditorContainer(in view: NSView) -> EditorContainer? {
+        if let ec = view as? EditorContainer { return ec }
+        for sub in view.subviews {
+            if let ec = findEditorContainer(in: sub) { return ec }
         }
         return nil
     }

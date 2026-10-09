@@ -80,6 +80,8 @@ class MainWindowController: NSViewController {
         let find = FindBar()
         view.addSubview(find)
         findBar = find
+        find.tabStoreRef = tabStore
+        find.editorRef = editor
         find.setupObservers()
         
         editor.textView.delegate = self
