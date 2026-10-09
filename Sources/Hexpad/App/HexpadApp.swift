@@ -8,8 +8,10 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     private var windowController: MainWindowController?
     private let recentFilesManager = RecentFilesManager()
     private var openRecentMenu: NSMenu?
+    private var appearanceMenu: NSMenu?
     
     func applicationDidFinishLaunching(_ notification: Notification) {
+        restoreAppearance()
         NSApplication.shared.mainMenu = buildMainMenu()
         
         let window = MainWindow()
@@ -183,11 +185,32 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         let resetZoomItem = NSMenuItem(title: "Reset Zoom", action: #selector(resetZoom), keyEquivalent: "0")
         resetZoomItem.target = self
         
+        // Appearance submenu
+        let appearanceItem = NSMenuItem(title: "Appearance", action: nil, keyEquivalent: "")
+        let appearanceMenu = NSMenu(title: "Appearance")
+        let useSystemItem = NSMenuItem(title: "Use System", action: #selector(setAppearanceSystem), keyEquivalent: "")
+        useSystemItem.target = self
+        useSystemItem.tag = 0
+        let lightItem = NSMenuItem(title: "Light", action: #selector(setAppearanceLight), keyEquivalent: "")
+        lightItem.target = self
+        lightItem.tag = 1
+        let darkItem = NSMenuItem(title: "Dark", action: #selector(setAppearanceDark), keyEquivalent: "")
+        darkItem.target = self
+        darkItem.tag = 2
+        appearanceMenu.addItem(useSystemItem)
+        appearanceMenu.addItem(lightItem)
+        appearanceMenu.addItem(darkItem)
+        appearanceItem.submenu = appearanceMenu
+        self.appearanceMenu = appearanceMenu
+        updateAppearanceCheckmarks()
+        
         viewMenu.addItem(wordWrapItem)
         viewMenu.addItem(.separator())
         viewMenu.addItem(zoomInItem)
         viewMenu.addItem(zoomOutItem)
         viewMenu.addItem(resetZoomItem)
+        viewMenu.addItem(.separator())
+        viewMenu.addItem(appearanceItem)
         menu.addItem((NSMenuItem(title: "View", action: nil, keyEquivalent: "").apply { $0.submenu = viewMenu }))
         
         // Encoding menu
@@ -238,6 +261,51 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         
         NSApplication.shared.menu = menu
         return menu
+    }
+    
+    // MARK: - Appearance
+    
+    @objc private func setAppearanceSystem() {
+        NSApp.appearance = nil
+        UserDefaults.standard.set("system", forKey: "appearanceMode")
+        updateAppearanceCheckmarks()
+    }
+    
+    @objc private func setAppearanceLight() {
+        NSApp.appearance = NSAppearance(named: .aqua)
+        UserDefaults.standard.set("light", forKey: "appearanceMode")
+        updateAppearanceCheckmarks()
+    }
+    
+    @objc private func setAppearanceDark() {
+        NSApp.appearance = NSAppearance(named: .darkAqua)
+        UserDefaults.standard.set("dark", forKey: "appearanceMode")
+        updateAppearanceCheckmarks()
+    }
+    
+    private func restoreAppearance() {
+        let mode = UserDefaults.standard.string(forKey: "appearanceMode") ?? "system"
+        switch mode {
+        case "light":
+            NSApp.appearance = NSAppearance(named: .aqua)
+        case "dark":
+            NSApp.appearance = NSAppearance(named: .darkAqua)
+        default:
+            NSApp.appearance = nil
+        }
+    }
+    
+    private func updateAppearanceCheckmarks() {
+        guard let menu = appearanceMenu else { return }
+        let mode = UserDefaults.standard.string(forKey: "appearanceMode") ?? "system"
+        for item in menu.items {
+            switch item.tag {
+            case 0: item.state = (mode == "system") ? .on : .off
+            case 1: item.state = (mode == "light") ? .on : .off
+            case 2: item.state = (mode == "dark") ? .on : .off
+            default: item.state = .off
+            }
+        }
     }
     
     // MARK: - Menu Actions
