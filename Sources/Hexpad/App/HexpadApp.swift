@@ -4,6 +4,17 @@ import HexpadKit
 @main
 class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     
+    // No MainMenu.nib exists, so the @main synthesis would never connect a delegate.
+    // Bootstrap manually: create the app, attach the delegate, run.
+    static func main() {
+        let app = NSApplication.shared
+        let delegate = HexpadAppDelegate()
+        app.delegate = delegate
+        app.setActivationPolicy(.regular)
+        app.activate(ignoringOtherApps: true)
+        app.run()
+    }
+    
     private var mainWindow: MainWindow?
     private var windowController: MainWindowController?
     private let recentFilesManager = RecentFilesManager()
