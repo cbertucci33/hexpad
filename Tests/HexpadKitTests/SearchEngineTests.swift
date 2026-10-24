@@ -69,6 +69,45 @@ final class SearchEngineTests: XCTestCase {
         XCTAssert(matches.count >= 0)
     }
     
+    // Single-range replace: only the given range is substituted.
+    func testReplaceRangeOnlyCurrentMatch() {
+        let text = "hello world hello"
+        // Replace the first "hello" (range 0..<5).
+        let result = SearchEngine.replaceRange(in: text, replacement: "hi", range: NSRange(location: 0, length: 5))
+        XCTAssertEqual(result, "hi world hello")
+    }
+    
+    func testReplaceRangeMiddleOfText() {
+        let text = "cat dog cat"
+        // "dog" sits at 4..<7.
+        let result = SearchEngine.replaceRange(in: text, replacement: "cat", range: NSRange(location: 4, length: 3))
+        XCTAssertEqual(result, "cat cat cat")
+    }
+    
+    // Emoji code units: length must be measured in NSString (UTF-16) units, not Swift chars.
+    func testReplaceRangeAfterEmoji() {
+        let text = "a😀b hello c hello"
+        // First "hello" starts after "a😀b" = 4 UTF-16 units (a, 😀 is a surrogate pair, b, space).
+        let ns = text as NSString
+        let helloRange = ns.range(of: "hello")
+        let result = SearchEngine.replaceRange(in: text, replacement: "hi", range: helloRange)
+        XCTAssertEqual(result, "a😀b hi c hello")
+    }
+    
+    // A stale/over-long range is clamped to the text, never crashes.
+    func testReplaceRangeClampsOutOfRange() {
+        let text = "hello"
+        let result = SearchEngine.replaceRange(in: text, replacement: "X", range: NSRange(location: 2, length: 100))
+        XCTAssertEqual(result, "heX")
+    }
+    
+    // A zero-length or not-found range returns the text unchanged.
+    func testReplaceRangeZeroLength() {
+        let text = "hello"
+        let result = SearchEngine.replaceRange(in: text, replacement: "X", range: NSRange(location: 2, length: 0))
+        XCTAssertEqual(result, "hello")
+    }
+    
     // The search term appears AFTER an emoji; the tail occurrence must be replaced.
     func testReplaceAfterEmoji() {
         let text = "a😀b hello c hello"

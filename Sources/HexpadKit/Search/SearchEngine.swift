@@ -69,6 +69,17 @@ public final class SearchEngine {
         return matches
     }
     
+    /// Replace a single range (already computed by a prior search) with a replacement.
+    /// Operates on NSString ranges so multi-byte/emoji code units stay length-safe.
+    /// The range is clamped to the text bounds so a stale match can't crash the caller.
+    public static func replaceRange(in text: String, replacement: String, range: NSRange) -> String {
+        let nsText = text as NSString
+        let maxLen = nsText.length
+        guard range.location != NSNotFound, range.location < maxLen, range.length > 0 else { return text }
+        let clampedLength = min(range.length, maxLen - range.location)
+        return nsText.replacingCharacters(in: NSRange(location: range.location, length: clampedLength), with: replacement)
+    }
+
     /// Replace all occurrences in text
     public static func replace(_ text: String, pattern: String, replacement: String, options: SearchOptions) -> String {
         guard !pattern.isEmpty else { return text }

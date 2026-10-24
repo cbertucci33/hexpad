@@ -149,11 +149,12 @@ class FindBar: NSView {
     override func keyDown(with event: NSEvent) {
         let chars = event.characters ?? ""
         if chars == "\r" {
-            // Enter: find next
-            performFind()
-        } else if event.modifierFlags.contains(.shift) && chars == "\r" {
-            // Shift+Enter: find previous
-            findPrevious()
+            // Enter: advance to next match (Shift+Enter handled by the branch below).
+            if event.modifierFlags.contains(.shift) {
+                findPrevious()
+            } else {
+                findNext()
+            }
         } else if chars == "\u{001B}" {
             // Escape key
             hide()
@@ -190,12 +191,15 @@ class FindBar: NSView {
     @objc private func replaceAction() {
         guard let doc = tabStore?.selectedDocument, !searchField.stringValue.isEmpty else { return }
         let matches = SearchEngine.search(doc.text, pattern: searchField.stringValue, options: searchOptions)
-        guard let match = matches.sorted(by: { $0.range.location < $1.range.location }).first(where: { $0.range.location >= (currentMatchIndex > 0 ? currentMatchIndex - 1 : 0) }) else { return }
+        guard currentMatchIndex < matches.count else { return }
         
-        let newContent = SearchEngine.replace(doc.text, pattern: searchField.stringValue, replacement: replaceField.stringValue, options: searchOptions)
+        // Replace ONLY the current match, not all occurrences.
+        let newContent = SearchEngine.replaceRange(in: doc.text, replacement: replaceField.stringValue, range: matches[currentMatchIndex].range)
         tabStore?.selectedDocument?.text = newContent
-        currentMatchIndex += 1
+        
+        // Re-run the find against the new content, then advance to the next match.
         performFind()
+        findNext()
     }
     
     @objc private func replaceAllAction() {
