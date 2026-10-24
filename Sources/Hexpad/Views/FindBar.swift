@@ -1,7 +1,7 @@
 import AppKit
 import HexpadKit
 
-class FindBar: NSView {
+class FindBar: NSView, NSTextFieldDelegate {
     
     var isVisible = false
     
@@ -56,6 +56,9 @@ class FindBar: NSView {
         searchField.frame = NSRect(x: 8, y: yCenter, width: 180, height: 24)
         searchField.target = self
         searchField.action = #selector(searchTextChanged)
+        // While typing, the field editor (firstResponder) consumes Enter/Escape
+        // before our keyDown ever runs; the delegate sees them first.
+        searchField.delegate = self
         addSubview(searchField)
         
         replaceField.placeholderString = "Replace..."
@@ -299,6 +302,22 @@ class FindBar: NSView {
         if let observer = tabSelectionObserver {
             NotificationCenter.default.removeObserver(observer)
         }
+    }
+    
+    // Enter/Shift+Enter while the search FIELD has focus are consumed by its
+    // field editor (NSTextView), which consults this delegate BEFORE inserting
+    // a newline — keyDown on the bar never sees them in that focus state.
+    // This is the only reliable Enter hook for the typed-into case.
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+            if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
+                findPrevious()
+            } else {
+                findNext()
+            }
+            return true
+        }
+        return false
     }
     
     // Direct references injected by MainWindowController. The responder-chain walks
