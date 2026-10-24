@@ -68,4 +68,11 @@ final class SearchEngineTests: XCTestCase {
         // Should not crash, returns empty or falls back
         XCTAssert(matches.count >= 0)
     }
+    
+    // The search term appears AFTER an emoji; the tail occurrence must be replaced.
+    func testReplaceAfterEmoji() {
+        let text = "a😀b hello c hello"
+        let result = SearchEngine.replace(text, pattern: "hello", replacement: "hi", options: [])
+        XCTAssertEqual(result, "a😀b hi c hi")
+    }
 }

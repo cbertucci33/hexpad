@@ -375,8 +375,10 @@ class MainWindowController: NSViewController {
     
     func toggleFindBar() {
         guard let find = findBar else { return }
-        find.isVisible.toggle()
         if find.isVisible {
+            find.hide()
+        } else {
+            find.show()
             // Pre-populate if text selected
             if let editor = editorContainer, editor.textView.selectedRange.length > 0 {
                 let selected = (editor.textView.string as NSString).substring(with: editor.textView.selectedRange)

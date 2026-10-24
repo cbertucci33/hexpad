@@ -62,13 +62,19 @@ public final class DocumentModel: Identifiable, ObservableObject {
         guard let filePath else {
             throw DocumentError.noFilePath
         }
-        let data = self.text.data(using: String.Encoding(rawValue: EncodingDetective.nsEncoding(from: self.encoding))) ?? Data()
+        let enc = String.Encoding(rawValue: EncodingDetective.nsEncoding(from: self.encoding))
+        guard let data = self.text.data(using: enc) else {
+            throw DocumentError.saveFailed("cannot encode text as \(self.encoding)")
+        }
         try data.write(to: filePath, options: .atomic)
         self.setModified(false)
     }
     
     public func saveAs(to url: URL) throws {
-        let data = self.text.data(using: String.Encoding(rawValue: EncodingDetective.nsEncoding(from: self.encoding))) ?? Data()
+        let enc = String.Encoding(rawValue: EncodingDetective.nsEncoding(from: self.encoding))
+        guard let data = self.text.data(using: enc) else {
+            throw DocumentError.saveFailed("cannot encode text as \(self.encoding)")
+        }
         try data.write(to: url, options: .atomic)
         self.filePath = url
         self.name = url.lastPathComponent

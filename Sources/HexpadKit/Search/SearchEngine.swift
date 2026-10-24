@@ -89,7 +89,8 @@ public final class SearchEngine {
             }
             
             let regex = try NSRegularExpression(pattern: regexPattern, options: regexOptions)
-            return regex.stringByReplacingMatches(in: text, options: [], range: NSRange(location: 0, length: text.count), withTemplate: replacement)
+            let nsText = text as NSString
+            return regex.stringByReplacingMatches(in: text, options: [], range: NSRange(location: 0, length: nsText.length), withTemplate: replacement)
         } catch {
             // Fallback to string replacement
             return text.replacingOccurrences(of: pattern, with: replacement, options: options.contains(.caseSensitive) ? [] : [.caseInsensitive])

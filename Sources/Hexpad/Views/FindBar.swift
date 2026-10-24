@@ -130,6 +130,22 @@ class FindBar: NSView {
         addSubview(closeButton)
     }
     
+    // Single source of truth for visibility. The view stays in its parent
+    // hierarchy the whole time; show()/hide() only flip the custom flag and
+    // AppKit's isHidden together so they can never diverge. There is no
+    // removeFromSuperview(): toggling is an infinite loop of add/remove, which
+    // is what made Cmd+F die after the first close (nothing re-added the view).
+    func show() {
+        isVisible = true
+        isHidden = false
+    }
+
+    func hide() {
+        isVisible = false
+        isHidden = true
+        NotificationCenter.default.post(name: NSNotification.Name("FindBarClosed"), object: nil)
+    }
+
     override func keyDown(with event: NSEvent) {
         let chars = event.characters ?? ""
         if chars == "\r" {
@@ -140,9 +156,7 @@ class FindBar: NSView {
             findPrevious()
         } else if chars == "\u{001B}" {
             // Escape key
-            isHidden = true
-            removeFromSuperview()
-            NotificationCenter.default.post(name: NSNotification.Name("FindBarClosed"), object: nil)
+            hide()
         }
     }
     
@@ -194,9 +208,7 @@ class FindBar: NSView {
     }
     
     @objc private func closeAction() {
-        isVisible = false
-        removeFromSuperview()
-        NotificationCenter.default.post(name: NSNotification.Name("FindBarClosed"), object: nil)
+        hide()
     }
     
     func performFind() {

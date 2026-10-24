@@ -65,17 +65,30 @@ public final class EncodingDetective {
     }
     
     /// Get UInt from encoding name
+    ///
+    /// Normalizes the input by stripping dashes and uppercasing so both spellings
+    /// resolve ("UTF-16-LE" and "UTF-16LE"). Every string that encodingName(from:) can
+    /// emit must round-trip back to the same UInt here.
     public static func nsEncoding(from name: String) -> UInt {
-        switch name.uppercased() {
+        let normalized = name.uppercased().replacingOccurrences(of: "-", with: "")
+        switch normalized {
         case "UTF-8": return String.Encoding.utf8.rawValue
         case "UTF-16": return String.Encoding.utf16.rawValue
-        case "UTF-16LE": return String.Encoding.utf16LittleEndian.rawValue
-        case "UTF-16BE": return String.Encoding.utf16BigEndian.rawValue
-        case "UTF-32LE": return String.Encoding.utf32LittleEndian.rawValue
-        case "UTF-32BE": return String.Encoding.utf32BigEndian.rawValue
+        case "UTF16LE": return String.Encoding.utf16LittleEndian.rawValue
+        case "UTF16BE": return String.Encoding.utf16BigEndian.rawValue
+        case "UTF32LE": return String.Encoding.utf32LittleEndian.rawValue
+        case "UTF32BE": return String.Encoding.utf32BigEndian.rawValue
         case "ASCII": return String.Encoding.ascii.rawValue
-        case "ISO-8859-1": return String.Encoding.isoLatin1.rawValue
-        case "WINDOWS-1252": return String.Encoding.windowsCP1252.rawValue
+        case "ISO88591": return String.Encoding.isoLatin1.rawValue
+        case "ISO88592": return String.Encoding.isoLatin2.rawValue
+        case "WINDOWS1252": return String.Encoding.windowsCP1252.rawValue
+        case "WINDOWS1251": return String.Encoding.windowsCP1251.rawValue
+        case "WINDOWS1254": return String.Encoding.windowsCP1254.rawValue
+        case "SHIFTJIS": return String.Encoding.shiftJIS.rawValue
+        case "EUCJP": return String.Encoding.japaneseEUC.rawValue
+        case "ISO2022JP": return String.Encoding.iso2022JP.rawValue
+        case "MACROMAN": return String.Encoding.macOSRoman.rawValue
+        case "NONLOSSYASCII": return String.Encoding.nonLossyASCII.rawValue
         default: return String.Encoding.utf8.rawValue
         }
     }

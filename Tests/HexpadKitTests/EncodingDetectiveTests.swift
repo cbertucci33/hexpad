@@ -37,4 +37,38 @@ final class EncodingDetectiveTests: XCTestCase {
         XCTAssertEqual(EncodingDetective.nsEncoding(from: "UTF-16"), String.Encoding.unicode.rawValue)
         XCTAssertEqual(EncodingDetective.nsEncoding(from: "unknown"), String.Encoding.utf8.rawValue)
     }
+    
+    // Round-trip: every encodingName(from:) value must nsEncoding back to the same UInt.
+    func testEncodingNameRoundTrip() {
+        let values: [UInt] = [
+            String.Encoding.utf8.rawValue,
+            String.Encoding.utf16.rawValue,
+            String.Encoding.utf16BigEndian.rawValue,
+            String.Encoding.utf16LittleEndian.rawValue,
+            String.Encoding.utf32BigEndian.rawValue,
+            String.Encoding.utf32LittleEndian.rawValue,
+            String.Encoding.ascii.rawValue,
+            String.Encoding.isoLatin1.rawValue,
+            String.Encoding.isoLatin2.rawValue,
+            String.Encoding.windowsCP1252.rawValue,
+            String.Encoding.windowsCP1251.rawValue,
+            String.Encoding.windowsCP1254.rawValue,
+            String.Encoding.shiftJIS.rawValue,
+            String.Encoding.japaneseEUC.rawValue,
+            String.Encoding.iso2022JP.rawValue,
+            String.Encoding.macOSRoman.rawValue,
+            String.Encoding.nonLossyASCII.rawValue,
+        ]
+        for raw in values {
+            let name = EncodingDetective.encodingName(from: raw)
+            XCTAssertEqual(EncodingDetective.nsEncoding(from: name), raw,
+                           "name '\(name)' did not round-trip")
+        }
+        // Both dashed and undashed spellings must resolve to the same encoding.
+        XCTAssertEqual(EncodingDetective.nsEncoding(from: "UTF-16-LE"), EncodingDetective.nsEncoding(from: "UTF-16LE"))
+        XCTAssertEqual(EncodingDetective.nsEncoding(from: "UTF-16-LE"), String.Encoding.utf16LittleEndian.rawValue)
+        XCTAssertEqual(EncodingDetective.nsEncoding(from: "Shift_JIS"), String.Encoding.shiftJIS.rawValue)
+        XCTAssertEqual(EncodingDetective.nsEncoding(from: "MacRoman"), String.Encoding.macOSRoman.rawValue)
+        XCTAssertEqual(EncodingDetective.nsEncoding(from: "Non-Lossy ASCII"), String.Encoding.nonLossyASCII.rawValue)
+    }
 }

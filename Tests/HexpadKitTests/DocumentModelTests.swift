@@ -56,4 +56,20 @@ final class DocumentModelTests: XCTestCase {
         XCTAssertNotNil(restored)
         XCTAssertNotNil(restored?.id)
     }
+    
+    // Saving ASCII-encoded text containing emoji must throw, not write an empty file.
+    func testSaveASCIIWithEmojiThrows() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hexpad-\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        
+        let doc = DocumentModel(text: "😀 hello", filePath: tmp, encoding: "ASCII")
+        XCTAssertThrowsError(try doc.save()) { error in
+            XCTAssert(error is DocumentError)
+        }
+        
+        let attrs = try FileManager.default.attributesOfItem(atPath: tmp.path)
+        let size = attrs[.size] as? UInt64 ?? 0
+        XCTAssertGreaterThan(size, 0, "empty file was written")
+    }
 }
