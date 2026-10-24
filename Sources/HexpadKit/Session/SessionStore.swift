@@ -2,9 +2,14 @@ import Foundation
 
 /// Manages session state persistence
 public final class SessionStore {
-    
+
+    /// Test seam: when set, session.json lives here instead of Application Support.
+    /// Production code never sets this; tests point it at a temp dir for isolation.
+    public static var overrideDirectory: URL?
+
     private static var appSupportDir: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        if let override = overrideDirectory { return override }
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
             .appendingPathComponent("Hexpad")
     }
     
