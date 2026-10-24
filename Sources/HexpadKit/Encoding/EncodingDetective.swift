@@ -70,10 +70,13 @@ public final class EncodingDetective {
     /// resolve ("UTF-16-LE" and "UTF-16LE"). Every string that encodingName(from:) can
     /// emit must round-trip back to the same UInt here.
     public static func nsEncoding(from name: String) -> UInt {
-        let normalized = name.uppercased().replacingOccurrences(of: "-", with: "")
+        let normalized = name.uppercased()
+            .replacingOccurrences(of: "-", with: "")
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: " ", with: "")
         switch normalized {
-        case "UTF-8": return String.Encoding.utf8.rawValue
-        case "UTF-16": return String.Encoding.utf16.rawValue
+        case "UTF8": return String.Encoding.utf8.rawValue
+        case "UTF16": return String.Encoding.utf16.rawValue
         case "UTF16LE": return String.Encoding.utf16LittleEndian.rawValue
         case "UTF16BE": return String.Encoding.utf16BigEndian.rawValue
         case "UTF32LE": return String.Encoding.utf32LittleEndian.rawValue
