@@ -1,7 +1,7 @@
 import AppKit
 import HexpadKit
 
-class FindBar: NSView, NSTextFieldDelegate {
+class FindBar: NSView, NSSearchFieldDelegate {
     
     var isVisible = false
     
