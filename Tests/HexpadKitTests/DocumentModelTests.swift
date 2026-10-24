@@ -68,8 +68,8 @@ final class DocumentModelTests: XCTestCase {
             XCTAssert(error is DocumentError)
         }
         
-        let attrs = try FileManager.default.attributesOfItem(atPath: tmp.path)
-        let size = attrs[.size] as? UInt64 ?? 0
-        XCTAssertGreaterThan(size, 0, "empty file was written")
+        // save() must throw BEFORE writing: no file should exist at all.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tmp.path),
+                       "save wrote a file despite unencodable text")
     }
 }
