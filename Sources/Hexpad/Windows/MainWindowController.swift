@@ -87,8 +87,8 @@ class MainWindowController: NSViewController {
         editor.textView.delegate = self
         
         if let ruler = editor.ruler as? LineNumberGutter {
-            ruler.setClickHandler { [weak self] point in
-                self?.handleGutterClick(point)
+            ruler.setClickHandler { [weak self] charIndex in
+                self?.selectCharacter(charIndex)
             }
         }
         
@@ -446,26 +446,15 @@ class MainWindowController: NSViewController {
     }
     
     // MARK: - Gutter Click
-    
-    private func handleGutterClick(_ point: NSPoint) {
+
+    /// Places the caret at a character index resolved by the gutter's layout
+    /// geometry — no pixel ÷ magic-number line math.
+    private func selectCharacter(_ charIndex: Int) {
         guard let editor = editorContainer else { return }
-        let lineNum = Int(point.y / 18) + 1
-        let charIndex = charIndexForLine(editor.textView, line: lineNum)
-        let selRange = NSRange(location: charIndex, length: 0)
+        let clamped = min(max(0, charIndex), (editor.textView.string as NSString).length)
+        let selRange = NSRange(location: clamped, length: 0)
         editor.textView.setSelectedRange(selRange)
         editor.textView.scrollRangeToVisible(selRange)
-    }
-    
-    private func charIndexForLine(_ textView: NSTextView, line: Int) -> Int {
-        let text = textView.string
-        let lines = text.components(separatedBy: "\n")
-        var offset = 0
-        for i in 0..<min(line, lines.count) {
-            if i < line - 1 {
-                offset += lines[i].count + 1
-            }
-        }
-        return offset
     }
 }
 

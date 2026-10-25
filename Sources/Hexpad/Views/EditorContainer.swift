@@ -10,7 +10,7 @@ class EditorContainer: NSView {
     init() {
         scrollView = NSScrollView()
         textView = NSTextView()
-        ruler = LineNumberGutter(scrollView: scrollView, orientation: .verticalRuler)
+        ruler = LineNumberGutter(textView: textView)
         
         super.init(frame: .zero)
         setupUI()
@@ -44,9 +44,10 @@ class EditorContainer: NSView {
         scrollView.borderType = .bezelBorder
         scrollView.documentView = textView
         scrollView.autoresizingMask = [.width, .height]
-        scrollView.frame = NSRect(x: 40, y: 0, width: 760, height: 500)
+        scrollView.contentInsets = NSEdgeInsets(top: 0, left: LineNumberGutter.width, bottom: 0, right: 0)
+        scrollView.frame = NSRect(x: LineNumberGutter.width, y: 0, width: 720, height: 500)
         
-        ruler.frame = NSRect(x: 0, y: 0, width: 40, height: 500)
+        ruler.frame = NSRect(x: 0, y: 0, width: LineNumberGutter.width, height: 500)
         ruler.autoresizingMask = [.height]
         
         addSubview(ruler)
