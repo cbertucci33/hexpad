@@ -19,8 +19,13 @@ public final class DocumentModel: Identifiable, ObservableObject {
         return unsavedChanges
     }
     
-    public var unsavedChanges: Bool { !self._originalText.isEmpty && self.text != self._originalText }
+    public var unsavedChanges: Bool { text != _originalText }
     public var isUntitled: Bool { filePath == nil }
+
+    /// Per-document undo stack. The editor swaps its undoManager to this on
+    /// tab switch so switching tabs no longer wipes a tab's undo history.
+    /// Not persisted: undo stacks intentionally do not survive app restarts.
+    public let undoManager = UndoManager()
     
     private var _originalText: String = ""
     private var savedModificationDate: Date?
@@ -41,8 +46,8 @@ public final class DocumentModel: Identifiable, ObservableObject {
         self.name = filePath?.lastPathComponent ?? "Untitled"
         self._encoding = encoding
         self._eolType = eolType
+        self._originalText = text  // a freshly created doc is clean, saved or not
         if let filePath {
-            self._originalText = text
             do {
                 self.savedModificationDate = try FileManager.default.attributesOfItem(atPath: filePath.path)[.modificationDate] as? Date
             } catch {}

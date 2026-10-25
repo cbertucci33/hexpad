@@ -19,6 +19,41 @@ final class DocumentModelTests: XCTestCase {
         doc.setModified(false)
         XCTAssertFalse(doc.unsavedChanges)
     }
+
+    // MARK: - Card 79e2f323: quit loses untitled edits / tab switch clears undo
+
+    func testEditedFromEmptyUntitledReportsUnsaved() {
+        let doc = DocumentModel()               // untitled, empty
+        XCTAssertFalse(doc.unsavedChanges)
+        doc.text = "typed without ever saving"  // the old `!isEmpty` guard
+        XCTAssertTrue(doc.unsavedChanges)        // reported "clean" → lost work
+    }
+
+    func testEachDocumentHasOwnUndoManager() {
+        let a = DocumentModel()
+        let b = DocumentModel()
+        XCTAssertFalse(a.undoManager === b.undoManager)
+    }
+
+    func testUndoStacksAreIsolatedPerDocument() {
+        let a = DocumentModel()
+        let b = DocumentModel()
+        a.undoManager.registerUndo(withTarget: a) { _ in }
+        XCTAssertTrue(a.undoManager.canUndo)
+        XCTAssertFalse(b.undoManager.canUndo, "tab switch must not share/clobber stacks")
+        b.undoManager.removeAllActions()
+        XCTAssertTrue(a.undoManager.canUndo, "undoing in b cannot wipe a")
+    }
+
+    func testUntitledBufferSurvivesSessionRoundTrip() {
+        let store = TabStore()
+        let doc = DocumentModel()
+        doc.text = "untitled draft"
+        store.addDocument(doc)
+        let restored = TabStore.fromSessionData(store.toSessionData())
+        XCTAssertEqual(restored.documents.count, 1)
+        XCTAssertEqual(restored.documents.first?.text, "untitled draft")
+    }
     
     func testEOLConversion() {
         var doc = DocumentModel(text: "a\nb\nc")

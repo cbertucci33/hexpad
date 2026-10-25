@@ -10,6 +10,8 @@ class MainWindowController: NSViewController {
     // Subviews
     private var tabBarView: TabBarView?
     private var editorContainer: EditorContainer?
+    /// Document whose buffer/undo stack is currently loaded in the editor.
+    private weak var editorBoundDoc: DocumentModel?
     private var statusBar: StatusBar?
     private var findBar: FindBar?
     
@@ -318,12 +320,28 @@ class MainWindowController: NSViewController {
     
     func updateEditor() {
         guard let editor = editorContainer else { return }
+        // Flush the outgoing tab's live buffer into its model before swapping,
+        // so the just-edited text is never lost by switching tabs.
+        if let bound = editorBoundDoc, bound !== tabStore.selectedDocument {
+            bound.text = editor.textView.string
+        }
         if let doc = tabStore.selectedDocument {
+            editorBoundDoc = doc
+            // Per-document undo stacks: switching tabs must not wipe undo.
+            // NSTextView.undoManager is get-only (delegate-provided); rebind
+            // the layout manager so typing registers on this doc's stack.
+            let um = doc.undoManager
+            um.disableUndoRegistration()
             let selRange = editor.textView.selectedRange
             editor.textView.string = doc.text
-            editor.textView.selectedRange = selRange
+            let maxLoc = (doc.text as NSString).length
+            editor.textView.selectedRange = NSRange(location: min(selRange.location, maxLoc),
+                                                    length: min(selRange.length,
+                                                                max(0, maxLoc - min(selRange.location, maxLoc))))
+            um.enableUndoRegistration()
             applySyntaxHighlighting(to: editor, for: doc)
         } else {
+            editorBoundDoc = nil
             editor.textView.string = ""
         }
         updateStatusBar()
@@ -432,6 +450,11 @@ class MainWindowController: NSViewController {
     // MARK: - Session
     
     func saveSession() {
+        // Flush the live editor buffer into the selected document so untitled
+        // (never-saved-to-disk) edits survive quit → restore.
+        if let editor = editorContainer, let doc = tabStore.selectedDocument {
+            doc.text = editor.textView.string
+        }
         try? SessionStore.save(tabStore)
     }
     
@@ -461,6 +484,10 @@ class MainWindowController: NSViewController {
 // MARK: - NSTextViewDelegate
 
 extension MainWindowController: NSTextViewDelegate {
+    func undoManager(for textView: NSTextView) -> UndoManager? {
+        editorBoundDoc?.undoManager ?? textView.undoManager
+    }
+
     func textDidChange(_ notification: Notification) {
         guard let doc = tabStore.selectedDocument, let editor = editorContainer else { return }
         doc.text = editor.textView.string
