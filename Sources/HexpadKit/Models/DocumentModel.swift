@@ -7,17 +7,12 @@ public final class DocumentModel: Identifiable, ObservableObject {
     public var text: String
     public var name: String
     
-    public var isModified: Bool {
-        if let filePath {
-            do {
-                let modified = try FileManager.default.attributesOfItem(atPath: filePath.path)[.modificationDate] as? Date
-                return modified != self.savedModificationDate
-            } catch {
-                return true
-            }
-        }
-        return unsavedChanges
-    }
+    /// Dirty means the in-memory text differs from what was last saved.
+    /// This used to compare the file's on-disk mtime, which ordinary typing
+    /// does not change, so a saved file never reported modified and quit-time
+    /// autosave skipped it. External-change detection is separate and not yet
+    /// implemented, so the in-memory diff is the truthful signal here.
+    public var isModified: Bool { unsavedChanges }
     
     public var unsavedChanges: Bool { text != _originalText }
     public var isUntitled: Bool { filePath == nil }
@@ -128,7 +123,9 @@ public final class DocumentModel: Identifiable, ObservableObject {
             return nil
         }
         let id = UUID(uuidString: idStr) ?? UUID()
-        let filePath = (data["filePath"] as? String).flatMap { URL(string: $0) }
+        // fileURLWithPath, not URL(string:): paths with spaces, #, ? or % either
+        // fail outright or come back percent-encoded and restore as broken tabs.
+        let filePath = (data["filePath"] as? String).map { URL(fileURLWithPath: $0) }
         let isModified = data["isModified"] as? Bool ?? false
         let doc = DocumentModel(text: text, filePath: filePath, encoding: encoding, eolType: eolType)
         doc.name = name

@@ -293,8 +293,15 @@ class MainWindowController: NSViewController {
             DispatchQueue.main.async {
                 switch response {
                 case .alertFirstButtonReturn: // Save
-                    self.saveDocument(doc)
-                    self.closeTabAtIndex(self.tabStore.selectedIndex)
+                    // Untitled docs need a save panel; doc.save() throws
+                    // noFilePath for them. Only close once the save succeeded
+                    // (or the user actually picked a destination).
+                    if doc.isUntitled {
+                        self.saveAsAndClose(doc)
+                    } else {
+                        self.saveDocument(doc)
+                        self.closeTabAtIndex(self.tabStore.selectedIndex)
+                    }
                 case .alertSecondButtonReturn: // Don't Save
                     self.closeTabAtIndex(self.tabStore.selectedIndex)
                 case .alertThirdButtonReturn: // Cancel
@@ -303,6 +310,26 @@ class MainWindowController: NSViewController {
                     break
                 }
             }
+        }
+    }
+
+    /// Save-as flow used by the close prompt for untitled docs: close the tab
+    /// only when the user picked a destination and the write succeeded.
+    private func saveAsAndClose(_ doc: DocumentModel) {
+        let panel = NSSavePanel()
+        panel.title = "Save As"
+        panel.nameFieldStringValue = doc.name
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try doc.saveAs(to: url)
+            recentFilesManager?.replaceRecent(oldPath: nil, newPath: url.path)
+            NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
+            refreshTabBar()
+            updateStatusBar()
+            closeTabAtIndex(tabStore.selectedIndex)
+        } catch {
+            showError("Failed to save file: \(error.localizedDescription)")
         }
     }
     
@@ -468,11 +495,58 @@ class MainWindowController: NSViewController {
     }
     
     // MARK: - Encoding
-    
+
+    /// Changing encoding must re-decode the bytes on disk, otherwise the status
+    /// bar says UTF-16 while the buffer still holds the mis-detected decode and
+    /// the next save writes the wrong bytes.
     func setEncoding(_ encoding: String) {
-        if let doc = tabStore.selectedDocument { doc.setEncoding(encoding) }
+        guard let doc = tabStore.selectedDocument else { return }
+        doc.setEncoding(encoding)
+
+        guard let path = doc.filePath, let data = try? Data(contentsOf: path) else {
+            updateStatusBar()
+            return
+        }
+        let nsEnc = String.Encoding(rawValue: EncodingDetective.nsEncoding(from: encoding))
+        if let text = String(data: data, encoding: nsEnc), text != doc.text {
+            doc.text = text
+            doc.setModified(true)
+            updateEditor()
+        }
         updateStatusBar()
     }
+
+    func setEOL(_ eol: String) {
+        guard let doc = tabStore.selectedDocument else { return }
+        doc.convertEOL(to: eol)
+        doc.setModified(true)
+        updateEditor()
+        NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
+    }
+
+    // MARK: - Line operations
+
+    /// Apply a text transform to the selection when there is one, otherwise to
+    /// the whole document. LineOps shipped fully tested but had no menu at all.
+    private func applyLineOp(_ transform: (String) -> String) {
+        guard let editor = editorContainer, let doc = tabStore.selectedDocument else { return }
+        let sel = editor.textView.selectedRange
+        if sel.length > 0 {
+            guard let swiftRange = Range(sel, in: editor.textView.string) else { return }
+            let slice = String(editor.textView.string[swiftRange])
+            editor.textView.insertText(transform(slice), replacementRange: sel)
+        } else {
+            doc.text = transform(doc.text)
+            updateEditor()
+            doc.setModified(true)
+            NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
+        }
+    }
+
+    func sortLinesAscending() { applyLineOp(LineOps.sortAscending) }
+    func sortLinesDescending() { applyLineOp(LineOps.sortDescending) }
+    func removeDuplicateLines() { applyLineOp(LineOps.removeDuplicates) }
+    func removeBlankLines() { applyLineOp(LineOps.removeBlankLines) }
     
     func setLanguage(_ lang: Language) {
         if let doc = tabStore.selectedDocument { doc.setLanguage(lang.rawValue) }

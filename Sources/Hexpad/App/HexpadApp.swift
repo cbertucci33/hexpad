@@ -239,7 +239,34 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         encodingMenu.addItem(utf16LEItem)
         encodingMenu.addItem(utf16BEItem)
         encodingMenu.addItem(asciiItem)
+
+        // EOL submenu lived in the model (convertEOL) but had no UI at all.
+        encodingMenu.addItem(.separator())
+        let eolMenu = NSMenu(title: "Line Endings")
+        for (title, sel) in [("LF (Unix)", #selector(setEOLLF)),
+                             ("CRLF (Windows)", #selector(setEOLCRLF)),
+                             ("CR (Classic Mac)", #selector(setEOLCR))] {
+            let item = NSMenuItem(title: title, action: sel, keyEquivalent: "")
+            item.target = self
+            eolMenu.addItem(item)
+        }
+        let eolItem = NSMenuItem(title: "Line Endings", action: nil, keyEquivalent: "")
+        eolItem.submenu = eolMenu
+        encodingMenu.addItem(eolItem)
         menu.addItem((NSMenuItem(title: "Encoding", action: nil, keyEquivalent: "").apply { $0.submenu = encodingMenu }))
+
+        // Line operations menu: LineOps was fully implemented and unit-tested
+        // but unreachable from the app.
+        let lineOpsMenu = NSMenu(title: "Line Operations")
+        for (title, sel) in [("Sort Lines A-Z", #selector(sortLinesAscending)),
+                             ("Sort Lines Z-A", #selector(sortLinesDescending)),
+                             ("Remove Duplicate Lines", #selector(removeDuplicateLines)),
+                             ("Remove Blank Lines", #selector(removeBlankLines))] {
+            let item = NSMenuItem(title: title, action: sel, keyEquivalent: "")
+            item.target = self
+            lineOpsMenu.addItem(item)
+        }
+        menu.addItem((NSMenuItem(title: "Line Ops", action: nil, keyEquivalent: "").apply { $0.submenu = lineOpsMenu }))
         
         // Language menu
         let languageMenu = NSMenu(title: "Language")
@@ -388,6 +415,15 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     @objc private func setEncodingASCII() {
         windowController?.setEncoding("ASCII")
     }
+
+    @objc private func setEOLLF() { windowController?.setEOL("LF") }
+    @objc private func setEOLCRLF() { windowController?.setEOL("CRLF") }
+    @objc private func setEOLCR() { windowController?.setEOL("CR") }
+
+    @objc private func sortLinesAscending() { windowController?.sortLinesAscending() }
+    @objc private func sortLinesDescending() { windowController?.sortLinesDescending() }
+    @objc private func removeDuplicateLines() { windowController?.removeDuplicateLines() }
+    @objc private func removeBlankLines() { windowController?.removeBlankLines() }
     
     @objc private func setLanguage(_ sender: NSMenuItem) {
         let langs = Language.allCases
