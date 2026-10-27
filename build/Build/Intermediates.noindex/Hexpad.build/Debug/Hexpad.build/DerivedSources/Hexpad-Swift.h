@@ -484,6 +484,8 @@ SWIFT_CLASS("_TtC6Hexpad10TabBarView")
 SWIFT_CLASS("_TtC6Hexpad9TabButton")
 @interface TabButton : NSButton
 - (nullable instancetype)initWithCoder:(NSCoder * _Nonnull)coder OBJC_DESIGNATED_INITIALIZER;
+- (void)mouseDown:(NSEvent * _Nonnull)event;
+- (void)mouseDragged:(NSEvent * _Nonnull)event;
 - (void)drawRect:(NSRect)dirtyRect;
 - (nonnull instancetype)initWithFrame:(NSRect)frameRect SWIFT_UNAVAILABLE;
 @end

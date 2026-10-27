@@ -48,48 +48,6 @@
 			<key>uniqueIdentifier</key>
 			<string>71AC3633-D444-4EDD-8729-8BB99084DD88</string>
 		</dict>
-		<key>74B6A717-2D0B-4599-8246-CC6AB0D3C5D3</key>
-		<dict>
-			<key>className</key>
-			<string>IDECommandLineBuildLog</string>
-			<key>documentTypeString</key>
-			<string>&lt;nil&gt;</string>
-			<key>domainType</key>
-			<string>Xcode.IDEActivityLogDomainType.BuildLog</string>
-			<key>fileName</key>
-			<string>74B6A717-2D0B-4599-8246-CC6AB0D3C5D3.xcactivitylog</string>
-			<key>hasPrimaryLog</key>
-			<true/>
-			<key>primaryObservable</key>
-			<dict>
-				<key>highLevelStatus</key>
-				<string>S</string>
-				<key>totalNumberOfAnalyzerIssues</key>
-				<integer>0</integer>
-				<key>totalNumberOfErrors</key>
-				<integer>0</integer>
-				<key>totalNumberOfTestFailures</key>
-				<integer>0</integer>
-				<key>totalNumberOfWarnings</key>
-				<integer>0</integer>
-			</dict>
-			<key>schemeIdentifier-containerName</key>
-			<string>Hexpad project</string>
-			<key>schemeIdentifier-schemeName</key>
-			<string>Hexpad</string>
-			<key>schemeIdentifier-sharedScheme</key>
-			<integer>1</integer>
-			<key>signature</key>
-			<string>Building project Hexpad with scheme Hexpad and configuration Debug</string>
-			<key>timeStartedRecording</key>
-			<real>814818051.67766201</real>
-			<key>timeStoppedRecording</key>
-			<real>814818052.10366094</real>
-			<key>title</key>
-			<string>Building project Hexpad with scheme Hexpad and configuration Debug</string>
-			<key>uniqueIdentifier</key>
-			<string>74B6A717-2D0B-4599-8246-CC6AB0D3C5D3</string>
-		</dict>
 		<key>AD3E8161-BBF5-41FF-A05F-114EB2C60D0B</key>
 		<dict>
 			<key>className</key>
@@ -132,7 +90,7 @@
 			<key>uniqueIdentifier</key>
 			<string>AD3E8161-BBF5-41FF-A05F-114EB2C60D0B</string>
 		</dict>
-		<key>E2F976A7-C3E3-45B3-9233-81BC3B026A8F</key>
+		<key>C336BDB8-4920-4279-B7FE-F55BCBE1EE53</key>
 		<dict>
 			<key>className</key>
 			<string>IDECommandLineBuildLog</string>
@@ -141,7 +99,7 @@
 			<key>domainType</key>
 			<string>Xcode.IDEActivityLogDomainType.BuildLog</string>
 			<key>fileName</key>
-			<string>E2F976A7-C3E3-45B3-9233-81BC3B026A8F.xcactivitylog</string>
+			<string>C336BDB8-4920-4279-B7FE-F55BCBE1EE53.xcactivitylog</string>
 			<key>hasPrimaryLog</key>
 			<true/>
 			<key>primaryObservable</key>
@@ -166,13 +124,13 @@
 			<key>signature</key>
 			<string>Building project Hexpad with scheme Hexpad and configuration Debug</string>
 			<key>timeStartedRecording</key>
-			<real>814818044.15687597</real>
+			<real>814818660.21725905</real>
 			<key>timeStoppedRecording</key>
-			<real>814818046.08052897</real>
+			<real>814818661.57017899</real>
 			<key>title</key>
 			<string>Building project Hexpad with scheme Hexpad and configuration Debug</string>
 			<key>uniqueIdentifier</key>
-			<string>E2F976A7-C3E3-45B3-9233-81BC3B026A8F</string>
+			<string>C336BDB8-4920-4279-B7FE-F55BCBE1EE53</string>
 		</dict>
 		<key>E8CB6070-9E04-4091-BB68-92A02C92755B</key>
 		<dict>

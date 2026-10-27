@@ -24,13 +24,19 @@ class TabBarView: NSView {
         NotificationCenter.default.removeObserver(self)
     }
     
+    func fitWidthToClip() {
+        let clipWidth = enclosingScrollView?.contentSize.width ?? bounds.width
+        let totalTabsWidth = CGFloat(tabStore.count) * (140 + 2) - 2
+        frame.size.width = max(totalTabsWidth, clipWidth)
+    }
+
     func reloadTabs() {
         tabButtons.forEach { $0.removeFromSuperview() }
         tabButtons.removeAll()
         
         let tabWidth: CGFloat = 140
-        let tabHeight: CGFloat = bounds.height
         let spacing: CGFloat = 2
+        let tabHeight = bounds.height
         
         for (index, doc) in tabStore.documents.enumerated() {
             let button = TabButton(doc: doc, index: index, tabWidth: tabWidth, tabHeight: tabHeight)
@@ -38,12 +44,28 @@ class TabBarView: NSView {
             button.isSelected = index == tabStore.selectedIndex
             button.target = self
             button.action = #selector(tabClicked(_:))
+            button.reorderDelegate = self
             addSubview(button)
             tabButtons.append(button)
         }
         
-        let totalTabsWidth = CGFloat(tabStore.count) * (tabWidth + spacing) - spacing
-        frame.size.width = max(totalTabsWidth, bounds.width)
+        fitWidthToClip()
+    }
+
+    // MARK: - Drag reorder
+
+    /// TabStore.moveDocument existed from the start but nothing drove it.
+    func moveTab(from source: Int, to destination: Int) {
+        tabStore.moveDocument(from: source, to: destination)
+        reloadTabs()
+        NotificationCenter.default.post(name: NSNotification.Name("TabStoreSelectedIndexDidChange"), object: nil)
+    }
+
+    /// Index whose slot contains the given point in bar coordinates.
+    func tabIndex(at point: NSPoint) -> Int? {
+        let slot = 142.0
+        guard point.x >= 0, point.x < CGFloat(tabButtons.count) * slot else { return nil }
+        return min(tabButtons.count - 1, max(0, Int(point.x / slot)))
     }
     
     @objc private func tabClicked(_ sender: TabButton) {
@@ -73,6 +95,9 @@ class TabButton: NSButton {
     private var titleLabel: NSTextField?
     private var dirtyIndicator: NSView?
     private var closeButton: NSButton?
+    private var dragStart: NSPoint?
+    private var draggedOut = false
+    weak var reorderDelegate: TabBarView?
     
     init(doc: DocumentModel, index: Int, tabWidth: CGFloat, tabHeight: CGFloat) {
         self.doc = doc
@@ -131,6 +156,25 @@ class TabButton: NSButton {
     
     @objc private func closeTabClicked() {
         NotificationCenter.default.post(name: NSNotification.Name("TabCloseRequested"), object: nil, userInfo: ["index": index])
+    }
+
+    // MARK: - Drag reorder
+
+    override func mouseDown(with event: NSEvent) {
+        dragStart = convert(event.locationInWindow, from: nil)
+        draggedOut = false
+        super.mouseDown(with: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let start = dragStart else { return }
+        let here = convert(event.locationInWindow, from: nil)
+        if abs(here.x - start.x) > 6 { draggedOut = true }
+        guard draggedOut, let bar = reorderDelegate else { return }
+        let inBar = bar.convert(event.locationInWindow, from: nil)
+        if let target = bar.tabIndex(at: inBar), target != index {
+            bar.moveTab(from: index, to: target)
+        }
     }
     
     @objc private func modifiedDidChange() {

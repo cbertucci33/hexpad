@@ -9,6 +9,7 @@ class MainWindowController: NSViewController {
     
     // Subviews
     private var tabBarView: TabBarView?
+    private var tabScrollView: NSScrollView?
     private var editorContainer: EditorContainer?
     /// Document whose buffer/undo stack is currently loaded in the editor.
     private weak var editorBoundDoc: DocumentModel?
@@ -78,7 +79,17 @@ class MainWindowController: NSViewController {
         view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         
         let tabBar = TabBarView(tabStore: tabStore)
-        view.addSubview(tabBar)
+        // Tabs scroll horizontally instead of clipping once they exceed the
+        // window; the bar itself grows to its content width.
+        let tabScroll = NSScrollView()
+        tabScroll.hasHorizontalScroller = true
+        tabScroll.autohidesScrollers = true
+        tabScroll.hasVerticalScroller = false
+        tabScroll.drawsBackground = false
+        tabScroll.borderType = .noBorder
+        tabScroll.documentView = tabBar
+        view.addSubview(tabScroll)
+        tabScrollView = tabScroll
         tabBarView = tabBar
         
         let editor = EditorContainer()
@@ -91,7 +102,8 @@ class MainWindowController: NSViewController {
 
         // Width-following masks so interim resizes stay sane even before
         // viewDidLayout runs the authoritative pass.
-        tabBar.autoresizingMask = [.width, .minYMargin]
+        tabBar.autoresizingMask = [.width, .height]
+        tabScroll.autoresizingMask = [.width, .minYMargin]
         editor.autoresizingMask = [.width, .height]
         status.autoresizingMask = [.width, .maxYMargin]
         
@@ -129,7 +141,9 @@ class MainWindowController: NSViewController {
         let topInset = tabBarHeight + (findVisible ? findHeight : 0)
         let height = view.bounds.height
 
-        tabBar.frame = NSRect(x: 0, y: max(0, height - tabBarHeight), width: view.bounds.width, height: tabBarHeight)
+        tabScrollView?.frame = NSRect(x: 0, y: max(0, height - tabBarHeight), width: view.bounds.width, height: tabBarHeight)
+        tabBar.frame.size.height = tabBarHeight
+        tabBar.fitWidthToClip()
         findBar?.frame = NSRect(x: 0,
                                 y: max(statusHeight, height - topInset),
                                 width: view.bounds.width,
