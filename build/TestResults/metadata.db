@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>FormatVersion</key>
+	<integer>1</integer>
+	<key>Store</key>
+	<dict>
+		<key>HexpadAppTests</key>
+		<dict>
+			<key>LayoutTests</key>
+			<dict>
+				<key>testCloseButtonReachableAtWideWidth</key>
+				<dict>
+					<key>mrnet</key>
+					<real>0.0016499757766723633</real>
+				</dict>
+				<key>testFindBarChildrenStayInsideWideBounds</key>
+				<dict>
+					<key>mrnet</key>
+					<real>0.001047968864440918</real>
+				</dict>
+				<key>testFindBarNarrowUsesTwoRowsWithoutOverlap</key>
+				<dict>
+					<key>mrnet</key>
+					<real>0.0010260343551635742</real>
+				</dict>
+				<key>testFindBarStartsHidden</key>
+				<dict>
+					<key>mrnet</key>
+					<real>0.00090205669403076172</real>
+				</dict>
+				<key>testStatusBarLabelsVerticallyCentred</key>
+				<dict>
+					<key>mrnet</key>
+					<real>0.00064003467559814453</real>
+				</dict>
+			</dict>
+		</dict>
+	</dict>
+</dict>
+</plist>

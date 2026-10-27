@@ -107,4 +107,35 @@ final class DocumentModelTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: tmp.path),
                        "save wrote a file despite unencodable text")
     }
+
+    // isModified used to compare on-disk mtime, which typing never changes.
+    func testFileBackedTypingMarksModified() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hexpad-isdirty-\(UUID().uuidString).txt")
+        try "original".write(to: tmp, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let doc = DocumentModel(text: "original", filePath: tmp)
+        XCTAssertFalse(doc.isModified)
+        doc.text = "edited"
+        XCTAssertTrue(doc.isModified, "typing in a saved file must mark it dirty")
+        doc.setModified(false)
+        XCTAssertFalse(doc.isModified)
+    }
+
+    // Paths with spaces must survive a session round trip (URL(string:) broke them).
+    func testSessionRoundTripPathWithSpaces() {
+        let path = "/tmp/hexpad dir name/file one.txt"
+        let doc = DocumentModel(text: "x", filePath: URL(fileURLWithPath: path))
+        let data = doc.toSessionData()
+        let restored = DocumentModel.fromSessionData(data)
+        XCTAssertNotNil(restored, "doc with spaces in its path must restore")
+    }
+
+    func testIsModifiedUntitledFollowsText() {
+        let doc = DocumentModel(text: "a")
+        XCTAssertFalse(doc.isModified)
+        doc.text = "b"
+        XCTAssertTrue(doc.isModified)
+    }
 }

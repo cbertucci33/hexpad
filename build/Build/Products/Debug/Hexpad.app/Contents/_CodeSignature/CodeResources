@@ -10,10 +10,10 @@
 		<dict>
 			<key>cdhash</key>
 			<data>
-			qZC1OodVD3AsvzcZXX/FUurKYHE=
+			o3Sc3c8uD4CfvlsRfMy0x4BxPec=
 			</data>
 			<key>requirement</key>
-			<string>cdhash H"a990b53a87550f702cbf37195d7fc552eaca6071"</string>
+			<string>cdhash H"a3749cddcf2e0f809fbe5b117cccb4c780713de7"</string>
 		</dict>
 		<key>MacOS/__preview.dylib</key>
 		<dict>
@@ -23,6 +23,15 @@
 			</data>
 			<key>requirement</key>
 			<string>cdhash H"34ba0e00fb088244b9c2f6760a191e10d8c9692b"</string>
+		</dict>
+		<key>PlugIns/HexpadAppTests.xctest</key>
+		<dict>
+			<key>cdhash</key>
+			<data>
+			4krSqNxvwDsqz1IJIySxBYMHuJE=
+			</data>
+			<key>requirement</key>
+			<string>cdhash H"e24ad2a8dc6fc03b2acf52092324b1058307b891"</string>
 		</dict>
 	</dict>
 	<key>rules</key>

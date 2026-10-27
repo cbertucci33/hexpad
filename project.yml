@@ -24,6 +24,19 @@ targets:
           echo "HexpadKit is provided by the Swift Package Manager at $(pwd)/.."
         executionPosition: before
         basedOnDependencyAnalysis: false
+  HexpadAppTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests/HexpadAppTests
+    dependencies:
+      - target: Hexpad
+    settings:
+      base:
+        SWIFT_VERSION: "5.10"
+        GENERATE_INFOPLIST_FILE: YES
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Hexpad.app/Contents/MacOS/Hexpad"
 
 packages:
   HexpadKit:

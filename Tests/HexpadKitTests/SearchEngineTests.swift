@@ -114,4 +114,44 @@ final class SearchEngineTests: XCTestCase {
         let result = SearchEngine.replace(text, pattern: "hello", replacement: "hi", options: [])
         XCTAssertEqual(result, "a😀b hi c hi")
     }
+
+    func testIsValidRegex() {
+        XCTAssertTrue(SearchEngine.isValidRegex("a+b"))
+        XCTAssertFalse(SearchEngine.isValidRegex("a(b"))
+        XCTAssertTrue(SearchEngine.isValidRegex(""))
+    }
+
+    // Literal mode must not treat $1 as a template group reference.
+    func testLiteralReplaceKeepsDollar() {
+        let result = SearchEngine.replace("price 5", pattern: "5", replacement: "$1 dollars", options: [])
+        XCTAssertEqual(result, "price $1 dollars")
+    }
+
+    // Regex mode must still honour templates.
+    func testRegexReplaceUsesTemplates() {
+        let result = SearchEngine.replace("ab", pattern: "(a)(b)", replacement: "$2$1", options: [.regex])
+        XCTAssertEqual(result, "ba")
+    }
+
+    // Backslash in a literal replacement must survive verbatim.
+    func testLiteralReplaceKeepsBackslash() {
+        let result = SearchEngine.replace("a", pattern: "a", replacement: "\\n", options: [])
+        XCTAssertEqual(result, "\\n")
+    }
+
+    // searchInFiles must skip binary/oversized files without crashing.
+    func testSearchInFilesSkipsLargeFile() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("hexpad-sif-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try "needle here".write(to: dir.appendingPathComponent("small.txt"), atomically: true, encoding: .utf8)
+        let big = dir.appendingPathComponent("big.txt")
+        let filler = String(repeating: "x", count: 2048)
+        try filler.write(to: big, atomically: true, encoding: .utf8)
+
+        let hitsSmall = SearchEngine.searchInFiles(directory: dir, pattern: "needle", options: [], maxBytes: 4096)
+        XCTAssertEqual(hitsSmall.count, 1)
+        let hitsNone = SearchEngine.searchInFiles(directory: dir, pattern: "needle", options: [], maxBytes: 1)
+        XCTAssertEqual(hitsNone.count, 0)
+    }
 }
