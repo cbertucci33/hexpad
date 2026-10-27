@@ -194,6 +194,19 @@ class MainWindowController: NSViewController {
         openFile(atURL: url)
     }
     
+    /// Open a file and reveal a byte/char range (Find in Files jump target).
+    func openFileAt(url: URL, revealing range: NSRange) {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        openFile(atURL: url)
+        guard let editor = editorContainer else { return }
+        let length = (editor.textView.string as NSString).length
+        guard range.location <= length else { return }
+        let clamped = NSRange(location: range.location, length: min(range.length, length - range.location))
+        editor.textView.setSelectedRange(clamped)
+        editor.textView.scrollRangeToVisible(clamped)
+        view.window?.makeFirstResponder(editor.textView)
+    }
+
     private func openFile(atURL url: URL) {
         do {
             let data = try Data(contentsOf: url)

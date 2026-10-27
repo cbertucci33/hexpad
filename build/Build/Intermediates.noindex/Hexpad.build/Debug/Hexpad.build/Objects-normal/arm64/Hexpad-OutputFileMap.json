@@ -76,6 +76,16 @@
     "swift-dependencies" : "/Users/cb/.openclaw/workspace/projects/hexpad/hexpad/build/Build/Intermediates.noindex/Hexpad.build/Debug/Hexpad.build/Objects-normal/arm64/TabBarView.swiftdeps",
     "swiftmodule" : "/Users/cb/.openclaw/workspace/projects/hexpad/hexpad/build/Build/Intermediates.noindex/Hexpad.build/Debug/Hexpad.build/Objects-normal/arm64/TabBarView~partial.swiftmodule"
   },
+  "/Users/cb/.openclaw/workspace/projects/hexpad/hexpad/Sources/Hexpad/Windows/FindInFilesWindowController.swift" : {
+    "const-values" : "/Users/cb/.openclaw/workspace/projects/hexpad/hexpad/build/Build/Intermediates.noindex/Hexpad.build/Debug/Hexpad.build/Objects-normal/arm64/FindInFilesWindowController.swiftconstvalues",
+    "dependencies" : "/Users/cb/.openclaw/workspace/projects/hexpad/hexpad/build/Build/Intermediates.noindex/Hexpad.build/Debug/Hexpad.build/Objects-normal/arm64/FindInFilesWindowController.d",
+    "diagnostics" : "/Users/cb/.openclaw/workspace/projects/hexpad/hexpad/build/Build/Intermediates.noindex/Hexpad.build/Debug/Hexpad.build/Objects-normal/arm64/FindInFilesWindowController.dia",
+    "index-unit-output-path" : "/Hexpad.build/Debug/Hexpad.build/Objects-normal/arm64/FindInFilesWindowController.o",
+    "llvm-bc" : "/Users/cb/.openclaw/workspace/projects/hexpad/hexpad/build/Build/Intermediates.noindex/Hexpad.build/Debug/Hexpad.build/Objects-normal/arm64/FindInFilesWindowController.bc",
+    "object" : "/Users/cb/.openclaw/workspace/projects/hexpad/hexpad/build/Build/Intermediates.noindex/Hexpad.build/Debug/Hexpad.build/Objects-normal/arm64/FindInFilesWindowController.o",
+    "swift-dependencies" : "/Users/cb/.openclaw/workspace/projects/hexpad/hexpad/build/Build/Intermediates.noindex/Hexpad.build/Debug/Hexpad.build/Objects-normal/arm64/FindInFilesWindowController.swiftdeps",
+    "swiftmodule" : "/Users/cb/.openclaw/workspace/projects/hexpad/hexpad/build/Build/Intermediates.noindex/Hexpad.build/Debug/Hexpad.build/Objects-normal/arm64/FindInFilesWindowController~partial.swiftmodule"
+  },
   "/Users/cb/.openclaw/workspace/projects/hexpad/hexpad/Sources/Hexpad/Windows/MainWindow.swift" : {
     "const-values" : "/Users/cb/.openclaw/workspace/projects/hexpad/hexpad/build/Build/Intermediates.noindex/Hexpad.build/Debug/Hexpad.build/Objects-normal/arm64/MainWindow.swiftconstvalues",
     "dependencies" : "/Users/cb/.openclaw/workspace/projects/hexpad/hexpad/build/Build/Intermediates.noindex/Hexpad.build/Debug/Hexpad.build/Objects-normal/arm64/MainWindow.d",

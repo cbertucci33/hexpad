@@ -398,6 +398,23 @@ SWIFT_CLASS("_TtC6Hexpad7FindBar")
 - (BOOL)control:(NSControl * _Nonnull)control textView:(NSTextView * _Nonnull)textView doCommandBySelector:(SEL _Nonnull)commandSelector SWIFT_WARN_UNUSED_RESULT;
 @end
 
+@class NSWindow;
+/// Find in Files panel. SearchEngine.searchInFiles shipped complete but had no
+/// UI at all. Runs the search off the main thread and opens a hit in a tab.
+SWIFT_CLASS("_TtC6Hexpad27FindInFilesWindowController")
+@interface FindInFilesWindowController : NSWindowController
+- (nonnull instancetype)init;
+- (nonnull instancetype)initWithWindow:(NSWindow * _Nullable)window OBJC_DESIGNATED_INITIALIZER;
+- (nullable instancetype)initWithCoder:(NSCoder * _Nonnull)coder OBJC_DESIGNATED_INITIALIZER;
+@end
+
+@class NSTableView;
+@class NSTableColumn;
+@interface FindInFilesWindowController (SWIFT_EXTENSION(Hexpad)) <NSTableViewDataSource, NSTableViewDelegate>
+- (NSInteger)numberOfRowsInTableView:(NSTableView * _Nonnull)tableView SWIFT_WARN_UNUSED_RESULT;
+- (NSView * _Nullable)tableView:(NSTableView * _Nonnull)tableView viewForTableColumn:(NSTableColumn * _Nullable)tableColumn row:(NSInteger)row SWIFT_WARN_UNUSED_RESULT;
+@end
+
 @class NSNotification;
 @class NSApplication;
 SWIFT_CLASS("_TtC6Hexpad17HexpadAppDelegate")

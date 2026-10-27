@@ -183,6 +183,11 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         searchMenu.addItem(findInDocItem)
         searchMenu.addItem(findNextItem)
         searchMenu.addItem(findPrevItem)
+        searchMenu.addItem(.separator())
+        let findInFilesItem = NSMenuItem(title: "Find in Files...", action: #selector(findInFiles), keyEquivalent: "F")
+        findInFilesItem.keyEquivalentModifierMask = [.command, .shift]
+        findInFilesItem.target = self
+        searchMenu.addItem(findInFilesItem)
         menu.addItem((NSMenuItem(title: "Search", action: nil, keyEquivalent: "").apply { $0.submenu = searchMenu }))
         
         // View menu
@@ -424,6 +429,22 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     @objc private func sortLinesDescending() { windowController?.sortLinesDescending() }
     @objc private func removeDuplicateLines() { windowController?.removeDuplicateLines() }
     @objc private func removeBlankLines() { windowController?.removeBlankLines() }
+
+    // MARK: - Find in Files
+
+    private var findInFilesController: FindInFilesWindowController?
+
+    @objc private func findInFiles() {
+        if findInFilesController == nil {
+            let controller = FindInFilesWindowController()
+            controller.onOpenMatch = { [weak self] url, range in
+                self?.windowController?.openFileAt(url: url, revealing: range)
+            }
+            findInFilesController = controller
+        }
+        findInFilesController?.showWindow(nil)
+        findInFilesController?.window?.makeKeyAndOrderFront(nil)
+    }
     
     @objc private func setLanguage(_ sender: NSMenuItem) {
         let langs = Language.allCases

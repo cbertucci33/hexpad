@@ -118,20 +118,32 @@ public final class SearchEngine {
         }
     }
     
-    /// Search files in a directory recursively
-    public static func searchInFiles(directory: URL, pattern: String, options: SearchOptions) -> [(URL, [SearchMatch])] {
+    /// Search files in a directory recursively.
+    /// Files over `maxBytes` are skipped and non-UTF-8 files are decoded via a
+    /// lossy fallback, so a stray binary or a 200MB log cannot stall or crash
+    /// the whole search.
+    public static func searchInFiles(directory: URL, pattern: String, options: SearchOptions,
+                                     maxBytes: Int = 4 * 1024 * 1024) -> [(URL, [SearchMatch])] {
         var results: [(URL, [SearchMatch])] = []
-        guard let enumerator = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) else {
+        guard !pattern.isEmpty else { return results }
+        guard let enumerator = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey], options: [.skipsHiddenFiles, .skipsPackageDescendants]) else {
             return results
         }
         
         for case let fileURL as URL in enumerator {
-            guard let isFile = try? fileURL.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile, isFile else { continue }
+            let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard values?.isRegularFile == true else { continue }
+            if let size = values?.fileSize, size > maxBytes { continue }
             
             do {
                 let data = try Data(contentsOf: fileURL)
-                let text = String(data: data, encoding: .utf8) ?? ""
-                let matches = search(text, pattern: pattern, options: options)
+                var text = String(data: data, encoding: .utf8)
+                if text == nil {
+                    // Lossy decode keeps Latin-1-ish sources searchable.
+                    text = String(decoding: data, as: UTF8.self)
+                }
+                guard let body = text else { continue }
+                let matches = search(body, pattern: pattern, options: options)
                 if !matches.isEmpty {
                     results.append((fileURL, matches))
                 }
