@@ -48,6 +48,16 @@ class MainWindowController: NSViewController {
     private func setupNotificationObservers() {
         NotificationCenter.default.addObserver(self, selector: #selector(handleTabCloseRequested(_:)), name: NSNotification.Name("TabCloseRequested"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleDocumentModified(_:)), name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
+        // Any close path (menu toggle, Escape, × button) must restore the
+        // editor to full height. Previously nothing observed this notice.
+        NotificationCenter.default.addObserver(self, selector: #selector(handleFindBarClosed(_:)), name: NSNotification.Name("FindBarClosed"), object: nil)
+    }
+
+    @objc private func handleFindBarClosed(_ notification: Notification) {
+        updateLayout()
+        if let editor = editorContainer {
+            view.window?.makeFirstResponder(editor.textView)
+        }
     }
     
     @objc private func handleTabCloseRequested(_ notification: Notification) {
@@ -78,6 +88,12 @@ class MainWindowController: NSViewController {
         let status = StatusBar()
         view.addSubview(status)
         statusBar = status
+
+        // Width-following masks so interim resizes stay sane even before
+        // viewDidLayout runs the authoritative pass.
+        tabBar.autoresizingMask = [.width, .minYMargin]
+        editor.autoresizingMask = [.width, .height]
+        status.autoresizingMask = [.width, .maxYMargin]
         
         let find = FindBar()
         view.addSubview(find)
@@ -101,24 +117,37 @@ class MainWindowController: NSViewController {
         guard let tabBar = tabBarView,
               let editor = editorContainer,
               let status = statusBar else { return }
-        
+
         let tabBarHeight: CGFloat = 32
         let statusHeight: CGFloat = 22
-        let findHeight: CGFloat = 36
-        
-        tabBar.frame = NSRect(x: 0, y: view.bounds.height - tabBarHeight, width: view.bounds.width, height: tabBarHeight)
-        
+
+        // The find bar always occupies its slot when visible; hidden state is
+        // expressed with isHidden, so a resize never leaves a stale rect for a
+        // bar that would then reappear in the wrong place.
         let findVisible = findBar?.isVisible ?? false
-        let editorTop = view.bounds.height - tabBarHeight - (findVisible ? findHeight : 0)
-        let editorHeight = editorTop - statusHeight
-        
-        editor.frame = NSRect(x: 0, y: statusHeight, width: view.bounds.width, height: max(editorHeight, 100))
-        
+        let findHeight = findBar?.preferredHeight(for: view.bounds.width) ?? 36
+        let topInset = tabBarHeight + (findVisible ? findHeight : 0)
+        let height = view.bounds.height
+
+        tabBar.frame = NSRect(x: 0, y: max(0, height - tabBarHeight), width: view.bounds.width, height: tabBarHeight)
+        findBar?.frame = NSRect(x: 0,
+                                y: max(statusHeight, height - topInset),
+                                width: view.bounds.width,
+                                height: findHeight)
+
+        let editorTop = height - topInset
+        let editorHeight = max(editorTop - statusHeight, 100)
+        editor.frame = NSRect(x: 0, y: statusHeight, width: view.bounds.width, height: editorHeight)
+
         status.frame = NSRect(x: 0, y: 0, width: view.bounds.width, height: statusHeight)
-        
-        if findVisible {
-            findBar?.frame = NSRect(x: 0, y: editorTop, width: view.bounds.width, height: findHeight)
-        }
+    }
+
+    /// Resizing the window used to leave every subview at its launch frame
+    /// (all autoresizingMask 0, updateLayout only ran on toggle), so the tab bar
+    /// and find bar ended up above the visible content area.
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        updateLayout()
     }
     
     // MARK: - Tab Management
@@ -403,6 +432,9 @@ class MainWindowController: NSViewController {
                 find.searchField.stringValue = selected
                 find.performFind()
             }
+            // Focus the field: without this the editor kept first responder and
+            // typing after Cmd+F landed in the document instead of the query.
+            view.window?.makeFirstResponder(find.searchField)
         }
         updateLayout()
     }

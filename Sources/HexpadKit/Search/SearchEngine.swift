@@ -23,6 +23,13 @@ public struct SearchMatch {
 /// Search engine for document and file operations
 public final class SearchEngine {
     
+    /// True when `pattern` compiles as a regex. SearchEngine falls back to a
+    /// literal pass on failure, so callers need this to tell the user.
+    public static func isValidRegex(_ pattern: String) -> Bool {
+        guard !pattern.isEmpty else { return true }
+        return (try? NSRegularExpression(pattern: pattern)) != nil
+    }
+
     /// Search text for matches
     public static func search(_ text: String, pattern: String, options: SearchOptions) -> [SearchMatch] {
         var matches: [SearchMatch] = []
@@ -101,7 +108,10 @@ public final class SearchEngine {
             
             let regex = try NSRegularExpression(pattern: regexPattern, options: regexOptions)
             let nsText = text as NSString
-            return regex.stringByReplacingMatches(in: text, options: [], range: NSRange(location: 0, length: nsText.length), withTemplate: replacement)
+            // Literal mode must treat the replacement as literal text too;
+            // otherwise $1 and backslashes get template-mangled.
+            let template = options.contains(.regex) ? replacement : NSRegularExpression.escapedTemplate(for: replacement)
+            return regex.stringByReplacingMatches(in: text, options: [], range: NSRange(location: 0, length: nsText.length), withTemplate: template)
         } catch {
             // Fallback to string replacement
             return text.replacingOccurrences(of: pattern, with: replacement, options: options.contains(.caseSensitive) ? [] : [.caseInsensitive])

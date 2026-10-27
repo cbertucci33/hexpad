@@ -10,6 +10,7 @@ class FindBar: NSView, NSSearchFieldDelegate {
     private let regexButton: NSButton
     private let literalButton: NSButton
     private let matchCountLabel: NSTextField
+    private let wrapButton: NSButton
     private let findNextButton: NSButton
     private let findPrevButton: NSButton
     private let replaceButton: NSButton
@@ -18,7 +19,10 @@ class FindBar: NSView, NSSearchFieldDelegate {
     
     private var currentMatchIndex = 0
     private var allMatches: [SearchMatch] = []
-    private var searchOptions: SearchOptions = []
+    // Wrap is on by default (historical behaviour) but now switchable; the
+    // other options were previously unreachable from the UI at all.
+    private var searchOptions: SearchOptions = [.wrapAround]
+    private var lastQuery = ""
     
     // Observers for document changes
     private var documentChangeObserver: NSObjectProtocol?
@@ -30,6 +34,7 @@ class FindBar: NSView, NSSearchFieldDelegate {
         regexButton = NSButton(frame: NSRect(x: 0, y: 0, width: 60, height: 24))
         literalButton = NSButton(frame: NSRect(x: 0, y: 0, width: 60, height: 24))
         matchCountLabel = NSTextField(labelWithString: "")
+        wrapButton = NSButton(frame: NSRect(x: 0, y: 0, width: 62, height: 24))
         findNextButton = NSButton(frame: NSRect(x: 0, y: 0, width: 70, height: 24))
         findPrevButton = NSButton(frame: NSRect(x: 0, y: 0, width: 90, height: 24))
         replaceButton = NSButton(frame: NSRect(x: 0, y: 0, width: 70, height: 24))
@@ -88,8 +93,15 @@ class FindBar: NSView, NSSearchFieldDelegate {
         
         matchCountLabel.font = font
         matchCountLabel.alignment = .center
-        matchCountLabel.frame = NSRect(x: 512, y: yCenter, width: 80, height: 24)
         addSubview(matchCountLabel)
+
+        wrapButton.title = "Wrap"
+        wrapButton.bezelStyle = .rounded
+        wrapButton.font = font
+        wrapButton.state = .on
+        wrapButton.target = self
+        wrapButton.action = #selector(wrapToggled)
+        addSubview(wrapButton)
         
         findPrevButton.title = "Prev"
         findPrevButton.bezelStyle = .rounded
@@ -129,8 +141,82 @@ class FindBar: NSView, NSSearchFieldDelegate {
         closeButton.font = NSFont.systemFont(ofSize: 14)
         closeButton.target = self
         closeButton.action = #selector(closeAction)
-        closeButton.frame = NSRect(x: bounds.width - 28, y: yCenter, width: 24, height: 24)
         addSubview(closeButton)
+
+        // Children are positioned in layout(), never from init-time bounds:
+        // the bar is created with an empty frame, so anything computed here
+        // would be baked at zero. Every child tracks width so a resize keeps
+        // the row usable instead of stranding controls off the right edge.
+        for child in subviews {
+            child.autoresizingMask.insert(.maxXMargin)
+        }
+        closeButton.autoresizingMask = [.minXMargin, .maxYMargin]
+
+        // The bar exists from launch but must not paint until asked for.
+        // isHidden=false at a zero frame used to leave a phantom bar whose
+        // custom isVisible flag disagreed with AppKit state from birth.
+        isHidden = true
+    }
+
+    /// Height the bar needs at a given width: one row when there is room,
+    /// two compact rows when the window is narrow (min width is 800pt, and the
+    /// single row needs ~1150pt).
+    func preferredHeight(for width: CGFloat) -> CGFloat {
+        width < 900 ? 62 : 36
+    }
+
+    /// Single place that positions the control row from the real bounds width.
+    /// Runs on every bounds change (init frame, toggle, window resize).
+    override func layout() {
+        super.layout()
+        let h: CGFloat = 24
+        let closeWidth: CGFloat = 24
+        let rightInset: CGFloat = 4
+        let twoRows = bounds.width < 900
+        let row1Y: CGFloat = twoRows ? bounds.height - h - 4 : 6
+        let row2Y: CGFloat = 6
+
+        let closeX = max(8, bounds.width - rightInset - closeWidth)
+        closeButton.frame = NSRect(x: closeX, y: row1Y, width: closeWidth, height: h)
+
+        if twoRows {
+            // Row 1: the query and replacement fields plus close.
+            let fieldWidth = max(120, (closeX - 24) / 2)
+            searchField.frame = NSRect(x: 8, y: row1Y, width: fieldWidth, height: h)
+            replaceField.frame = NSRect(x: 12 + fieldWidth, y: row1Y, width: fieldWidth, height: h)
+            // Row 2: every other control left to right.
+            var x: CGFloat = 8
+            for (control, width) in [(literalButton, 58), (regexButton, 58), (wrapButton, 62),
+                                     (matchCountLabel, 80), (findPrevButton, 56), (findNextButton, 56),
+                                     (replaceButton, 70), (replaceAllButton, 80)] as [(NSView, CGFloat)] {
+                control.frame = NSRect(x: x, y: row2Y, width: width, height: h)
+                x += width + 6
+            }
+            return
+        }
+
+        searchField.frame = NSRect(x: 8, y: row1Y, width: 180, height: h)
+        replaceField.frame = NSRect(x: 196, y: row1Y, width: 180, height: h)
+        literalButton.frame = NSRect(x: 384, y: row1Y, width: 58, height: h)
+        regexButton.frame = NSRect(x: 446, y: row1Y, width: 58, height: h)
+        wrapButton.frame = NSRect(x: 508, y: row1Y, width: 62, height: h)
+        matchCountLabel.frame = NSRect(x: 574, y: row1Y, width: 80, height: h)
+        findPrevButton.frame = NSRect(x: 658, y: row1Y, width: 56, height: h)
+        findNextButton.frame = NSRect(x: 718, y: row1Y, width: 56, height: h)
+
+        // Replace controls hug the close button on the right.
+        let replaceAllX = max(8, closeX - 84)
+        let replaceX = max(8, replaceAllX - 74)
+        replaceAllButton.frame = NSRect(x: replaceAllX, y: row1Y, width: 80, height: h)
+        replaceButton.frame = NSRect(x: replaceX, y: row1Y, width: 70, height: h)
+
+        // Just under the two-row breakpoint the fields yield first.
+        if replaceX < 780 {
+            let squeeze = max(0, 780 - replaceX)
+            let fieldWidth = max(56, 180 - squeeze / 2)
+            searchField.frame.size.width = fieldWidth
+            replaceField.frame.size.width = fieldWidth
+        }
     }
     
     // Single source of truth for visibility. The view stays in its parent
@@ -163,8 +249,19 @@ class FindBar: NSView, NSSearchFieldDelegate {
             hide()
         }
     }
+
+    /// Escape while the search field (or any child) has focus arrives here as
+    /// cancelOperation, not as keyDown, because the field editor swallows the
+    /// key first. Without this the bar could not be closed by keyboard at all.
+    override func cancelOperation(_ sender: Any?) {
+        hide()
+    }
     
     @objc private func searchTextChanged() {
+        // Enter fires this action too, after the delegate already advanced a
+        // match. Skip the redundant re-find when the query did not change so
+        // one Enter press advances exactly one match instead of two.
+        if searchField.stringValue == lastQuery, !allMatches.isEmpty { return }
         performFind()
     }
     
@@ -181,6 +278,14 @@ class FindBar: NSView, NSSearchFieldDelegate {
             literalButton.state = .on
         }
         performFind()
+    }
+
+    @objc private func wrapToggled() {
+        if wrapButton.state == .on {
+            searchOptions.insert(.wrapAround)
+        } else {
+            searchOptions.remove(.wrapAround)
+        }
     }
     
     @objc private func findNextAction() {
@@ -218,32 +323,42 @@ class FindBar: NSView, NSSearchFieldDelegate {
         hide()
     }
     
-    func performFind() {
+    func performFind(select: Bool = true) {
         guard let doc = tabStore?.selectedDocument, let textView = editorContainer?.textView else { return }
-        
+
         let pattern = searchField.stringValue
+        lastQuery = pattern
         allMatches = SearchEngine.search(doc.text, pattern: pattern, options: searchOptions)
-        
+
         if pattern.isEmpty {
             // Empty query: show nothing
             matchCountLabel.stringValue = ""
             currentMatchIndex = 0
             return
         }
-        
+
         if allMatches.isEmpty {
-            matchCountLabel.stringValue = "No matches"
+            // Distinguish a broken regex from an honest zero-result search:
+            // SearchEngine silently degrades invalid regex to a literal pass.
+            if searchOptions.contains(.regex), !SearchEngine.isValidRegex(pattern) {
+                matchCountLabel.stringValue = "Bad regex"
+            } else {
+                matchCountLabel.stringValue = "No matches"
+            }
             currentMatchIndex = 0
             return
         }
-        
-        // Show "current of total" format
-        matchCountLabel.stringValue = "\(currentMatchIndex + 1) of \(allMatches.count)"
-        
+
+        // Clamp BEFORE labelling so the counter can never read "7 of 3"
+        // after an edit shrank the match list.
         if currentMatchIndex >= allMatches.count {
             currentMatchIndex = 0
         }
-        
+        matchCountLabel.stringValue = "\(currentMatchIndex + 1) of \(allMatches.count)"
+
+        // Selection is only applied on explicit navigation/toggle so that
+        // typing in the document does not yank the caret to a match.
+        guard select else { return }
         let match = allMatches[currentMatchIndex]
         textView.setSelectedRange(match.range)
         textView.scrollRangeToVisible(match.range)
@@ -251,12 +366,22 @@ class FindBar: NSView, NSSearchFieldDelegate {
     
     func findNext() {
         guard !allMatches.isEmpty else { return }
+        if !searchOptions.contains(.wrapAround), currentMatchIndex == allMatches.count - 1 {
+            NSSound.beep()
+            updateMatchDisplay()
+            return
+        }
         currentMatchIndex = (currentMatchIndex + 1) % allMatches.count
         updateMatchDisplay()
     }
     
     func findPrevious() {
         guard !allMatches.isEmpty else { return }
+        if !searchOptions.contains(.wrapAround), currentMatchIndex == 0 {
+            NSSound.beep()
+            updateMatchDisplay()
+            return
+        }
         currentMatchIndex = (currentMatchIndex - 1 + allMatches.count) % allMatches.count
         updateMatchDisplay()
     }
@@ -291,7 +416,8 @@ class FindBar: NSView, NSSearchFieldDelegate {
             guard let self, !isFinding else { return }
             isFinding = true
             defer { isFinding = false }
-            performFind()
+            // Recompute counts without stealing the caret: the user is mid-edit.
+            performFind(select: false)
         }
     }
     

@@ -53,11 +53,31 @@ class StatusBar: NSView {
         lang.frame = NSRect(x: 370, y: (height - 14) / 2, width: 100, height: 14)
         addSubview(lang)
         languageLabel = lang
-        
-        let separator = NSView(frame: NSRect(x: 0, y: height - 1, width: bounds.width, height: 1))
+
+        let separator = NSView(frame: .zero)
         separator.wantsLayer = true
         separator.layer?.backgroundColor = NSColor.separatorColor.cgColor
+        separator.autoresizingMask = [.width, .minYMargin]
+        separatorView = separator
         addSubview(separator)
+    }
+
+    private var separatorView: NSView?
+
+    /// Labels are laid out here, not in setupUI: the bar is created with a
+    /// zero-height frame and StatusBar never relaid out, so every label used
+    /// to sit at y=-7 (half below the bar) with a zero-width separator.
+    override func layout() {
+        super.layout()
+        let h = bounds.height
+        let labelHeight: CGFloat = 14
+        let y = max(0, (h - labelHeight) / 2)
+        let xs: [(CGFloat, CGFloat)] = [(8, 120), (136, 100), (244, 40), (292, 70), (370, 100)]
+        let labels = [positionLabel, selectionLabel, eolLabel, encodingLabel, languageLabel]
+        for (label, geo) in zip(labels, xs) {
+            label?.frame = NSRect(x: geo.0, y: y, width: geo.1, height: labelHeight)
+        }
+        separatorView?.frame = NSRect(x: 0, y: h - 1, width: bounds.width, height: 1)
     }
     
     func update(with doc: DocumentModel?, textView: NSTextView?) {

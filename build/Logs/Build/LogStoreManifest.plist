@@ -1,0 +1,137 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>logFormatVersion</key>
+	<integer>13</integer>
+	<key>logs</key>
+	<dict>
+		<key>74B6A717-2D0B-4599-8246-CC6AB0D3C5D3</key>
+		<dict>
+			<key>className</key>
+			<string>IDECommandLineBuildLog</string>
+			<key>documentTypeString</key>
+			<string>&lt;nil&gt;</string>
+			<key>domainType</key>
+			<string>Xcode.IDEActivityLogDomainType.BuildLog</string>
+			<key>fileName</key>
+			<string>74B6A717-2D0B-4599-8246-CC6AB0D3C5D3.xcactivitylog</string>
+			<key>hasPrimaryLog</key>
+			<true/>
+			<key>primaryObservable</key>
+			<dict>
+				<key>highLevelStatus</key>
+				<string>S</string>
+				<key>totalNumberOfAnalyzerIssues</key>
+				<integer>0</integer>
+				<key>totalNumberOfErrors</key>
+				<integer>0</integer>
+				<key>totalNumberOfTestFailures</key>
+				<integer>0</integer>
+				<key>totalNumberOfWarnings</key>
+				<integer>0</integer>
+			</dict>
+			<key>schemeIdentifier-containerName</key>
+			<string>Hexpad project</string>
+			<key>schemeIdentifier-schemeName</key>
+			<string>Hexpad</string>
+			<key>schemeIdentifier-sharedScheme</key>
+			<integer>1</integer>
+			<key>signature</key>
+			<string>Building project Hexpad with scheme Hexpad and configuration Debug</string>
+			<key>timeStartedRecording</key>
+			<real>814818051.67766201</real>
+			<key>timeStoppedRecording</key>
+			<real>814818052.10366094</real>
+			<key>title</key>
+			<string>Building project Hexpad with scheme Hexpad and configuration Debug</string>
+			<key>uniqueIdentifier</key>
+			<string>74B6A717-2D0B-4599-8246-CC6AB0D3C5D3</string>
+		</dict>
+		<key>E2F976A7-C3E3-45B3-9233-81BC3B026A8F</key>
+		<dict>
+			<key>className</key>
+			<string>IDECommandLineBuildLog</string>
+			<key>documentTypeString</key>
+			<string>&lt;nil&gt;</string>
+			<key>domainType</key>
+			<string>Xcode.IDEActivityLogDomainType.BuildLog</string>
+			<key>fileName</key>
+			<string>E2F976A7-C3E3-45B3-9233-81BC3B026A8F.xcactivitylog</string>
+			<key>hasPrimaryLog</key>
+			<true/>
+			<key>primaryObservable</key>
+			<dict>
+				<key>highLevelStatus</key>
+				<string>W</string>
+				<key>totalNumberOfAnalyzerIssues</key>
+				<integer>0</integer>
+				<key>totalNumberOfErrors</key>
+				<integer>0</integer>
+				<key>totalNumberOfTestFailures</key>
+				<integer>0</integer>
+				<key>totalNumberOfWarnings</key>
+				<integer>2</integer>
+			</dict>
+			<key>schemeIdentifier-containerName</key>
+			<string>Hexpad project</string>
+			<key>schemeIdentifier-schemeName</key>
+			<string>Hexpad</string>
+			<key>schemeIdentifier-sharedScheme</key>
+			<integer>1</integer>
+			<key>signature</key>
+			<string>Building project Hexpad with scheme Hexpad and configuration Debug</string>
+			<key>timeStartedRecording</key>
+			<real>814818044.15687597</real>
+			<key>timeStoppedRecording</key>
+			<real>814818046.08052897</real>
+			<key>title</key>
+			<string>Building project Hexpad with scheme Hexpad and configuration Debug</string>
+			<key>uniqueIdentifier</key>
+			<string>E2F976A7-C3E3-45B3-9233-81BC3B026A8F</string>
+		</dict>
+		<key>E8CB6070-9E04-4091-BB68-92A02C92755B</key>
+		<dict>
+			<key>className</key>
+			<string>IDECommandLineBuildLog</string>
+			<key>documentTypeString</key>
+			<string>&lt;nil&gt;</string>
+			<key>domainType</key>
+			<string>Xcode.IDEActivityLogDomainType.BuildLog</string>
+			<key>fileName</key>
+			<string>E8CB6070-9E04-4091-BB68-92A02C92755B.xcactivitylog</string>
+			<key>hasPrimaryLog</key>
+			<true/>
+			<key>primaryObservable</key>
+			<dict>
+				<key>highLevelStatus</key>
+				<string>W</string>
+				<key>totalNumberOfAnalyzerIssues</key>
+				<integer>0</integer>
+				<key>totalNumberOfErrors</key>
+				<integer>0</integer>
+				<key>totalNumberOfTestFailures</key>
+				<integer>0</integer>
+				<key>totalNumberOfWarnings</key>
+				<integer>2</integer>
+			</dict>
+			<key>schemeIdentifier-containerName</key>
+			<string>Hexpad project</string>
+			<key>schemeIdentifier-schemeName</key>
+			<string>Hexpad</string>
+			<key>schemeIdentifier-sharedScheme</key>
+			<integer>1</integer>
+			<key>signature</key>
+			<string>Building project Hexpad with scheme Hexpad and configuration Debug</string>
+			<key>timeStartedRecording</key>
+			<real>814818144.68196297</real>
+			<key>timeStoppedRecording</key>
+			<real>814818145.98696303</real>
+			<key>title</key>
+			<string>Building project Hexpad with scheme Hexpad and configuration Debug</string>
+			<key>uniqueIdentifier</key>
+			<string>E8CB6070-9E04-4091-BB68-92A02C92755B</string>
+		</dict>
+	</dict>
+</dict>
+</plist>

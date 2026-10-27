@@ -1,0 +1,6 @@
+Target dependency graph (3 targets)
+Target 'Hexpad' in project 'Hexpad'
+➜ Explicit dependency on target 'HexpadKit-product' in project 'HexpadKit'
+Target 'HexpadKit-product' in project 'HexpadKit'
+➜ Explicit dependency on target 'HexpadKit' in project 'HexpadKit'
+Target 'HexpadKit' in project 'HexpadKit' (no dependencies)
