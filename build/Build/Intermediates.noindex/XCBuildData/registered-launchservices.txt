@@ -21,3 +21,5 @@
 /Users/cb/.openclaw/workspace/projects/hexpad/hexpad/build/Build/Products/Debug/Hexpad.app
 /Users/cb/.openclaw/workspace/projects/hexpad/hexpad/build/Build/Products/Debug/Hexpad.app
 /Users/cb/.openclaw/workspace/projects/hexpad/hexpad/build/Build/Products/Debug/Hexpad.app
+/Users/cb/.openclaw/workspace/projects/hexpad/hexpad/build/Build/Products/Debug/Hexpad.app
+/Users/cb/.openclaw/workspace/projects/hexpad/hexpad/build/Build/Products/Debug/Hexpad.app

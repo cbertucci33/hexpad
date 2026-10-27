@@ -195,6 +195,132 @@
 			<key>uniqueIdentifier</key>
 			<string>BF5C5575-12D6-4A49-A889-0F145DA77205</string>
 		</dict>
+		<key>D2598014-D3A5-4074-9B3E-CDA009A9E835</key>
+		<dict>
+			<key>auxiliaryLogUniqueIdentifier</key>
+			<string>7068CDDB-D289-451F-A1E1-6E4BB4758EB4</string>
+			<key>auxiliaryObservable</key>
+			<dict>
+				<key>highLevelStatus</key>
+				<string>S</string>
+				<key>totalNumberOfAnalyzerIssues</key>
+				<integer>0</integer>
+				<key>totalNumberOfErrors</key>
+				<integer>0</integer>
+				<key>totalNumberOfTestFailures</key>
+				<integer>0</integer>
+				<key>totalNumberOfWarnings</key>
+				<integer>0</integer>
+			</dict>
+			<key>className</key>
+			<string>IDESchemeActionsInvocationRecord</string>
+			<key>documentTypeString</key>
+			<string>&lt;nil&gt;</string>
+			<key>domainType</key>
+			<string>com.apple.dt.unit.cocoaUnitTest</string>
+			<key>fileName</key>
+			<string>Test-Hexpad-2026.10.27_13-37-08--0500.xcresult</string>
+			<key>hasAuxiliaryLog</key>
+			<true/>
+			<key>hasCoverageData</key>
+			<true/>
+			<key>hasPrimaryLog</key>
+			<true/>
+			<key>primaryObservable</key>
+			<dict>
+				<key>highLevelStatus</key>
+				<string>S</string>
+				<key>totalCodeCoverage</key>
+				<real>0.44073834196891193</real>
+				<key>totalNumberOfAnalyzerIssues</key>
+				<integer>0</integer>
+				<key>totalNumberOfErrors</key>
+				<integer>0</integer>
+				<key>totalNumberOfTestFailures</key>
+				<integer>0</integer>
+				<key>totalNumberOfWarnings</key>
+				<integer>0</integer>
+			</dict>
+			<key>schemeIdentifier-containerName</key>
+			<string>Hexpad project</string>
+			<key>schemeIdentifier-schemeName</key>
+			<string>Hexpad</string>
+			<key>schemeIdentifier-sharedScheme</key>
+			<integer>1</integer>
+			<key>signature</key>
+			<string>Test Hexpad</string>
+			<key>timeStartedRecording</key>
+			<real>814819028.78871095</real>
+			<key>timeStoppedRecording</key>
+			<real>814819030.99825799</real>
+			<key>title</key>
+			<string>Test Hexpad</string>
+			<key>uniqueIdentifier</key>
+			<string>D2598014-D3A5-4074-9B3E-CDA009A9E835</string>
+		</dict>
+		<key>F5CC36A3-EE4B-481E-B6CD-00E8294A4693</key>
+		<dict>
+			<key>auxiliaryLogUniqueIdentifier</key>
+			<string>4FE57C90-C7C0-46DC-A481-96095607E5BF</string>
+			<key>auxiliaryObservable</key>
+			<dict>
+				<key>highLevelStatus</key>
+				<string>W</string>
+				<key>totalNumberOfAnalyzerIssues</key>
+				<integer>0</integer>
+				<key>totalNumberOfErrors</key>
+				<integer>0</integer>
+				<key>totalNumberOfTestFailures</key>
+				<integer>0</integer>
+				<key>totalNumberOfWarnings</key>
+				<integer>2</integer>
+			</dict>
+			<key>className</key>
+			<string>IDESchemeActionsInvocationRecord</string>
+			<key>documentTypeString</key>
+			<string>&lt;nil&gt;</string>
+			<key>domainType</key>
+			<string>com.apple.dt.unit.cocoaUnitTest</string>
+			<key>fileName</key>
+			<string>Test-Hexpad-2026.10.27_13-36-59--0500.xcresult</string>
+			<key>hasAuxiliaryLog</key>
+			<true/>
+			<key>hasCoverageData</key>
+			<true/>
+			<key>hasPrimaryLog</key>
+			<true/>
+			<key>primaryObservable</key>
+			<dict>
+				<key>highLevelStatus</key>
+				<string>W</string>
+				<key>totalCodeCoverage</key>
+				<real>0.5021891418563923</real>
+				<key>totalNumberOfAnalyzerIssues</key>
+				<integer>0</integer>
+				<key>totalNumberOfErrors</key>
+				<integer>0</integer>
+				<key>totalNumberOfTestFailures</key>
+				<integer>0</integer>
+				<key>totalNumberOfWarnings</key>
+				<integer>2</integer>
+			</dict>
+			<key>schemeIdentifier-containerName</key>
+			<string>Hexpad project</string>
+			<key>schemeIdentifier-schemeName</key>
+			<string>Hexpad</string>
+			<key>schemeIdentifier-sharedScheme</key>
+			<integer>1</integer>
+			<key>signature</key>
+			<string>Test Hexpad</string>
+			<key>timeStartedRecording</key>
+			<real>814819019.00442195</real>
+			<key>timeStoppedRecording</key>
+			<real>814819023.12893796</real>
+			<key>title</key>
+			<string>Test Hexpad</string>
+			<key>uniqueIdentifier</key>
+			<string>F5CC36A3-EE4B-481E-B6CD-00E8294A4693</string>
+		</dict>
 		<key>FB912FC7-8C89-4E20-9903-124636D5808B</key>
 		<dict>
 			<key>auxiliaryLogUniqueIdentifier</key>

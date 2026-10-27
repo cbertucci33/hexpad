@@ -13,27 +13,27 @@
 				<key>testCloseButtonReachableAtWideWidth</key>
 				<dict>
 					<key>mrnet</key>
-					<real>0.0016499757766723633</real>
+					<real>0.0016100406646728516</real>
 				</dict>
 				<key>testFindBarChildrenStayInsideWideBounds</key>
 				<dict>
 					<key>mrnet</key>
-					<real>0.001047968864440918</real>
+					<real>0.001011967658996582</real>
 				</dict>
 				<key>testFindBarNarrowUsesTwoRowsWithoutOverlap</key>
 				<dict>
 					<key>mrnet</key>
-					<real>0.0010260343551635742</real>
+					<real>0.0010319948196411133</real>
 				</dict>
 				<key>testFindBarStartsHidden</key>
 				<dict>
 					<key>mrnet</key>
-					<real>0.00090205669403076172</real>
+					<real>0.0010759830474853516</real>
 				</dict>
 				<key>testStatusBarLabelsVerticallyCentred</key>
 				<dict>
 					<key>mrnet</key>
-					<real>0.00064003467559814453</real>
+					<real>0.00070607662200927734</real>
 				</dict>
 			</dict>
 		</dict>

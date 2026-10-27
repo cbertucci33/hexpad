@@ -40,9 +40,11 @@ class MainWindowController: NSViewController {
         super.viewDidLoad()
         addNewTab()
         setupNotificationObservers()
+        startFileWatching()
     }
-    
+
     deinit {
+        stopFileWatching()
         NotificationCenter.default.removeObserver(self)
     }
     
@@ -501,6 +503,60 @@ class MainWindowController: NSViewController {
         findBar?.findPrevious()
     }
     
+    // MARK: - External change monitoring
+
+    /// Watches open files for on-disk edits by other programs. Spec requires a
+    /// reload path; the model had no file monitoring at all. A clean buffer
+    /// reloads silently, a dirty buffer keeps its edits and flags the tab.
+    private var watchTimer: Timer?
+    private var seenModDates: [UUID: Date] = [:]
+
+    private func startFileWatching() {
+        stopFileWatching()
+        let timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            self?.checkExternalChanges()
+        }
+        timer.tolerance = 0.5
+        watchTimer = timer
+    }
+
+    private func stopFileWatching() {
+        watchTimer?.invalidate()
+        watchTimer = nil
+    }
+
+    private func checkExternalChanges() {
+        for doc in tabStore.documents {
+            guard let path = doc.filePath?.path else { continue }
+            let attrs = try? FileManager.default.attributesOfItem(atPath: path)
+            guard let modDate = attrs?[.modificationDate] as? Date else { continue }
+
+            // First sighting records the baseline, no reload.
+            guard let previous = seenModDates[doc.id] else {
+                seenModDates[doc.id] = modDate
+                continue
+            }
+            guard modDate > previous else { continue }
+            seenModDates[doc.id] = modDate
+
+            guard !doc.unsavedChanges, FileManager.default.fileExists(atPath: path) else {
+                // Dirty buffer: keep the user's edits, just note the change.
+                doc.setModified(true)
+                continue
+            }
+            guard let data = try? Data(contentsOf: doc.filePath!) else { continue }
+            let nsEnc = String.Encoding(rawValue: EncodingDetective.nsEncoding(from: doc.encoding))
+            guard let text = String(data: data, encoding: nsEnc), text != doc.text else { continue }
+            doc.text = text
+            if doc === tabStore.selectedDocument {
+                updateEditor()
+            } else {
+                refreshTabBar()
+            }
+            doc.setModified(false)
+        }
+    }
+
     // MARK: - View
     
     func toggleWordWrap() {
