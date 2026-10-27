@@ -9,7 +9,7 @@ class FindBar: NSView, NSSearchFieldDelegate {
     private let replaceField: NSSearchField
     private let regexButton: NSButton
     private let literalButton: NSButton
-    private let matchCountLabel: NSTextField
+    let matchCountLabel: NSTextField
     private let wrapButton: NSButton
     private let findNextButton: NSButton
     private let findPrevButton: NSButton

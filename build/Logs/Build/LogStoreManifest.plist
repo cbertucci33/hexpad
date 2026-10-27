@@ -6,6 +6,48 @@
 	<integer>13</integer>
 	<key>logs</key>
 	<dict>
+		<key>71AC3633-D444-4EDD-8729-8BB99084DD88</key>
+		<dict>
+			<key>className</key>
+			<string>IDECommandLineBuildLog</string>
+			<key>documentTypeString</key>
+			<string>&lt;nil&gt;</string>
+			<key>domainType</key>
+			<string>Xcode.IDEActivityLogDomainType.BuildLog</string>
+			<key>fileName</key>
+			<string>71AC3633-D444-4EDD-8729-8BB99084DD88.xcactivitylog</string>
+			<key>hasPrimaryLog</key>
+			<true/>
+			<key>primaryObservable</key>
+			<dict>
+				<key>highLevelStatus</key>
+				<string>W</string>
+				<key>totalNumberOfAnalyzerIssues</key>
+				<integer>0</integer>
+				<key>totalNumberOfErrors</key>
+				<integer>0</integer>
+				<key>totalNumberOfTestFailures</key>
+				<integer>0</integer>
+				<key>totalNumberOfWarnings</key>
+				<integer>2</integer>
+			</dict>
+			<key>schemeIdentifier-containerName</key>
+			<string>Hexpad project</string>
+			<key>schemeIdentifier-schemeName</key>
+			<string>Hexpad</string>
+			<key>schemeIdentifier-sharedScheme</key>
+			<integer>1</integer>
+			<key>signature</key>
+			<string>Building project Hexpad with scheme Hexpad and configuration Debug</string>
+			<key>timeStartedRecording</key>
+			<real>814818389.82953596</real>
+			<key>timeStoppedRecording</key>
+			<real>814818391.25949299</real>
+			<key>title</key>
+			<string>Building project Hexpad with scheme Hexpad and configuration Debug</string>
+			<key>uniqueIdentifier</key>
+			<string>71AC3633-D444-4EDD-8729-8BB99084DD88</string>
+		</dict>
 		<key>74B6A717-2D0B-4599-8246-CC6AB0D3C5D3</key>
 		<dict>
 			<key>className</key>
