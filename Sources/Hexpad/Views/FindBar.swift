@@ -301,9 +301,10 @@ class FindBar: NSView, NSSearchFieldDelegate {
         let matches = SearchEngine.search(doc.text, pattern: searchField.stringValue, options: searchOptions)
         guard currentMatchIndex < matches.count else { return }
         
-        // Replace ONLY the current match, not all occurrences.
-        let newContent = SearchEngine.replaceRange(in: doc.text, replacement: replaceField.stringValue, range: matches[currentMatchIndex].range)
-        tabStore?.selectedDocument?.text = newContent
+        // Replace ONLY the current match, not all occurrences. Mutating the
+        // document's shared storage updates the visible editor in place and
+        // registers undo, unlike the old model-only string assignment.
+        doc.replaceCharacters(in: matches[currentMatchIndex].range, with: replaceField.stringValue)
         
         // Re-run the find against the new content, then advance to the next match.
         performFind()
@@ -314,7 +315,10 @@ class FindBar: NSView, NSSearchFieldDelegate {
         guard let doc = tabStore?.selectedDocument, !searchField.stringValue.isEmpty else { return }
         let matches = SearchEngine.search(doc.text, pattern: searchField.stringValue, options: searchOptions)
         let newContent = SearchEngine.replace(doc.text, pattern: searchField.stringValue, replacement: replaceField.stringValue, options: searchOptions)
-        tabStore?.selectedDocument?.text = newContent
+        // Replace all goes through the shared storage as one undoable edit, so
+        // the editor reflects it immediately instead of silently keeping the
+        // old visible text.
+        doc.replaceAllText(with: newContent)
         performFind()
         matchCountLabel.stringValue = "\(matches.count) replaced"
     }
