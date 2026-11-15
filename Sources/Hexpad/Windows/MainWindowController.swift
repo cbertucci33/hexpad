@@ -285,8 +285,7 @@ class MainWindowController: NSViewController {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        // Filter to text-ish files
-        panel.allowedContentTypes = [.plainText, .sourceCode, .script]
+        // Accept any file type so users can open documents of arbitrary kind.
         
         guard panel.runModal() == .OK, let url = panel.url else { return }
         openFile(atURL: url)

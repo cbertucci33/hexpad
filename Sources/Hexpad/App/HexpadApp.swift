@@ -119,6 +119,8 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         
         // File menu
         let fileMenu = NSMenu(title: "File")
+        let newWindowItem = NSMenuItem(title: "New Window", action: #selector(newWindow), keyEquivalent: "n")
+        newWindowItem.target = self
         let newItem = NSMenuItem(title: "New Tab", action: #selector(newTab), keyEquivalent: "t")
         newItem.target = self
         let openItem = NSMenuItem(title: "Open...", action: #selector(openFile), keyEquivalent: "o")
@@ -139,6 +141,7 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         openRecentItem.submenu = openRecentMenu
         self.openRecentMenu = openRecentMenu
         
+        fileMenu.addItem(newWindowItem)
         fileMenu.addItem(newItem)
         fileMenu.addItem(openItem)
         fileMenu.addItem(openRecentItem)
@@ -465,6 +468,10 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Menu Actions
     
     @objc private func newTab() {
+        windowController?.addNewTab()
+    }
+    
+    @objc private func newWindow() {
         windowController?.addNewTab()
     }
     
