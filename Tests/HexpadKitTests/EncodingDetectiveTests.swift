@@ -22,6 +22,24 @@ final class EncodingDetectiveTests: XCTestCase {
         XCTAssertEqual(EncodingDetective.detect(data), "UTF-8")
     }
     
+    func testValidMultiByteUTF8NoBOM() {
+        // "é" = U+00E9 -> bytes C3 A9 (valid UTF-8, no BOM)
+        let data = Data([0x48, 0x65, 0x6C, 0x6C, 0x6F, 0xC3, 0xA9])
+        XCTAssertEqual(EncodingDetective.detect(data), "UTF-8")
+    }
+    
+    func testCP1252HighByteTextNoBOM() {
+        // Smart-quote bytes 0x93 0x94 0x92 are invalid UTF-8 alone; high-byte pattern -> CP1252
+        let data = Data([0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x93, 0x94, 0x92])
+        XCTAssertEqual(EncodingDetective.detect(data), "Windows-1252")
+    }
+    
+    func testUTF16WithoutBOMByNullDensity() {
+        // "He" in UTF-16LE without BOM: 48 00 65 00 -> half null bytes
+        let data = Data([0x48, 0x00, 0x65, 0x00])
+        XCTAssertEqual(EncodingDetective.detect(data), "UTF-16")
+    }
+    
     func testEmptyData() {
         let data = Data()
         XCTAssertEqual(EncodingDetective.detect(data), "UTF-8")
