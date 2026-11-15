@@ -97,6 +97,56 @@ final class DocumentModelTests: XCTestCase {
         XCTAssertEqual(restored?.eolType, "CRLF")
         XCTAssertEqual(restored?.language, "Python")
     }
+
+    // MARK: - EOL detection and preservation
+
+    func testInitialEOLDetectedFromText() {
+        XCTAssertEqual(DocumentModel(text: "a\r\nb").eolType, "CRLF")
+        XCTAssertEqual(DocumentModel(text: "a\nb").eolType, "LF")
+        XCTAssertEqual(DocumentModel(text: "a\rb").eolType, "CR")
+        XCTAssertEqual(DocumentModel(text: "").eolType, "LF", "empty documents use the LF default")
+    }
+
+    func testExplicitEOLTypeOverridesDetection() {
+        let doc = DocumentModel(text: "a\r\nb", eolType: "CR")
+        XCTAssertEqual(doc.eolType, "CR")
+    }
+
+    func testSavePreservesCRLF() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hexpad-eol-\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        try "one\r\ntwo\r\n".write(to: tmp, atomically: true, encoding: .utf8)
+        let onDisk = try String(contentsOf: tmp, encoding: .utf8)
+
+        let doc = DocumentModel(text: onDisk, filePath: tmp)
+        XCTAssertEqual(doc.eolType, "CRLF", "opening a CRLF file must record its style")
+
+        // The editor buffer uses LF; saving must put CRLF back on disk.
+        doc.text = "one\ntwo\nthree\n"
+        try doc.save()
+
+        let saved = try Data(contentsOf: tmp)
+        XCTAssertEqual(saved, Data("one\r\ntwo\r\nthree\r\n".utf8))
+    }
+
+    func testSavePreservesCR() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hexpad-eol-cr-\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        try "one\rtwo\r".write(to: tmp, atomically: true, encoding: .utf8)
+        let onDisk = try String(contentsOf: tmp, encoding: .utf8)
+
+        let doc = DocumentModel(text: onDisk, filePath: tmp)
+        XCTAssertEqual(doc.eolType, "CR")
+
+        doc.text = "one\ntwo\nthree\n"
+        try doc.save()
+
+        XCTAssertEqual(try Data(contentsOf: tmp), Data("one\rtwo\rthree\r".utf8))
+    }
     
     func testSessionWithoutFilePath() {
         let doc = DocumentModel(text: "untitled")

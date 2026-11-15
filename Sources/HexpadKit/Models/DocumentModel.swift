@@ -49,18 +49,25 @@ public final class DocumentModel: Identifiable, ObservableObject {
     private var _language: String = "Plain Text"
     
     public var encoding: String { _encoding }
+
+    /// The line-ending style used when this document is saved: `"CRLF"`,
+    /// `"LF"` or `"CR"`. Detected from the initial text unless the caller
+    /// declares one explicitly (a restored session or `convertEOL`).
     public var eolType: String { _eolType }
+
     public var language: String { _language }
     public func setLanguage(_ language: String) { _language = language }
     public func setEncoding(_ encoding: String) { _encoding = encoding }
     
-    public init(text: String = "", filePath: URL? = nil, encoding: String = "UTF-8", eolType: String = "LF") {
+    public init(text: String = "", filePath: URL? = nil, encoding: String = "UTF-8", eolType: String? = nil) {
         self.id = UUID()
         self.filePath = filePath
         self.textStorage = NSTextStorage(string: text)
         self.name = filePath?.lastPathComponent ?? "Untitled"
         self._encoding = encoding
-        self._eolType = eolType
+        // Preserve the file's existing line endings on the first save. Callers
+        // that know better (session restore, explicit conversion) pass a style.
+        self._eolType = eolType ?? EOLDetective.detect(text)
         self._originalText = text  // a freshly created doc is clean, saved or not
         if let filePath {
             do {
@@ -122,38 +129,32 @@ public final class DocumentModel: Identifiable, ObservableObject {
         guard let filePath else {
             throw DocumentError.noFilePath
         }
-        let enc = String.Encoding(rawValue: EncodingDetective.nsEncoding(from: self.encoding))
-        guard let data = self.text.data(using: enc) else {
-            throw DocumentError.saveFailed("cannot encode text as \(self.encoding)")
-        }
-        try data.write(to: filePath, options: .atomic)
+        try encodedData().write(to: filePath, options: .atomic)
         self.setModified(false)
     }
     
     public func saveAs(to url: URL) throws {
-        let enc = String.Encoding(rawValue: EncodingDetective.nsEncoding(from: self.encoding))
-        guard let data = self.text.data(using: enc) else {
-            throw DocumentError.saveFailed("cannot encode text as \(self.encoding)")
-        }
-        try data.write(to: url, options: .atomic)
+        try encodedData().write(to: url, options: .atomic)
         self.filePath = url
         self.name = url.lastPathComponent
         self.setModified(false)
     }
+
+    /// Encodes the buffer for disk using the document's encoding and declared
+    /// line-ending style. The editor stores newlines as LF internally, so the
+    /// text is converted back to `eolType` here; otherwise every save would
+    /// silently rewrite CRLF/CR files as LF.
+    private func encodedData() throws -> Data {
+        let enc = String.Encoding(rawValue: EncodingDetective.nsEncoding(from: self.encoding))
+        let serialized = EOLDetective.converting(self.text, to: self.eolType)
+        guard let data = serialized.data(using: enc) else {
+            throw DocumentError.saveFailed("cannot encode text as \(self.encoding)")
+        }
+        return data
+    }
     
     public func convertEOL(to newType: String) {
-        let normalized = self.text
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .replacingOccurrences(of: "\r", with: "\n")
-        
-        switch newType {
-        case "CRLF":
-            self.text = normalized.replacingOccurrences(of: "\n", with: "\r\n")
-        case "CR":
-            self.text = normalized.replacingOccurrences(of: "\n", with: "\r")
-        default:
-            self.text = normalized
-        }
+        self.text = EOLDetective.converting(self.text, to: newType)
         self._eolType = newType
     }
     
