@@ -172,6 +172,7 @@ enum KeybindingStore {
         switch binding.keyEquivalent {
         case EditorCommandBinding.upArrow: result += "↑"
         case EditorCommandBinding.downArrow: result += "↓"
+        case EditorCommandBinding.f2: result += "F2"
         case "\u{F702}": result += "←"
         case "\u{F703}": result += "→"
         case " ": result += "Space"

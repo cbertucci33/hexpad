@@ -67,6 +67,24 @@ class EditorContainer: NSView {
     /// Document ranges currently hidden by collapsed folds.
     var foldHiddenRanges: [NSRange] { foldHider.hiddenRanges }
 
+    // MARK: - Bookmarks
+    //
+    // Like folds, bookmarks are per document and owned here, keyed by document
+    // id so switching tabs restores the previous tab's markers. Unlike folds,
+    // `DocumentModel.bookmarkState` also persists them to the session, so the
+    // state round-trips through the model on bind/unbind and on every edit.
+
+    /// Bookmark state per document id, retained across tab switches.
+    private var bookmarkStates: [UUID: BookmarkState] = [:]
+
+    /// Bookmarks for the bound document, kept in step with its text.
+    private(set) var bookmarkModel: BookmarkModel?
+
+    /// Bookmarked logical lines the gutter should draw circles on.
+    var bookmarkLines: Set<Int> {
+        Set(bookmarkModel?.bookmarkState.lines ?? [])
+    }
+
     /// Used when no tab is selected, so the text view always has a storage.
     private let unboundStorage = NSTextStorage()
 
@@ -103,6 +121,9 @@ class EditorContainer: NSView {
     /// receives a copy of the text: switching tabs swaps the storage under the
     /// layout manager, so the model and the visible editor are one buffer.
     func bind(to document: DocumentModel?) {
+        // Persist the outgoing document's bookmarks before the pointer moves to
+        // the new document, so every tab's state survives the switch.
+        flushBookmarkState()
         let storage = document?.textStorage ?? unboundStorage
         boundDocument = document
         minimap.bind(to: document)
@@ -126,6 +147,10 @@ class EditorContainer: NSView {
         // The collapsed state survives rebuilds because it is stored per
         // document id rather than inside the model.
         bindFolds(for: document)
+
+        // Bookmarks have no language dependency, but rebinding is the moment
+        // the container adopts a tab's persisted state.
+        bindBookmarks(for: document)
     }
 
     deinit {
@@ -224,6 +249,12 @@ class EditorContainer: NSView {
         }
         ruler.onToggleFold = { [weak self] line in
             self?.toggleFold(atLine: line)
+        }
+        ruler.bookmarkLinesProvider = { [weak self] in
+            self?.bookmarkLines ?? []
+        }
+        ruler.onToggleBookmark = { [weak self] line in
+            self?.toggleBookmark(atLine: line)
         }
 
         // Fold content is hidden at the glyph level so the shared text storage
@@ -519,6 +550,74 @@ class EditorContainer: NSView {
         return FoldMargin.markers(for: foldModel)
     }
 
+    /// Toggles the bookmark on `line` for the selected document.
+    ///
+    /// - Returns: `true` when `line` exists and its bookmark was toggled.
+    @discardableResult
+    func toggleBookmark(atLine line: Int) -> Bool {
+        guard var model = bookmarkModel, model.isValid(line: line) else { return false }
+        model.toggle(line: line)
+        adoptBookmarkModel(model)
+        return true
+    }
+
+    /// Adopts `state` for the bound document, for example after a bookmark
+    /// command ran through the registry.
+    func applyBookmarkState(_ state: BookmarkState) {
+        guard let document = boundDocument else { return }
+        adoptBookmarkModel(BookmarkModel(text: document.text, bookmarkState: state))
+    }
+
+    /// Adopts a model, writing its state through to the per-document store and
+    /// the document's persisted bookmark state.
+    private func adoptBookmarkModel(_ model: BookmarkModel) {
+        bookmarkModel = model
+        if let document = boundDocument {
+            bookmarkStates[document.id] = model.bookmarkState
+            document.bookmarkState = model.bookmarkState
+        }
+        ruler.needsDisplay = true
+    }
+
+    /// Rebuilds the bookmark model for the bound document, preferring the
+    /// in-memory state for this tab and falling back to the persisted state in
+    /// `DocumentModel.bookmarkState`.
+    private func bindBookmarks(for document: DocumentModel?) {
+        guard let document else {
+            bookmarkModel = nil
+            ruler.needsDisplay = true
+            return
+        }
+        let state = bookmarkStates[document.id] ?? document.bookmarkState
+        let model = BookmarkModel(text: document.text, bookmarkState: state)
+        bookmarkStates[document.id] = model.bookmarkState
+        document.bookmarkState = model.bookmarkState
+        bookmarkModel = model
+        ruler.needsDisplay = true
+    }
+
+    /// Writes the bound document's bookmark state back to it before unbinding.
+    private func flushBookmarkState() {
+        guard let document = boundDocument, let model = bookmarkModel else { return }
+        bookmarkStates[document.id] = model.bookmarkState
+        document.bookmarkState = model.bookmarkState
+    }
+
+    /// Remaps bookmarks across a text edit so their circles follow the lines.
+    ///
+    /// A whole-buffer replacement (reload, encoding change, command-driven
+    /// replace) cannot be line-mapped meaningfully, so it revalidates the
+    /// existing bookmarks against the new text instead of dropping them all.
+    private func remapBookmarks(for edit: FoldTextEdit, oldLength: Int) {
+        guard var model = bookmarkModel else { return }
+        if edit.location == 0, edit.replacedLength > 0, edit.replacedLength >= oldLength {
+            model.updateText(boundDocument?.text ?? model.text)
+        } else {
+            model.remap(for: edit, in: boundDocument?.text ?? model.text)
+        }
+        adoptBookmarkModel(model)
+    }
+
     /// Observes character edits on the bound storage.
     ///
     /// Attribute-only edits are ignored: the incremental highlighting pipeline
@@ -538,8 +637,7 @@ class EditorContainer: NSView {
         guard let storage = notification.object as? NSTextStorage,
               storage === textView.textStorage,
               storage.editedMask.contains(.editedCharacters),
-              let document = boundDocument,
-              let model = foldModel else { return }
+              let document = boundDocument else { return }
 
         // NSTextStorage reports the post-edit range plus the length delta. A
         // pure insertion has replacedLength 0; a deletion has insertedLength 0.
@@ -548,6 +646,13 @@ class EditorContainer: NSView {
         let edit = FoldTextEdit(location: storage.editedRange.location,
                                 replacedLength: replacedLength,
                                 insertedLength: insertedLength)
+
+        // Bookmarks are independent of folding: they must follow the text even
+        // for plain-text documents (where there is no fold model at all).
+        let oldLength = storage.length - storage.changeInLength
+        remapBookmarks(for: edit, oldLength: oldLength)
+
+        guard let model = foldModel else { return }
 
         guard !model.foldState.isEmpty else {
             // No fold is collapsed, so visibility cannot change. Defer the

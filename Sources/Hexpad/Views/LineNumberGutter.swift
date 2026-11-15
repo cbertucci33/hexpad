@@ -135,17 +135,27 @@ final class FoldGlyphHider: NSObject, NSLayoutManagerDelegate {
 /// change), resize (frame change), text mutation, and font/zoom changes.
 ///
 /// The gutter also owns the fold margin: a narrow leading column that draws one
-/// ▸/▾ marker per foldable line. Integrating it here (rather than adding a
-/// second sibling view) keeps one source of scroll/zoom/text invalidation and
-/// one mapping from mouse Y to a logical line; the line-number column keeps its
-/// exact previous drawing and click behavior.
+/// ▸/▾ marker per foldable line, followed by a bookmark margin that draws a
+/// Notepad++-style filled circle on bookmarked lines. Integrating it here
+/// (rather than adding a second sibling view) keeps one source of
+/// scroll/zoom/text invalidation and one mapping from mouse Y to a logical line;
+/// the line-number column keeps its exact previous drawing and click behavior.
 final class LineNumberGutter: NSView {
 
-    /// Right-aligned line-number column.
-    static let numberColumnWidth: CGFloat = 40
+    /// Right-aligned line-number column, including the bookmark margin.
+    ///
+    /// The bookmark margin shares this slot so the gutter's historical
+    /// `markerColumnWidth + numberColumnWidth` total width identity is kept.
+    static let numberColumnWidth: CGFloat = 54
+
+    /// Width the digits themselves occupy at the trailing edge.
+    static let digitColumnWidth: CGFloat = 40
 
     /// Leading fold-marker column.
     static let markerColumnWidth: CGFloat = 16
+
+    /// Bookmark-margin column, immediately right of the fold markers.
+    static let bookmarkColumnWidth: CGFloat = 14
 
     /// Total gutter width: marker column plus number column.
     static let width: CGFloat = numberColumnWidth + markerColumnWidth
@@ -177,6 +187,14 @@ final class LineNumberGutter: NSView {
     /// Called with the 1-based logical line whose fold marker was clicked.
     var onToggleFold: ((Int) -> Void)?
 
+    /// Supplies the bookmarked logical lines at draw time. Like the fold
+    /// provider this is pulled, so a remap that happened during the edit is
+    /// already reflected when the redraw runs.
+    var bookmarkLinesProvider: (() -> Set<Int>)?
+
+    /// Called with the 1-based logical line whose bookmark margin was clicked.
+    var onToggleBookmark: ((Int) -> Void)?
+
     /// Character index where the current gutter drag started; drives
     /// click-and-drag line selection.
     private var dragAnchorCharIndex: Int?
@@ -204,6 +222,11 @@ final class LineNumberGutter: NSView {
     /// Marker currently shown for a logical line, if any.
     func markerState(forLine line: Int) -> FoldMarkerState? {
         foldMarkersProvider?()[line]
+    }
+
+    /// Whether `line` currently carries a bookmark marker.
+    func isBookmarked(line: Int) -> Bool {
+        bookmarkLinesProvider?().contains(line) ?? false
     }
 
     // MARK: - Redraw triggers
@@ -254,11 +277,15 @@ final class LineNumberGutter: NSView {
         ]
         let rows = Self.rows(in: textView)
         let markers = foldMarkersProvider?() ?? [:]
+        let bookmarkedLines = bookmarkLinesProvider?() ?? []
         for row in rows {
             drawNumber("\(row.line)", atTopY: row.topY, height: row.height,
                        textView: textView, attributes: attributes)
             if let marker = markers[row.line] {
                 drawMarker(marker, atTopY: row.topY, height: row.height, textView: textView)
+            }
+            if bookmarkedLines.contains(row.line) {
+                drawBookmark(atTopY: row.topY, height: row.height, textView: textView)
             }
         }
     }
@@ -360,6 +387,24 @@ final class LineNumberGutter: NSView {
         path.fill()
     }
 
+    /// Draws a filled circle in the bookmark margin for a bookmarked row.
+    ///
+    /// Notepad++ marks bookmarks with a blue dot; the circle is a path rather
+    /// than a glyph so it stays crisp at every zoom level, matching the fold
+    /// triangle above.
+    private func drawBookmark(atTopY topY: CGFloat, height: CGFloat, textView: NSTextView) {
+        let diameter = max(5, min(9, numberFont(for: textView).pointSize))
+        let rowTop = bounds.height - topY - height
+        let midY = rowTop + height / 2
+        let centerX = Self.markerColumnWidth + Self.bookmarkColumnWidth / 2
+        let rect = NSRect(x: centerX - diameter / 2,
+                          y: midY - diameter / 2,
+                          width: diameter,
+                          height: diameter)
+        NSColor.controlAccentColor.setFill()
+        NSBezierPath(ovalIn: rect).fill()
+    }
+
     // MARK: - Mouse
 
     /// Maps a mouse event into the character index it landed on, resolving it
@@ -395,11 +440,33 @@ final class LineNumberGutter: NSView {
         return true
     }
 
+    /// Consumes a press that lands in the bookmark margin.
+    ///
+    /// Every valid line has a bookmark margin (unlike the fold column, which
+    /// only reacts where a fold starts), so the whole column toggles the line's
+    /// bookmark like Notepad++'s bookmark margin.
+    ///
+    /// - Returns: `true` when the press was a bookmark-margin click.
+    @discardableResult
+    func handleBookmarkClick(at point: NSPoint) -> Bool {
+        guard point.x >= Self.markerColumnWidth,
+              point.x < Self.markerColumnWidth + Self.bookmarkColumnWidth,
+              let line = logicalLine(atViewPoint: point) else { return false }
+        dragAnchorCharIndex = nil
+        onToggleBookmark?(line)
+        return true
+    }
+
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         // A press on a drawn fold marker toggles the fold and intentionally does
         // not start a line selection.
         if handleFoldMarkerClick(at: point) {
+            return
+        }
+        // The bookmark margin toggles a bookmark on any line and likewise does
+        // not start a line selection.
+        if handleBookmarkClick(at: point) {
             return
         }
 

@@ -1064,37 +1064,74 @@ class MainWindowController: NSViewController {
               let command = commandRegistry.command(for: identifier) else {
             return false
         }
+        let state = DocumentState(text: doc.text,
+                                  selection: editor.textView.selectedRange,
+                                  bookmarkState: doc.bookmarkState)
+        if let result = commandRegistry.execute(identifier, on: state), command.documentExecute != nil {
+            // Bookmark commands can change only the bookmarks or only the
+            // selection; compare the whole state so those are not reported as
+            // no-ops.
+            return result != state
+        }
         let result = command.execute(doc.text, editor.textView.selectedRange)
         return result.text != doc.text
     }
 
     /// Runs a registry command against the selected document.
     ///
-    /// The whole command is applied as one `DocumentModel` replacement, so the
-    /// change lands on the document's undo stack as a single Cmd+Z step and the
-    /// shared NSTextStorage updates the visible editor immediately.
+    /// The command receives the full ``DocumentState`` (text, selection and
+    /// bookmarks) so line edits and bookmark commands share one path. A text
+    /// change is applied as one `DocumentModel` replacement on the document's
+    /// undo stack; bookmark changes go back to the document and the editor
+    /// container so the gutter markers update immediately.
     @discardableResult
     func performCommand(identifier: String) -> Bool {
         guard let editor = editorContainer,
               let doc = tabStore.selectedDocument,
-              let command = commandRegistry.command(for: identifier) else {
+              commandRegistry.command(for: identifier) != nil,
+              let result = commandRegistry.execute(
+                  identifier,
+                  on: DocumentState(text: doc.text,
+                                    selection: editor.textView.selectedRange,
+                                    bookmarkState: doc.bookmarkState)
+              ) else {
             return false
         }
 
         let original = doc.text
-        let selection = editor.textView.selectedRange
-        let result = command.execute(original, selection)
-        guard result.text != original else { return false }
+        var didChange = false
 
-        doc.replaceCharacters(in: NSRange(location: 0, length: (original as NSString).length),
-                              with: result.text)
+        if result.text != original {
+            // Apply the smallest replacement so bookmark remapping sees a
+            // meaningful edit instead of a whole-buffer rewrite, and the whole
+            // command stays a single undo step.
+            if let change = MultiCaretEditing.change(from: original, to: result.text) {
+                doc.replaceCharacters(in: change.range, with: change.replacement)
+            }
+            // Defensive fallback: the diff must reproduce the command's text.
+            if doc.text != result.text {
+                doc.replaceAllText(with: result.text)
+            }
+            didChange = true
+        }
+
+        if result.bookmarkState != doc.bookmarkState {
+            doc.bookmarkState = result.bookmarkState
+            editor.applyBookmarkState(result.bookmarkState)
+            didChange = true
+        }
 
         let textLength = (doc.text as NSString).length
         let location = min(max(0, result.selection.location), textLength)
         let length = min(max(0, result.selection.length), textLength - location)
         let restored = NSRange(location: location, length: length)
-        editor.textView.setSelectedRange(restored)
-        editor.textView.scrollRangeToVisible(restored)
+        if editor.textView.selectedRange != restored {
+            editor.textView.setSelectedRange(restored)
+            editor.textView.scrollRangeToVisible(restored)
+            didChange = true
+        }
+
+        guard didChange else { return false }
 
         // The model already posted its own text-change notice. Republish the
         // document-modified notice as the existing save/close paths do so tab
@@ -1108,6 +1145,18 @@ class MainWindowController: NSViewController {
     /// identifier in `representedObject`, keeping the action selector stable
     /// while the registry grows.
     @objc func performCommand(withIdentifier sender: Any?) {
+        guard let item = sender as? NSMenuItem,
+              let identifier = item.representedObject as? String else { return }
+        performCommand(identifier: identifier)
+    }
+
+    /// First-responder entry point for the bookmark group of the Text menu.
+    ///
+    /// It shares ``performCommand(identifier:)`` with the line-editing items so
+    /// both groups run through the same ``DocumentState`` path; the separate
+    /// selector only keeps the menu groups distinguishable for validation and
+    /// for callers that iterate the line-editing items.
+    @objc func performBookmarkCommand(withIdentifier sender: Any?) {
         guard let item = sender as? NSMenuItem,
               let identifier = item.representedObject as? String else { return }
         performCommand(identifier: identifier)
@@ -1212,7 +1261,8 @@ class MainWindowController: NSViewController {
 
 extension MainWindowController: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        if menuItem.action == #selector(MainWindowController.performCommand(withIdentifier:)) {
+        if menuItem.action == #selector(MainWindowController.performCommand(withIdentifier:))
+            || menuItem.action == #selector(MainWindowController.performBookmarkCommand(withIdentifier:)) {
             guard let identifier = menuItem.representedObject as? String else { return false }
             return canPerformCommand(identifier: identifier)
         }

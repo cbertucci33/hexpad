@@ -192,6 +192,24 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         textMenu.addItem(.separator())
+        // Bookmark commands share the registry and the controller's
+        // DocumentState path, but use their own selector so the line-editing
+        // group stays a contiguous, iterable block (and so menu validation can
+        // distinguish the two groups). Chords follow Notepad++: Cmd+F2 toggle,
+        // F2 next, Shift+F2 previous.
+        for command in CommandRegistry.default.bookmarkCommands {
+            let item = NSMenuItem(title: command.title,
+                                  action: #selector(MainWindowController.performBookmarkCommand(withIdentifier:)),
+                                  keyEquivalent: "")
+            item.target = nil
+            item.representedObject = command.identifier
+            if let binding = KeybindingStore.resolvedBinding(for: command.identifier) {
+                item.keyEquivalent = binding.keyEquivalent
+                item.keyEquivalentModifierMask = binding.modifierMask
+            }
+            textMenu.addItem(item)
+        }
+        textMenu.addItem(.separator())
         textMenu.addItem(keybindingsMenuItem())
         menu.addItem((NSMenuItem(title: "Text", action: nil, keyEquivalent: "").apply { $0.submenu = textMenu }))
         
