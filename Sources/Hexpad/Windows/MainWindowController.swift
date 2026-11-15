@@ -6,6 +6,15 @@ class MainWindowController: NSViewController {
     let tabStore = TabStore()
     private var mainWindow: MainWindow?
     var recentFilesManager: RecentFilesManager?
+
+    /// Menu/keybinding layer for the editor commands. The registry itself is
+    /// Kit-owned; this controller only resolves and applies its commands to the
+    /// selected document.
+    private let commandRegistry = CommandRegistry.default
+
+    /// The text view backing the selected document. Exposed for menu
+    /// validation/action tests in the app test bundle.
+    var editorTextView: NSTextView? { editorContainer?.textView }
     
     // Subviews
     private var tabBarView: TabBarView?
@@ -562,6 +571,45 @@ class MainWindowController: NSViewController {
         
         closeNextTab()
     }
+
+    /// Selects a tab by index and refreshes the editor/chrome. All menu and
+    /// keyboard tab navigation funnels through here so undo stacks and
+    /// per-document editor state are rebound exactly like a tab-bar click.
+    func selectTab(at index: Int) {
+        guard index >= 0, index < tabStore.count else { return }
+        guard index != tabStore.selectedIndex else { return }
+        tabStore.selectDocument(at: index)
+        refreshTabBar()
+        updateEditor()
+        updateStatusBar()
+    }
+
+    /// Wraps forward through the open tabs. Disabled with fewer than two tabs
+    /// by menu validation, but still safe to call directly.
+    func selectNextTab() {
+        guard tabStore.count > 1 else { return }
+        selectTab(at: (tabStore.selectedIndex + 1) % tabStore.count)
+    }
+
+    /// Wraps backward through the open tabs.
+    func selectPreviousTab() {
+        guard tabStore.count > 1 else { return }
+        selectTab(at: (tabStore.selectedIndex - 1 + tabStore.count) % tabStore.count)
+    }
+
+    @objc func selectNextTab(_ sender: Any?) {
+        selectNextTab()
+    }
+
+    @objc func selectPreviousTab(_ sender: Any?) {
+        selectPreviousTab()
+    }
+
+    /// Handles the Cmd+1..9 menu items; the item tag holds the 1-based tab
+    /// number so one action covers all nine shortcuts.
+    @objc func selectTabByNumber(_ sender: NSMenuItem) {
+        selectTab(at: sender.tag - 1)
+    }
     
     func refreshTabBar() {
         tabBarView?.reloadTabs()
@@ -764,7 +812,7 @@ class MainWindowController: NSViewController {
         let doc = tabStore.selectedDocument
         window.representedURL = doc?.filePath
         window.title = doc?.name ?? "Untitled"
-        window.documentEdited = doc?.unsavedChanges ?? false
+        window.isDocumentEdited = doc?.unsavedChanges ?? false
     }
     
     // MARK: - Find
@@ -900,6 +948,69 @@ class MainWindowController: NSViewController {
         updateStatusBar()
     }
 
+    // MARK: - Editor commands
+
+    /// Whether a registry command would actually change the selected document.
+    ///
+    /// Menu validation uses the command's own pure transform, so "cannot apply"
+    /// means the exact no-op cases: no document, an unknown identifier, or a
+    /// command that would leave the buffer unchanged (move the first line up,
+    /// change case with only a caret, delete an empty document, and so on).
+    func canPerformCommand(identifier: String) -> Bool {
+        guard let editor = editorContainer,
+              let doc = tabStore.selectedDocument,
+              let command = commandRegistry.command(for: identifier) else {
+            return false
+        }
+        let result = command.execute(doc.text, editor.textView.selectedRange)
+        return result.text != doc.text
+    }
+
+    /// Runs a registry command against the selected document.
+    ///
+    /// The whole command is applied as one `DocumentModel` replacement, so the
+    /// change lands on the document's undo stack as a single Cmd+Z step and the
+    /// shared NSTextStorage updates the visible editor immediately.
+    @discardableResult
+    func performCommand(identifier: String) -> Bool {
+        guard let editor = editorContainer,
+              let doc = tabStore.selectedDocument,
+              let command = commandRegistry.command(for: identifier) else {
+            return false
+        }
+
+        let original = doc.text
+        let selection = editor.textView.selectedRange
+        let result = command.execute(original, selection)
+        guard result.text != original else { return false }
+
+        doc.replaceCharacters(in: NSRange(location: 0, length: (original as NSString).length),
+                              with: result.text)
+
+        let textLength = (doc.text as NSString).length
+        let location = min(max(0, result.selection.location), textLength)
+        let length = min(max(0, result.selection.length), textLength - location)
+        let restored = NSRange(location: location, length: length)
+        editor.textView.setSelectedRange(restored)
+        editor.textView.scrollRangeToVisible(restored)
+
+        // The model already posted its own text-change notice. Republish the
+        // document-modified notice as the existing save/close paths do so tab
+        // dirty dots and the status bar update even when the command was the
+        // only mutation in this run loop turn.
+        NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
+        return true
+    }
+
+    /// First-responder menu entry point. The menu item carries the registry
+    /// identifier in `representedObject`, keeping the action selector stable
+    /// while the registry grows.
+    @objc func performCommand(withIdentifier sender: Any?) {
+        guard let item = sender as? NSMenuItem,
+              let identifier = item.representedObject as? String else { return }
+        performCommand(identifier: identifier)
+    }
+
     // MARK: - Line operations
 
     /// Apply a text transform to the selection when there is one, otherwise to
@@ -961,6 +1072,25 @@ class MainWindowController: NSViewController {
         let selRange = NSRange(location: clamped, length: 0)
         editor.textView.setSelectedRange(selRange)
         editor.textView.scrollRangeToVisible(selRange)
+    }
+}
+
+// MARK: - NSMenuItemValidation
+
+extension MainWindowController: NSMenuItemValidation {
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(MainWindowController.performCommand(withIdentifier:)) {
+            guard let identifier = menuItem.representedObject as? String else { return false }
+            return canPerformCommand(identifier: identifier)
+        }
+        if menuItem.action == #selector(MainWindowController.selectNextTab(_:))
+            || menuItem.action == #selector(MainWindowController.selectPreviousTab(_:)) {
+            return tabStore.count > 1
+        }
+        if menuItem.action == #selector(MainWindowController.selectTabByNumber(_:)) {
+            return menuItem.tag >= 1 && menuItem.tag <= tabStore.count
+        }
+        return true
     }
 }
 

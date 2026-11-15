@@ -83,7 +83,7 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     
     // MARK: - Menu
     
-    private func buildMainMenu() -> NSMenu {
+    func buildMainMenu() -> NSMenu {
         let menu = NSMenu()
         
         // App menu
@@ -163,6 +163,28 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         editMenu.addItem(.separator())
         editMenu.addItem(findItem)
         menu.addItem((NSMenuItem(title: "Edit", action: nil, keyEquivalent: "").apply { $0.submenu = editMenu }))
+
+        // Text menu: the Kit-owned command registry drives both the items and
+        // the identifiers used by the first-responder action. Separators group
+        // line edits, moves, comments, and case changes like Notepad++.
+        let textMenu = NSMenu(title: "Text")
+        let textMenuSeparatorsAfter: Set<String> = ["delete-line", "move-line-down", "toggle-line-comment"]
+        for command in CommandRegistry.default.commands {
+            let item = NSMenuItem(title: command.title,
+                                  action: #selector(MainWindowController.performCommand(withIdentifier:)),
+                                  keyEquivalent: "")
+            item.target = nil
+            item.representedObject = command.identifier
+            if let binding = EditorCommandBinding.binding(for: command.identifier) {
+                item.keyEquivalent = binding.keyEquivalent
+                item.keyEquivalentModifierMask = binding.modifierMask
+            }
+            textMenu.addItem(item)
+            if textMenuSeparatorsAfter.contains(command.identifier) {
+                textMenu.addItem(.separator())
+            }
+        }
+        menu.addItem((NSMenuItem(title: "Text", action: nil, keyEquivalent: "").apply { $0.submenu = textMenu }))
         
         // Search menu
         let searchMenu = NSMenu(title: "Search")
@@ -288,6 +310,32 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         windowMenu.addItem(zoomItem)
         windowMenu.addItem(.separator())
         windowMenu.addItem(fullscreenItem)
+
+        // Tab navigation lives in the Window menu (Safari's convention). The
+        // actions are nil-targeted so the controller participates in the first
+        // responder chain and can validate them against the current tab count.
+        windowMenu.addItem(.separator())
+        let nextTabItem = NSMenuItem(title: "Next Tab",
+                                     action: #selector(MainWindowController.selectNextTab(_:)),
+                                     keyEquivalent: "]")
+        nextTabItem.keyEquivalentModifierMask = [.command, .shift]
+        nextTabItem.target = nil
+        let previousTabItem = NSMenuItem(title: "Previous Tab",
+                                         action: #selector(MainWindowController.selectPreviousTab(_:)),
+                                         keyEquivalent: "[")
+        previousTabItem.keyEquivalentModifierMask = [.command, .shift]
+        previousTabItem.target = nil
+        windowMenu.addItem(nextTabItem)
+        windowMenu.addItem(previousTabItem)
+        windowMenu.addItem(.separator())
+        for number in 1...9 {
+            let item = NSMenuItem(title: "Tab \(number)",
+                                  action: #selector(MainWindowController.selectTabByNumber(_:)),
+                                  keyEquivalent: "\(number)")
+            item.tag = number
+            item.target = nil
+            windowMenu.addItem(item)
+        }
         menu.addItem((NSMenuItem(title: "Window", action: nil, keyEquivalent: "").apply { $0.submenu = windowMenu }))
         
         // Help menu
