@@ -556,4 +556,171 @@ final class DocumentModelTests: XCTestCase {
         XCTAssertFalse(restored.documents[1].wordWrapEnabled)
         XCTAssertEqual(restored.documents[1].zoomScale, 0.9, accuracy: 0.0001)
     }
+
+    // MARK: - Per-document fold state
+
+    /// Five folds of mixed kinds, deliberately nested inside a surrounding
+    /// brace fold, which is the real-world shape a session has to carry.
+    private func mixedFoldState(in text: String) -> (state: FoldState, folds: [FoldRange]) {
+        let nsText = text as NSString
+        let parensStart = nsText.range(of: "()").location
+        let bracketsStart = nsText.range(of: "[1, 2]").location
+        let commentStart = nsText.range(of: "/*").location
+        let commentEnd = NSMaxRange(nsText.range(of: "*/"))
+
+        let folds = [
+            FoldRange(location: 0, length: nsText.length, kind: .braces),
+            FoldRange(location: parensStart, length: 2, kind: .parentheses),
+            FoldRange(location: bracketsStart, length: 6, kind: .brackets),
+            FoldRange(location: commentStart,
+                      length: commentEnd - commentStart,
+                      kind: .blockComment),
+            FoldRange(location: nsText.range(of: "// region").location,
+                      length: ("// region" as NSString).length,
+                      kind: .region)
+        ]
+
+        var state = FoldState()
+        for fold in folds { state.insert(fold) }
+        return (state, folds)
+    }
+
+    func testFoldStateDefaultsToEmptyOnFreshDocument() {
+        let doc = DocumentModel(text: "hello")
+
+        XCTAssertTrue(doc.foldState.isEmpty)
+        XCTAssertEqual(doc.foldState, FoldState())
+        XCTAssertEqual(doc.foldState.count, 0)
+    }
+
+    func testFoldStateRoundTripsThroughSessionData() {
+        let text = """
+        func outer() {
+            let values = [1, 2]
+            /* block
+               comment */
+            // region
+        }
+        """
+        let doc = DocumentModel(text: text)
+        let (state, folds) = mixedFoldState(in: text)
+        doc.foldState = state
+
+        let data = doc.toSessionData()
+        let restored = DocumentModel.fromSessionData(data)
+
+        XCTAssertNotNil(restored)
+        XCTAssertEqual(restored?.foldState, state)
+        XCTAssertEqual(restored?.foldState.count, folds.count)
+
+        // FoldState equality ignores kind (FoldRange identity is its span), so
+        // verify each kind survived the projection explicitly.
+        let restoredFolds = restored?.foldState.collapsedRanges ?? []
+        for fold in folds {
+            XCTAssertTrue(restoredFolds.contains { $0.range == fold.range && $0.kind == fold.kind },
+                          "missing \(fold.kind.rawValue) fold at \(fold.range)")
+        }
+    }
+
+    func testEmptyFoldStateRoundTripsThroughSessionData() {
+        let doc = DocumentModel(text: "no folds here")
+        doc.foldState = FoldState()
+
+        let data = doc.toSessionData()
+        let restored = DocumentModel.fromSessionData(data)
+
+        let foldStateData = data["foldState"] as? [String: Any]
+        XCTAssertNotNil(foldStateData, "the key is written even when nothing is collapsed")
+        XCTAssertEqual((foldStateData?["collapsedRanges"] as? [[String: Any]])?.count, 0)
+        XCTAssertEqual(restored?.foldState, FoldState())
+        XCTAssertTrue(restored?.foldState.isEmpty ?? false)
+    }
+
+    func testLegacySessionDataWithoutFoldStateRestoresEmptyState() {
+        // Exactly the shape sessions had before fold persistence: no
+        // "foldState" key at all.
+        let legacy: [String: Any] = [
+            "id": UUID().uuidString,
+            "text": "legacy text",
+            "name": "legacy.txt",
+            "encoding": "UTF-8",
+            "eolType": "LF",
+            "language": "Plain Text",
+            "isModified": false
+        ]
+
+        let restored = DocumentModel.fromSessionData(legacy)
+
+        XCTAssertNotNil(restored, "old session entries must still restore")
+        XCTAssertEqual(restored?.text, "legacy text")
+        XCTAssertEqual(restored?.foldState, FoldState())
+        XCTAssertTrue(restored?.foldState.isEmpty ?? false)
+    }
+
+    func testMalformedFoldStateEntriesAreSkippedIndividually() {
+        let valid: [String: Any] = [
+            "location": 4,
+            "length": 10,
+            "kind": "braces"
+        ]
+        let unknownKind: [String: Any] = [
+            "location": 20,
+            "length": 5,
+            "kind": "fromAFutureBuild"
+        ]
+        let negativeLocation: [String: Any] = [
+            "location": -1,
+            "length": 5,
+            "kind": "parentheses"
+        ]
+        let partial: [String: Any] = [
+            "id": UUID().uuidString,
+            "text": "folds",
+            "name": "folds.swift",
+            "encoding": "UTF-8",
+            "eolType": "LF",
+            "language": "Swift",
+            "foldState": [
+                "collapsedRanges": [valid, unknownKind, negativeLocation]
+            ]
+        ]
+
+        let restored = DocumentModel.fromSessionData(partial)
+
+        XCTAssertEqual(restored?.foldState.count, 1)
+        XCTAssertTrue(restored?.foldState.isCollapsed(NSRange(location: 4, length: 10)) ?? false)
+    }
+
+    func testFoldStateIsIndependentPerDocumentAndSurvivesTabStoreRoundTrip() {
+        let firstText = "func first() {\n    // region\n}"
+        let secondText = "func second() {\n    let x = [1, 2]\n}"
+        let first = DocumentModel(text: firstText)
+        let second = DocumentModel(text: secondText)
+        let firstTextNS = firstText as NSString
+        var firstState = FoldState()
+        firstState.insert(FoldRange(location: 0, length: firstTextNS.length, kind: .braces))
+        firstState.insert(FoldRange(location: firstTextNS.range(of: "()").location,
+                                    length: 2,
+                                    kind: .parentheses))
+        firstState.insert(FoldRange(location: firstTextNS.range(of: "// region").location,
+                                    length: 9,
+                                    kind: .region))
+        var secondState = FoldState()
+        secondState.insert(FoldRange(location: 0,
+                                     length: (secondText as NSString).length,
+                                     kind: .braces))
+        first.foldState = firstState
+        second.foldState = secondState
+
+        XCTAssertNotEqual(first.foldState, second.foldState)
+
+        let store = TabStore()
+        store.addDocument(first)
+        store.addDocument(second)
+        let restored = TabStore.fromSessionData(store.toSessionData())
+
+        XCTAssertEqual(restored.documents.count, 2)
+        XCTAssertEqual(restored.documents[0].foldState, firstState)
+        XCTAssertEqual(restored.documents[1].foldState, secondState)
+    }
 }

@@ -113,7 +113,7 @@ final class SessionStoreTests: XCTestCase {
 
     func testLegacySessionFileWithoutEditorStateRestoresDefaults() throws {
         // A session.json written by an older build: the document dictionaries
-        // have no "editorState" key at all.
+        // have no "editorState" (or "foldState") key at all.
         let legacy: [String: Any] = [
             "tabs": [[
                 "id": UUID().uuidString,
@@ -134,5 +134,33 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertEqual(restored.tabs.documents.count, 1)
         XCTAssertEqual(restored.tabs.documents[0].text, "from an old build")
         XCTAssertEqual(restored.tabs.documents[0].editorState, .default)
+        XCTAssertEqual(restored.tabs.documents[0].foldState, FoldState())
+        XCTAssertTrue(restored.tabs.documents[0].foldState.isEmpty)
+    }
+
+    func testPerTabFoldStateSurvivesSaveAndRestore() throws {
+        let store = TabStore()
+
+        let doc = DocumentModel(text: "{\n    // region\n}")
+        var state = FoldState()
+        state.insert(FoldRange(location: 0,
+                               length: (doc.text as NSString).length,
+                               kind: .braces))
+        state.insert(FoldRange(location: 6, length: 10, kind: .region))
+        doc.foldState = state
+        store.addDocument(doc)
+
+        // A second tab with no collapsed folds proves the states stay
+        // independent through the real JSON file.
+        let second = DocumentModel(text: "no folds")
+        store.addDocument(second)
+
+        try SessionStore.save(store)
+        let restored = try XCTUnwrap(SessionStore.restore())
+
+        XCTAssertEqual(restored.tabs.documents.count, 2)
+        XCTAssertEqual(restored.tabs.documents[0].foldState, state)
+        XCTAssertEqual(restored.tabs.documents[0].foldState.count, 2)
+        XCTAssertTrue(restored.tabs.documents[1].foldState.isEmpty)
     }
 }

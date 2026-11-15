@@ -75,6 +75,17 @@ public final class DocumentModel: Identifiable, ObservableObject {
     /// and the editor container owns applying them to its TextKit views.
     public var editorState: DocumentEditorState
 
+    /// The user's collapsed fold ranges for this document. Like `editorState`,
+    /// the model only stores and persists this value; the app's editor
+    /// container owns reading it on unbind and applying it on bind.
+    ///
+    /// The persisted projection is made of UTF-16 ranges plus kind strings, not
+    /// text, so its shape does not change when the document text does. A range
+    /// restored into a document whose text changed since the session was saved
+    /// is preserved as-is: deciding whether it still refers to a sensible
+    /// construct is the app layer's concern, not the model's.
+    public var foldState: FoldState
+
     public var caretRange: NSRange {
         get { editorState.caretRange }
         set { editorState.caretRange = newValue }
@@ -114,6 +125,7 @@ public final class DocumentModel: Identifiable, ObservableObject {
         self._eolType = eolType ?? EOLDetective.detect(text)
         self._originalText = text  // a freshly created doc is clean, saved or not
         self.editorState = DocumentEditorState()
+        self.foldState = FoldState()
         if let filePath {
             do {
                 self.savedModificationDate = try FileManager.default.attributesOfItem(atPath: filePath.path)[.modificationDate] as? Date
@@ -261,7 +273,8 @@ public final class DocumentModel: Identifiable, ObservableObject {
             "eolType": self.eolType,
             "language": self.language,
             "isModified": self.isModified,
-            "editorState": self.editorState.toSessionData()
+            "editorState": self.editorState.toSessionData(),
+            "foldState": self.foldState.toSessionData()
         ]
         if let path = self.filePath?.path {
             data["filePath"] = path
@@ -289,6 +302,9 @@ public final class DocumentModel: Identifiable, ObservableObject {
         // Sessions written before per-document editor state existed have no
         // "editorState" key; absence restores the startup defaults.
         doc.editorState = DocumentEditorState.fromSessionData(data["editorState"] as? [String: Any])
+        // Sessions written before fold persistence existed have no "foldState"
+        // key; absence restores an empty (nothing collapsed) state.
+        doc.foldState = FoldState.fromSessionData(data["foldState"] as? [String: Any])
         // Restore dirty state: if marked modified, diff against the real saved baseline.
         // File-backed docs diff against their on-disk content; untitled buffers have no
         // file, so their baseline is the empty (never-saved) buffer.
