@@ -66,7 +66,43 @@ class MainWindowController: NSViewController {
     @objc private func handleTabCloseRequested(_ notification: Notification) {
         guard let userInfo = notification.userInfo,
               let index = userInfo["index"] as? Int else { return }
-        closeTabAtIndex(index)
+        guard tabStore.count > 0, index >= 0, index < tabStore.count else { return }
+        let doc = tabStore.documents[index]
+        
+        if doc.unsavedChanges {
+            let alert = NSAlert()
+            alert.messageText = "Save changes to \(doc.name)?"
+            alert.informativeText = "You have unsaved changes to this document."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Save")
+            alert.addButton(withTitle: "Don't Save")
+            alert.addButton(withTitle: "Cancel")
+            
+            alert.beginSheetModal(for: mainWindow ?? NSApplication.shared.windows.first ?? NSWindow()) { response in
+                DispatchQueue.main.async {
+                    switch response {
+                    case .alertFirstButtonReturn: // Save
+                        // Untitled docs need a save panel; doc.save() throws
+                        // noFilePath for them. Only close once the save succeeded
+                        // (or the user actually picked a destination).
+                        if doc.isUntitled {
+                            self.saveAsAndClose(doc)
+                        } else {
+                            self.saveDocument(doc)
+                            self.closeTabAtIndex(index)
+                        }
+                    case .alertSecondButtonReturn: // Don't Save
+                        self.closeTabAtIndex(index)
+                    case .alertThirdButtonReturn: // Cancel
+                        break
+                    default:
+                        break
+                    }
+                }
+            }
+        } else {
+            closeTabAtIndex(index)
+        }
     }
     
     @objc private func handleDocumentModified(_ notification: Notification) {
