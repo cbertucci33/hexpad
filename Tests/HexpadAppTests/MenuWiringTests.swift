@@ -9,6 +9,24 @@ import HexpadKit
 /// rather than duplicating their logic in the test.
 final class MenuWiringTests: XCTestCase {
 
+    private var keybindingDirectory: URL!
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        // Menu tests must not read the developer's real keybindings.json.
+        keybindingDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hexpad-menu-tests-\(UUID().uuidString)")
+        KeybindingStore.overrideDirectory = keybindingDirectory
+    }
+
+    override func tearDownWithError() throws {
+        KeybindingStore.overrideDirectory = nil
+        if let keybindingDirectory {
+            try? FileManager.default.removeItem(at: keybindingDirectory)
+        }
+        try super.tearDownWithError()
+    }
+
     private func makeController() -> (controller: MainWindowController, window: MainWindow) {
         let window = MainWindow()
         let controller = MainWindowController(window: window)
@@ -36,7 +54,9 @@ final class MenuWiringTests: XCTestCase {
         let textItem = try XCTUnwrap(menu.item(withTitle: "Text"))
         let textMenu = try XCTUnwrap(textItem.submenu)
 
-        let commandItems = textMenu.items.filter { !$0.isSeparatorItem }
+        let commandItems = textMenu.items.filter {
+            $0.action == #selector(MainWindowController.performCommand(withIdentifier:))
+        }
         XCTAssertEqual(commandItems.map(\.title), CommandRegistry.default.commands.map(\.title))
 
         for (item, command) in zip(commandItems, CommandRegistry.default.commands) {

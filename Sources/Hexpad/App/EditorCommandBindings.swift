@@ -41,6 +41,9 @@ struct EditorCommandBinding {
                              modifierMask: [.command])
     ]
 
+    /// The built-in binding for a command, ignoring user overrides. Menu
+    /// construction should call `KeybindingStore.resolvedBinding(for:)`, which
+    /// falls back to this table.
     static func binding(for identifier: String) -> EditorCommandBinding? {
         defaultBindings.first { $0.identifier == identifier }
     }

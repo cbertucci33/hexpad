@@ -23,6 +23,12 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         restoreAppearance()
+        // Keybinding edits rebuild the whole menu: one code path applies the
+        // overrides, and the rebuilt Keybindings submenu shows the new chords.
+        NotificationCenter.default.addObserver(self,
+                                               selector: #selector(keybindingsDidChange(_:)),
+                                               name: .keybindingsDidChange,
+                                               object: nil)
         NSApplication.shared.mainMenu = buildMainMenu()
         
         let window = MainWindow()
@@ -175,7 +181,7 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
                                   keyEquivalent: "")
             item.target = nil
             item.representedObject = command.identifier
-            if let binding = EditorCommandBinding.binding(for: command.identifier) {
+            if let binding = KeybindingStore.resolvedBinding(for: command.identifier) {
                 item.keyEquivalent = binding.keyEquivalent
                 item.keyEquivalentModifierMask = binding.modifierMask
             }
@@ -184,6 +190,8 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
                 textMenu.addItem(.separator())
             }
         }
+        textMenu.addItem(.separator())
+        textMenu.addItem(keybindingsMenuItem())
         menu.addItem((NSMenuItem(title: "Text", action: nil, keyEquivalent: "").apply { $0.submenu = textMenu }))
         
         // Search menu
@@ -353,6 +361,42 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.menu = menu
         return menu
     }
+
+    /// The Keybindings submenu is also the editor: each command row records a
+    /// new chord on click (Option-click works too), and Reset restores every
+    /// built-in binding.
+    private func keybindingsMenuItem() -> NSMenuItem {
+        let keybindingsMenu = NSMenu(title: "Keybindings")
+
+        let hintItem = NSMenuItem(title: "Click a command, then press a new shortcut",
+                                  action: nil,
+                                  keyEquivalent: "")
+        hintItem.isEnabled = false
+        keybindingsMenu.addItem(hintItem)
+        keybindingsMenu.addItem(.separator())
+
+        for command in CommandRegistry.default.commands {
+            let binding = KeybindingStore.resolvedBinding(for: command.identifier)
+            let title = "\(command.title)    \(KeybindingStore.displayString(for: binding))"
+            let item = NSMenuItem(title: title,
+                                  action: #selector(editKeybinding(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.representedObject = command.identifier
+            keybindingsMenu.addItem(item)
+        }
+
+        keybindingsMenu.addItem(.separator())
+        let resetItem = NSMenuItem(title: "Reset to Defaults",
+                                   action: #selector(resetKeybindings),
+                                   keyEquivalent: "")
+        resetItem.target = self
+        keybindingsMenu.addItem(resetItem)
+
+        let keybindingsItem = NSMenuItem(title: "Keybindings", action: nil, keyEquivalent: "")
+        keybindingsItem.submenu = keybindingsMenu
+        return keybindingsItem
+    }
     
     // MARK: - Appearance
     
@@ -461,6 +505,51 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     @objc private func sortLinesDescending() { windowController?.sortLinesDescending() }
     @objc private func removeDuplicateLines() { windowController?.removeDuplicateLines() }
     @objc private func removeBlankLines() { windowController?.removeBlankLines() }
+
+    // MARK: - Keybindings
+
+    /// Rebuilding the entire menu is the single path that applies persisted
+    /// overrides to both the Text menu and the Keybindings submenu.
+    @objc private func keybindingsDidChange(_ notification: Notification) {
+        NSApplication.shared.mainMenu = buildMainMenu()
+    }
+
+    @objc private func editKeybinding(_ sender: NSMenuItem) {
+        guard let identifier = sender.representedObject as? String,
+              let command = CommandRegistry.default.command(for: identifier) else {
+            return
+        }
+
+        let current = KeybindingStore.resolvedBinding(for: identifier)
+        guard let captured = KeybindingCapture.run(commandTitle: command.title, current: current) else {
+            return
+        }
+
+        let binding = EditorCommandBinding(identifier: identifier,
+                                           keyEquivalent: captured.keyEquivalent,
+                                           modifierMask: captured.modifierMask)
+        do {
+            try KeybindingStore.setOverride(binding)
+        } catch {
+            showKeybindingError(error)
+        }
+    }
+
+    @objc private func resetKeybindings() {
+        do {
+            try KeybindingStore.resetToDefaults()
+        } catch {
+            showKeybindingError(error)
+        }
+    }
+
+    private func showKeybindingError(_ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = "Could Not Save Shortcut"
+        alert.informativeText = error.localizedDescription
+        alert.alertStyle = .warning
+        alert.runModal()
+    }
 
     // MARK: - Find in Files
 
