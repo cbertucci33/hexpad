@@ -287,6 +287,31 @@ final class BookmarkMarginTests: XCTestCase {
         XCTAssertFalse(editor.ruler.isBookmarked(line: 3))
     }
 
+    func testMultiCaretEditPreservesABookmarkBetweenTheCarets() {
+        let (editor, document) = makeEditor("one\ntwo\nthree")
+        XCTAssertTrue(editor.toggleBookmark(atLine: 2))
+        document.undoManager.removeAllActions()
+
+        // Two distant carets: the start of line 1 and the start of line 3.
+        editor.textView.setSelectedRange(NSRange(location: 0, length: 0))
+        editor.placeAdditionalCaret(atCharacterIndex: 8)
+        XCTAssertEqual(editor.multiCaretState.count, 2)
+
+        editor.applyMultiCaretInsertion("X")
+
+        XCTAssertEqual(document.text, "Xone\ntwo\nXthree")
+        XCTAssertEqual(editor.bookmarkLines, [2],
+                       "the bookmark between the carets must keep its line")
+        XCTAssertEqual(document.bookmarkState.lines, [2],
+                       "the surviving bookmark is still persisted")
+
+        // The whole multi-caret action is one undo step, and the bookmark
+        // follows the restored text.
+        document.undoManager.undo()
+        XCTAssertEqual(document.text, "one\ntwo\nthree")
+        XCTAssertEqual(editor.bookmarkLines, [2])
+    }
+
     // MARK: - Text menu wiring
 
     func testTextMenuHasBookmarkItemsWithKeyEquivalents() throws {

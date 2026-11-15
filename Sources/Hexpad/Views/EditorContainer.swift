@@ -452,8 +452,15 @@ class EditorContainer: NSView {
     }
 
     /// Runs one transform through ``MultiCaretApplier`` and commits the result
-    /// as the smallest possible `DocumentModel` replacement, so every caret is
-    /// edited but Cmd+Z still undoes the action in one step.
+    /// to the document as one undoable action.
+    ///
+    /// A single caret commits the smallest contiguous replacement, exactly like
+    /// a plain text view. Multiple carets commit one replacement per caret
+    /// instead of one span covering every edit: the storage observer then
+    /// remaps bookmarks and folds across each small, disjoint edit, so content
+    /// between two distant carets is never treated as replaced. Every per-caret
+    /// replacement shares one undo group, so Cmd+Z still reverts the whole
+    /// action in a single step.
     @discardableResult
     private func applyMultiCaretTransform(_ transform: MultiCaretApplier.TextTransform) -> Bool {
         guard let document = boundDocument else { return false }
@@ -472,12 +479,32 @@ class EditorContainer: NSView {
         isSyncingSelection = true
         defer { isSyncingSelection = false }
 
-        if let change = MultiCaretEditing.change(from: oldText, to: result.text) {
+        // The per-caret replay must reproduce the applier's document exactly.
+        // If it ever does not, fall back to the historical single replacement,
+        // which is still correct, just coarser for bookmark/fold remapping.
+        let perCaret = oldState.count > 1
+            ? perCaretEdits(transform, in: oldText, carets: oldState.carets)
+            : nil
+
+        if let perCaret, perCaret.text == result.text, !perCaret.edits.isEmpty {
+            let undoManager = document.undoManager
+            let grouped = perCaret.edits.count > 1
+            if grouped { undoManager.beginUndoGrouping() }
+            for edit in perCaret.edits {
+                document.replaceCharacters(in: edit.range, with: edit.replacement)
+            }
+            // Defensive fallback: the per-caret edits must reproduce the
+            // applier's document.
+            if document.text != result.text {
+                document.replaceAllText(with: result.text)
+            }
+            if grouped { undoManager.endUndoGrouping() }
+        } else if let change = MultiCaretEditing.change(from: oldText, to: result.text) {
             document.replaceCharacters(in: change.range, with: change.replacement)
-        }
-        // Defensive fallback: the diff must reproduce the applier's document.
-        if document.text != result.text {
-            document.replaceAllText(with: result.text)
+            // Defensive fallback: the diff must reproduce the applier's document.
+            if document.text != result.text {
+                document.replaceAllText(with: result.text)
+            }
         }
 
         multiCaretState = normalizedForCurrentText(result.state)
@@ -487,6 +514,33 @@ class EditorContainer: NSView {
         }
         textView.needsDisplay = true
         return true
+    }
+
+    /// The disjoint replacements that produce each caret's edit.
+    ///
+    /// ``MultiCaretApplier`` applies transforms bottom-most first and reports
+    /// only the final document. Replaying that same order yields the individual
+    /// replacements, which keeps the storage observer's bookmark and fold
+    /// remapping scoped to the text each caret actually touched.
+    ///
+    /// An edit below a caret cannot move it, so every caret offset is still
+    /// valid in the evolving document. Callers compare the returned text with
+    /// the applier's result and fall back to a single replacement if they ever
+    /// differ.
+    private func perCaretEdits(_ transform: MultiCaretApplier.TextTransform,
+                               in text: String,
+                               carets: [NSRange])
+        -> (edits: [MultiCaretEditing.TextChange], text: String) {
+        var document = text
+        var edits: [MultiCaretEditing.TextChange] = []
+        for caret in carets.reversed() {
+            let result = transform(document, caret)
+            if let change = MultiCaretEditing.change(from: document, to: result.text) {
+                edits.append(change)
+                document = result.text
+            }
+        }
+        return (edits, document)
     }
 
     // MARK: - Folding

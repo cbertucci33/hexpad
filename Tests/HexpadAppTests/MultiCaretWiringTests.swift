@@ -129,6 +129,26 @@ final class MultiCaretWiringTests: XCTestCase {
         XCTAssertEqual(document.text, "ab\ncd")
     }
 
+    func testDistantCaretEditWithoutBookmarksOrFoldsKeepsTheResultAndOneUndoStep() {
+        let (editor, document) = makeEditor("one\ntwo\nthree")
+        document.undoManager.removeAllActions()
+        editor.textView.setSelectedRange(NSRange(location: 0, length: 0))
+        editor.placeAdditionalCaret(atCharacterIndex: 8)
+
+        editor.applyMultiCaretInsertion("X")
+
+        XCTAssertEqual(document.text, "Xone\ntwo\nXthree")
+        XCTAssertEqual(editor.multiCaretState.carets,
+                       [NSRange(location: 1, length: 0),
+                        NSRange(location: 10, length: 0)])
+        XCTAssertTrue(editor.bookmarkLines.isEmpty)
+        XCTAssertTrue(editor.foldHiddenRanges.isEmpty)
+
+        document.undoManager.undo()
+        XCTAssertEqual(document.text, "one\ntwo\nthree",
+                       "the whole action still undoes in one step")
+    }
+
     // MARK: - Column selection
 
     func testOptionDragRectangleBecomesMultiCaretStateAndEdits() {
@@ -365,6 +385,38 @@ final class FoldGutterTests: XCTestCase {
         XCTAssertEqual(editor.foldHiddenRanges, [NSRange(location: 20, length: 16)],
                        "the fold shifts with text inserted before it")
         XCTAssertEqual(editor.foldMarkers[2], .collapsed)
+    }
+
+    func testMultiCaretEditPreservesAFoldBetweenTheCarets() throws {
+        let (editor, document) = makeEditor(nestedText)
+        XCTAssertTrue(editor.toggleFold(atLine: 1))
+        let foldRange = try XCTUnwrap(document.foldState.collapsedRanges.first?.range)
+        XCTAssertEqual(foldRange, NSRange(location: 9, length: 17))
+        XCTAssertEqual(editor.foldHiddenRanges, [NSRange(location: 10, length: 16)])
+        document.undoManager.removeAllActions()
+
+        // Carets at the start of line 1 and the end of the document: the
+        // collapsed fold sits entirely between them.
+        editor.textView.setSelectedRange(NSRange(location: 0, length: 0))
+        editor.placeAdditionalCaret(atCharacterIndex: (document.text as NSString).length)
+        XCTAssertEqual(editor.multiCaretState.count, 2)
+
+        editor.applyMultiCaretInsertion("X")
+
+        XCTAssertEqual(document.text,
+                       "Xfunc f() {\n    let x = 1\n}\nlet y = 2\nX")
+        let shifted = NSRange(location: foldRange.location + 1,
+                              length: foldRange.length)
+        XCTAssertEqual(editor.foldMarkers[1], .collapsed,
+                       "the fold between the carets must stay collapsed")
+        XCTAssertTrue(document.foldState.isCollapsed(shifted),
+                      "the fold shifts with the edit above it and survives")
+        XCTAssertEqual(editor.foldHiddenRanges, [NSRange(location: 11, length: 16)])
+
+        document.undoManager.undo()
+        XCTAssertEqual(document.text, nestedText)
+        XCTAssertTrue(document.foldState.isCollapsed(foldRange),
+                      "undo restores the fold at its original span")
     }
 
     // MARK: - Marker clicks
