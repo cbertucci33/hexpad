@@ -17,6 +17,11 @@ struct EditorCommandBinding {
     static let upArrow = "\u{F700}"
     static let downArrow = "\u{F701}"
 
+    /// F2, the Notepad++ bookmark chord. macOS represents function keys with
+    /// the same private-use range as the arrows; the menu item shows the raw
+    /// scalar and `KeybindingStore.displayString` renders it as "F2".
+    static let f2 = "\u{F705}"
+
     static let defaultBindings: [EditorCommandBinding] = [
         EditorCommandBinding(identifier: "duplicate-line",
                              keyEquivalent: "d",
@@ -38,7 +43,20 @@ struct EditorCommandBinding {
                              modifierMask: [.command, .shift]),
         EditorCommandBinding(identifier: "lowercase",
                              keyEquivalent: "u",
-                             modifierMask: [.command])
+                             modifierMask: [.command]),
+
+        // Notepad++ bookmark chords: Cmd+F2 toggles, F2 jumps to the next one,
+        // Shift+F2 to the previous one. F2 with no modifier is only safe for a
+        // function key, which never inserts text.
+        EditorCommandBinding(identifier: "bookmark-toggle",
+                             keyEquivalent: f2,
+                             modifierMask: [.command]),
+        EditorCommandBinding(identifier: "bookmark-next",
+                             keyEquivalent: f2,
+                             modifierMask: []),
+        EditorCommandBinding(identifier: "bookmark-prev",
+                             keyEquivalent: f2,
+                             modifierMask: [.shift])
     ]
 
     /// The built-in binding for a command, ignoring user overrides. Menu
