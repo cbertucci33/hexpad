@@ -14,6 +14,14 @@ public final class SessionStore {
 
     private static var appSupportDir: URL {
         if let override = overrideDirectory { return override }
+        // App-hosted XCTest runs the real app delegate, which now schedules
+        // session saves from ordinary document notifications. Without an
+        // explicit override those writes must not land in the developer's live
+        // session, so tests get a per-process temp directory instead.
+        if NSClassFromString("XCTestCase") != nil {
+            return FileManager.default.temporaryDirectory
+                .appendingPathComponent("HexpadSessionTestHost-\(ProcessInfo.processInfo.processIdentifier)")
+        }
         return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
             .appendingPathComponent("Hexpad")
     }

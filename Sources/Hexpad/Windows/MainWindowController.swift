@@ -143,6 +143,10 @@ class MainWindowController: NSViewController {
     }
     
     @objc private func handleDocumentModified(_ notification: Notification) {
+        // Persist the session on the same notice that refreshes the tab dots.
+        // SessionStore coalesces bursts into one write, so this is not a
+        // write per change.
+        SessionStore.scheduleSave(tabStore)
         refreshTabBar()
         updateStatusBar()
         updateWindowTitle()
@@ -150,6 +154,11 @@ class MainWindowController: NSViewController {
 
     @objc private func handleModelTextChange(_ notification: Notification) {
         guard let doc = notification.object as? DocumentModel else { return }
+
+        // Typing reaches this path too (NSTextViewDelegate republishes the
+        // model notice), so this is the keystroke-driven session save. The
+        // store's debounce collapses a typing burst into one write.
+        SessionStore.scheduleSave(tabStore)
 
         // Typing posts this notice from textDidChange after it has already
         // incrementally re-highlighted and refreshed the chrome. Handling it
@@ -338,8 +347,10 @@ class MainWindowController: NSViewController {
         do {
             let data = try Data(contentsOf: url)
             let encoding = EncodingDetective.detect(data)
-            let nsEnc = String.Encoding(rawValue: EncodingDetective.nsEncoding(from: encoding))
-            let text = String(data: data, encoding: nsEnc) ?? ""
+            // Strip a leading BOM before decoding: String(data:encoding:) with
+            // an explicit UTF-16LE decoder keeps U+FEFF in the buffer, which
+            // showed up as a stray character at position 0.
+            let text = EncodingDetective.decodeForEditing(data, as: encoding) ?? ""
             // A recognized extension always wins; only unknown/plain-text
             // files are sniffed, so opening modern-language sources never
             // triggers a spurious Language Mismatch prompt.
@@ -349,6 +360,7 @@ class MainWindowController: NSViewController {
             )
             
             let doc = DocumentModel(text: text, filePath: url, encoding: encoding)
+            doc.keepsBOM = EncodingDetective.detectBOM(of: data) != nil
             doc.setLanguage(finalLang.rawValue)
             tabStore.addDocument(doc)
             refreshTabBar()
@@ -855,9 +867,12 @@ class MainWindowController: NSViewController {
     /// Returns true when a reload actually happened (on-disk text differed from
     /// the in-memory buffer); the caller decides how to surface it.
     private func reloadDocument(_ doc: DocumentModel, from url: URL) -> Bool {
-        guard let data = try? Data(contentsOf: url) else { return false }
-        let nsEnc = String.Encoding(rawValue: EncodingDetective.nsEncoding(from: doc.encoding))
-        guard let text = String(data: data, encoding: nsEnc), text != doc.text else { return false }
+        guard let data = try? Data(contentsOf: url),
+              // Same decode as openFile: the document's own encoding, with a
+              // leading BOM stripped, so UTF-16/CP1252 files reload correctly.
+              let text = EncodingDetective.decodeForEditing(data, as: doc.encoding),
+              text != doc.text else { return false }
+        doc.keepsBOM = EncodingDetective.detectBOM(of: data) != nil
         // Reload through the shared buffer: the visible editor updates
         // immediately and the reload stays undoable. reloadText also makes
         // the on-disk text the clean baseline in the same notification.
@@ -865,7 +880,8 @@ class MainWindowController: NSViewController {
         return true
     }
 
-    private func checkExternalChanges() {
+    /// Internal for app tests: exercises the same watcher path the timer runs.
+    func checkExternalChanges() {
         for doc in tabStore.documents {
             guard let path = doc.filePath?.path else { continue }
             let attrs = try? FileManager.default.attributesOfItem(atPath: path)
@@ -879,11 +895,16 @@ class MainWindowController: NSViewController {
             guard modDate > previous else { continue }
             seenModDates[doc.id] = modDate
 
-            guard !doc.unsavedChanges, FileManager.default.fileExists(atPath: path) else {
-                // Dirty buffer: keep the user's edits, just note the change.
-                doc.setModified(true)
+            if doc.unsavedChanges {
+                // Dirty buffer: keep the user's edits. setModified(true) used
+                // to stand here, but it is a no-op once the document is
+                // already dirty. Record the conflict explicitly instead and
+                // refresh the chrome so the tab keeps showing its dirty state.
+                doc.noteExternalChange()
+                NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
                 continue
             }
+            guard FileManager.default.fileExists(atPath: path) else { continue }
             guard reloadDocument(doc, from: doc.filePath!) else { continue }
             if doc === tabStore.selectedDocument {
                 updateEditor()
@@ -978,8 +999,8 @@ class MainWindowController: NSViewController {
             updateStatusBar()
             return
         }
-        let nsEnc = String.Encoding(rawValue: EncodingDetective.nsEncoding(from: encoding))
-        if let text = String(data: data, encoding: nsEnc), text != doc.text {
+        if let text = EncodingDetective.decodeForEditing(data, as: encoding), text != doc.text {
+            doc.keepsBOM = EncodingDetective.detectBOM(of: data) != nil
             doc.text = text
             doc.setModified(true)
             updateEditor()

@@ -498,6 +498,85 @@ final class DocumentModelTests: XCTestCase {
         XCTAssertFalse(doc.isModified)
     }
 
+    // MARK: - Session projection of "Convert to" and BOM state
+
+    func testSessionDataCarriesSaveEncodingAndPendingConversion() throws {
+        let doc = DocumentModel(text: "héllo", encoding: "UTF-8")
+        try doc.convertEncoding(to: "UTF-16LE")
+
+        let data = doc.toSessionData()
+
+        XCTAssertEqual(data["encoding"] as? String, "UTF-8")
+        XCTAssertEqual(data["saveEncoding"] as? String, "UTF-16LE")
+        XCTAssertEqual(data["saveConversionPending"] as? Bool, true)
+
+        let restored = try XCTUnwrap(DocumentModel.fromSessionData(data))
+        XCTAssertEqual(restored.encoding, "UTF-8", "Convert to does not change the decode encoding")
+        XCTAssertEqual(restored.saveEncoding, "UTF-16LE")
+        XCTAssertTrue(restored.hasPendingSaveConversion)
+        XCTAssertTrue(restored.unsavedChanges, "a pending conversion must survive the round trip")
+    }
+
+    func testLegacySessionWithoutConversionKeysHasNoPendingConversion() throws {
+        // Exactly the shape sessions had before saveEncoding/keepsBOM existed.
+        let legacy: [String: Any] = [
+            "id": UUID().uuidString,
+            "text": "legacy text",
+            "name": "legacy.txt",
+            "encoding": "Windows-1252",
+            "eolType": "LF",
+            "language": "Plain Text",
+            "isModified": false
+        ]
+
+        let restored = try XCTUnwrap(DocumentModel.fromSessionData(legacy))
+
+        XCTAssertEqual(restored.saveEncoding, "Windows-1252", "missing key falls back to the decode encoding")
+        XCTAssertFalse(restored.hasPendingSaveConversion)
+        XCTAssertFalse(restored.keepsBOM)
+        XCTAssertFalse(restored.unsavedChanges)
+    }
+
+    func testSaveReEmitsUTF16LEBOM() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hexpad-bom-save-\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let doc = DocumentModel(text: "hello", filePath: tmp, encoding: "UTF-16LE")
+        doc.keepsBOM = true
+        try doc.save()
+
+        let saved = try Data(contentsOf: tmp)
+        XCTAssertTrue(saved.starts(with: Data([0xFF, 0xFE])), "the BOM must be written back")
+        XCTAssertEqual(String(data: EncodingDetective.strippingBOM(from: saved),
+                              encoding: .utf16LittleEndian),
+                       "hello")
+        XCTAssertEqual(try doc.toSessionData()["keepsBOM"] as? Bool, true)
+    }
+
+    func testSaveDoesNotInventBOMWhenTheFileHadNone() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hexpad-no-bom-save-\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let doc = DocumentModel(text: "hello", filePath: tmp, encoding: "UTF-16LE")
+        XCTAssertFalse(doc.keepsBOM)
+        try doc.save()
+
+        let saved = try Data(contentsOf: tmp)
+        XCTAssertEqual(saved, "hello".data(using: .utf16LittleEndian))
+    }
+
+    func testExternalChangeFlagIsClearedWhenTheBufferSettles() {
+        let doc = DocumentModel(text: "draft")
+        doc.noteExternalChange()
+        XCTAssertTrue(doc.hasExternalChange)
+
+        doc.setModified(false)
+
+        XCTAssertFalse(doc.hasExternalChange, "settling the buffer resolves the conflict")
+    }
+
     // MARK: - Per-document editor state (caret, scroll, wrap, zoom)
 
     func testEditorStateDefaultsOnFreshDocument() {

@@ -51,6 +51,8 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         // Dirty documents stay dirty on quit; the session store preserves dirty buffers.
+        // saveSession writes immediately (superseding the debounced write), so
+        // the quit path never waits for a pending timer.
         if let wc = windowController {
             // Then save the session state
             wc.saveSession()
@@ -63,14 +65,10 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     private func restoreSession() {
         guard let (tabs, index) = SessionStore.restore() else { return }
         
-        // Filter out documents whose files no longer exist on disk
-        let validDocs = tabs.documents.filter { doc -> Bool in
-            if let path = doc.filePath?.path {
-                return FileManager.default.fileExists(atPath: path)
-            }
-            // Keep untitled docs (they have no file path to validate)
-            return true
-        }
+        // Keep untitled buffers and file-backed tabs whose file still exists.
+        // A missing file is only dropped when there is nothing to lose; see
+        // `restorableDocuments(from:)`.
+        let validDocs = Self.restorableDocuments(from: tabs.documents)
         
         // Restore tab store with filtered documents
         let restoredTabs = TabStore()
@@ -86,6 +84,22 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         windowController?.tabStore.selectedIndex = restoredIndex
         windowController?.refreshTabBar()
         windowController?.updateEditor()
+    }
+
+    /// Chooses which documents from a saved session are worth restoring.
+    ///
+    /// Untitled buffers and file-backed tabs whose file still exists always
+    /// survive. A tab whose file has disappeared survives only while it has
+    /// unsaved changes: dropping it silently discarded the buffer, so the
+    /// buffer is kept as an ordinary dirty tab. Its `filePath` is preserved,
+    /// which means Save writes back to the original location (re-creating the
+    /// file) instead of asking for a new name; Save As still offers that.
+    static func restorableDocuments(from documents: [DocumentModel]) -> [DocumentModel] {
+        documents.filter { doc in
+            guard let path = doc.filePath?.path else { return true }
+            if FileManager.default.fileExists(atPath: path) { return true }
+            return doc.unsavedChanges
+        }
     }
     
     // MARK: - Menu

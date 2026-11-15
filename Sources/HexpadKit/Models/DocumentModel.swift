@@ -54,9 +54,22 @@ public final class DocumentModel: Identifiable, ObservableObject {
     private var _saveEncoding: String?
     /// True when a "Convert to" changed how the next save serializes the
     /// buffer (encoding or line endings) without editing the text itself.
+    /// Persisted with the session: a restored tab must still save with the
+    /// bytes the user picked, even if the app was quit before that save.
     private var _saveConversionPending = false
     private var _eolType: String = "LF"
     private var _language: String = "Plain Text"
+
+    /// True when the backing file starts with a byte order mark. The buffer
+    /// never contains the BOM (it is stripped when decoding), so the next save
+    /// re-emits one from this flag. Persisted with the session.
+    public var keepsBOM: Bool = false
+
+    /// Set when the backing file changed on disk while this buffer held
+    /// unsaved edits. The buffer is deliberately kept; this flag records the
+    /// conflict so the app can surface it. `setModified(true)` cannot express
+    /// this because the document is already dirty.
+    public private(set) var hasExternalChange = false
     
     /// The encoding the buffer was decoded with (shown in the status bar).
     public var encoding: String { _encoding }
@@ -64,6 +77,10 @@ public final class DocumentModel: Identifiable, ObservableObject {
     /// The encoding `save()` will write. Usually equals `encoding`, but
     /// "Convert to" can retarget the next save without re-decoding the buffer.
     public var saveEncoding: String { _saveEncoding ?? _encoding }
+
+    /// True while a "Convert to" (encoding or line endings) is waiting to
+    /// change the bytes the next save writes.
+    public var hasPendingSaveConversion: Bool { _saveConversionPending }
 
     /// The line-ending style used when this document is saved: `"CRLF"`,
     /// `"LF"` or `"CR"`. Detected from the initial text unless the caller
@@ -186,6 +203,7 @@ public final class DocumentModel: Identifiable, ObservableObject {
     public func reloadText(_ newText: String) {
         _originalText = newText
         _saveConversionPending = false
+        hasExternalChange = false
         replaceAllText(with: newText)
     }
     
@@ -193,10 +211,19 @@ public final class DocumentModel: Identifiable, ObservableObject {
         if !modified {
             self._originalText = self.text
             self._saveConversionPending = false
+            self.hasExternalChange = false
             if let filePath {
                 self.savedModificationDate = try? FileManager.default.attributesOfItem(atPath: filePath.path)[.modificationDate] as? Date
             }
         }
+    }
+
+    /// Records that the backing file changed on disk while this buffer had
+    /// unsaved edits. The buffer is kept, so dirty state is already true;
+    /// this flag is the only observable change such a conflict can make.
+    /// Cleared by `reloadText(_:)` (an explicit reload) and by saving.
+    public func noteExternalChange() {
+        hasExternalChange = true
     }
     
     public func save() throws {
@@ -224,7 +251,15 @@ public final class DocumentModel: Identifiable, ObservableObject {
         guard let data = serialized.data(using: enc) else {
             throw DocumentError.saveFailed("cannot encode text as \(self.saveEncoding)")
         }
-        return data
+        // The buffer never holds the BOM (open/decode strip it), so a file
+        // that came with one gets it back here. Foundation's native-order
+        // UTF-16/UTF-32 encoders emit their own BOM, hence the prefix check.
+        guard keepsBOM,
+              let bom = EncodingDetective.bomBytes(for: self.saveEncoding),
+              !data.starts(with: bom) else {
+            return data
+        }
+        return bom + data
     }
     
     /// "Convert to" line endings: retarget the next save at `newType` without
@@ -248,9 +283,13 @@ public final class DocumentModel: Identifiable, ObservableObject {
     @discardableResult
     public func redecode(from data: Data, as encoding: String) -> Bool {
         let nsEncoding = String.Encoding(rawValue: EncodingDetective.nsEncoding(from: encoding))
-        guard let text = String(data: data, encoding: nsEncoding) else { return false }
+        let body = EncodingDetective.strippingBOM(from: data)
+        guard let text = String(data: body, encoding: nsEncoding) else { return false }
         _encoding = encoding
         _saveEncoding = encoding
+        // Keep the byte-order information with the document: the buffer is
+        // BOM-free, so the next save has to put the BOM back itself.
+        keepsBOM = EncodingDetective.detectBOM(of: data) != nil
         reloadText(text)
         return true
     }
@@ -290,6 +329,12 @@ public final class DocumentModel: Identifiable, ObservableObject {
             "text": self.text,
             "name": self.name,
             "encoding": self.encoding,
+            // The decode encoding and the next save's encoding can differ
+            // after "Convert to"; both must survive a quit. The pending flag
+            // is what keeps the converted document dirty across a restore.
+            "saveEncoding": self.saveEncoding,
+            "saveConversionPending": self.hasPendingSaveConversion,
+            "keepsBOM": self.keepsBOM,
             "eolType": self.eolType,
             "language": self.language,
             "isModified": self.isModified,
@@ -317,9 +362,16 @@ public final class DocumentModel: Identifiable, ObservableObject {
         // fail outright or come back percent-encoded and restore as broken tabs.
         let filePath = (data["filePath"] as? String).map { URL(fileURLWithPath: $0) }
         let isModified = data["isModified"] as? Bool ?? false
+        // Sessions written before these keys existed have no "Convert to"
+        // state: the next save keeps using the decode encoding and nothing is
+        // pending, which is exactly what those older documents did.
+        let saveEncoding = data["saveEncoding"] as? String ?? encoding
+        let pendingConversion = data["saveConversionPending"] as? Bool ?? false
+        let keepsBOM = data["keepsBOM"] as? Bool ?? false
         let doc = DocumentModel(text: text, filePath: filePath, encoding: encoding, eolType: eolType)
         doc.name = name
         doc._language = language
+        doc.keepsBOM = keepsBOM
         // Sessions written before per-document editor state existed have no
         // "editorState" key; absence restores the startup defaults.
         doc.editorState = DocumentEditorState.fromSessionData(data["editorState"] as? [String: Any])
@@ -334,17 +386,28 @@ public final class DocumentModel: Identifiable, ObservableObject {
         // File-backed docs diff against their on-disk content; untitled buffers have no
         // file, so their baseline is the empty (never-saved) buffer.
         if isModified {
-            if let filePath, FileManager.default.fileExists(atPath: filePath.path) {
+            if let filePath, FileManager.default.fileExists(atPath: filePath.path),
+               let onDisk = try? Data(contentsOf: filePath),
+               // Decode with the document's own encoding (and strip its BOM):
+               // reading UTF-16/CP1252 as UTF-8 used to fail, silently making
+               // a restored dirty buffer look clean.
+               let savedText = EncodingDetective.decodeForEditing(onDisk, as: encoding) {
                 // Document was modified and file exists — read the on-disk content as
                 // the saved original so the in-memory diff reflects unsaved changes.
-                doc._originalText = (try? String(contentsOf: filePath, encoding: .utf8)) ?? text
+                doc._originalText = savedText
             } else {
-                // Untitled restored buffer — no file to diff against, mark modified directly.
+                // Untitled restored buffer (or a file that vanished): there is
+                // no readable baseline, so treat the whole buffer as unsaved.
                 doc._originalText = ""
             }
         } else {
             doc.setModified(false)
         }
+        // Apply "Convert to" state after the baseline: setModified(false)
+        // clears the pending flag, but an explicitly persisted conversion has
+        // to survive the restore.
+        doc._saveEncoding = saveEncoding
+        doc._saveConversionPending = pendingConversion
         return doc
     }
 }

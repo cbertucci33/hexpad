@@ -74,6 +74,35 @@ public final class EncodingDetective {
     
     // MARK: - BOM stripping
     
+    /// The byte order mark `encoding` should be written with, or nil when the
+    /// encoding is BOM-less or is a native-order name (`"UTF-16"`, `"UTF-32"`)
+    /// whose Foundation encoder already emits one.
+    ///
+    /// Used by `DocumentModel` to re-emit the BOM of a file that was opened
+    /// with one: the editor buffer never contains a BOM, because it is
+    /// stripped during decode.
+    public static func bomBytes(for encoding: String) -> Data? {
+        switch normalizedName(encoding) {
+        case "UTF8": return Data([0xEF, 0xBB, 0xBF])
+        case "UTF16LE": return Data([0xFF, 0xFE])
+        case "UTF16BE": return Data([0xFE, 0xFF])
+        case "UTF32LE": return Data([0xFF, 0xFE, 0x00, 0x00])
+        case "UTF32BE": return Data([0x00, 0x00, 0xFE, 0xFF])
+        default: return nil
+        }
+    }
+
+    /// Decodes raw file bytes the way the editor should see them: a leading
+    /// BOM is removed so the buffer starts at the first real character, then
+    /// the remaining bytes are decoded with `encoding`.
+    ///
+    /// Returns nil when the bytes are not valid for `encoding`.
+    public static func decodeForEditing(_ data: Data, as encoding: String) -> String? {
+        let body = strippingBOM(from: data)
+        let nsEncoding = String.Encoding(rawValue: nsEncoding(from: encoding))
+        return String(data: body, encoding: nsEncoding)
+    }
+
     /// Removes a leading byte order mark from `data`, returning the cleaned bytes.
     /// Returns the original data when no BOM is present.
     public static func strippingBOM(from data: Data) -> Data {
@@ -210,11 +239,7 @@ public final class EncodingDetective {
     /// resolve ("UTF-16-LE" and "UTF-16LE"). Every string that encodingName(from:) can
     /// emit must round-trip back to the same UInt here.
     public static func nsEncoding(from name: String) -> UInt {
-        let normalized = name.uppercased()
-            .replacingOccurrences(of: "-", with: "")
-            .replacingOccurrences(of: "_", with: "")
-            .replacingOccurrences(of: " ", with: "")
-        switch normalized {
+        switch normalizedName(name) {
         case "UTF8": return String.Encoding.utf8.rawValue
         case "UTF16": return String.Encoding.utf16.rawValue
         case "UTF16LE": return String.Encoding.utf16LittleEndian.rawValue
@@ -234,5 +259,15 @@ public final class EncodingDetective {
         case "NONLOSSYASCII": return String.Encoding.nonLossyASCII.rawValue
         default: return String.Encoding.utf8.rawValue
         }
+    }
+
+    /// One spelling for the encoding names callers pass in: strips dashes,
+    /// underscores and spaces, then uppercases. "UTF-16-LE" and "UTF-16LE"
+    /// both resolve to "UTF16LE".
+    private static func normalizedName(_ name: String) -> String {
+        name.uppercased()
+            .replacingOccurrences(of: "-", with: "")
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: " ", with: "")
     }
 }
