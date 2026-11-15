@@ -174,7 +174,11 @@ public final class SyntaxTokenizer {
     private static let tokenTypeByName: [String: TokenType] = [
         "keyword": .keyword, "string": .string, "comment": .comment, "number": .number,
         "type": .type, "function": .function, "variable": .variable, "operator": .`operator`,
-        "punctuation": .punctuation, "whitespace": .whitespace, "plain": .plain
+        "punctuation": .punctuation, "whitespace": .whitespace, "plain": .plain,
+        "tag": .keyword, "closing_tag": .keyword, "attribute": .variable, "selector": .type,
+        "property": .variable, "value": .string, "entity": .number, "heading": .function,
+        "bold": .type, "italic": .type, "code": .string, "link": .variable, "image": .variable,
+        "blockquote": .comment, "list": .`operator`, "hrule": .`operator`
     ]
 
     // MARK: - Compiled Regex Cache
