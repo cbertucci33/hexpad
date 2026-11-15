@@ -28,6 +28,28 @@ final class SyntaxTokenizerTests: XCTestCase {
         let types = tokens.map { $0.type }
         XCTAssertTrue(types.contains(.comment))
     }
+
+    // Regression for card c8028c4b: the comment rule must highlight `/* */`
+    // block comments, not require a literal `#"` prefix.
+    func testJavaScriptBlockCommentDetection() {
+        let source = """
+        /* block
+           comment */
+        const value = 1
+        """
+        let tokens = SyntaxTokenizer.tokenize(source, language: .javascript)
+        let comments = tokens.filter { $0.type == .comment }
+        XCTAssertEqual(comments.count, 1)
+        XCTAssertEqual(comments.first?.text, "/* block\n   comment */")
+    }
+
+    func testTypeScriptBlockCommentDetection() {
+        let source = "/** doc block */\nlet value: number = 1"
+        let tokens = SyntaxTokenizer.tokenize(source, language: .typescript)
+        let comments = tokens.filter { $0.type == .comment }
+        XCTAssertEqual(comments.count, 1)
+        XCTAssertEqual(comments.first?.text, "/** doc block */")
+    }
     
     func testStringDetection() {
         let tokens = SyntaxTokenizer.tokenize("'hello world'", language: .python)

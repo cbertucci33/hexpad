@@ -30,7 +30,7 @@ extension LexerDefinition {
         {
           "name": "comment",
           "patterns": [
-            "(?m)(?:^|[^\\\\])\\/\\/[^\\n]*|#\"(?ms)/\\*[\\s\\S]*?\\*/"
+            "(?m)(?:^|[^\\\\])\\/\\/[^\\n]*|(?ms)/\\*[\\s\\S]*?\\*/"
           ]
         },
         {
@@ -49,12 +49,6 @@ extension LexerDefinition {
           "name": "type",
           "patterns": [
             "\\b(String|Number|Boolean|Object|Array|Function|Symbol|undefined|null|Promise|Map|Set|WeakMap|WeakSet|RegExp|Date|Error|JSON|Math|console)\\b"
-          ]
-        },
-        {
-          "name": "regex",
-          "patterns": [
-            "/[^/\\n]*[/igmu]*"
           ]
         }
       ],

@@ -13,12 +13,18 @@ final class LexerDefinitionTests: XCTestCase {
         "punctuation": [#"[{}\[\],:]"#]
     ]
 
-    /// The pre-migration Swift rule tables, copied verbatim from
+    /// The pre-migration Swift rule tables, copied from
     /// `SyntaxTokenizer.languageRules` before slice S-P8b removed it.
     ///
     /// These fixtures are the "before" side of the per-language token-parity
     /// checks: they are compiled and tokenized exactly the way the tokenizer
     /// used to consume them.
+    ///
+    /// Contract change (cards c8028c4b / 8416808d): the JavaScript and
+    /// TypeScript `comment` entries no longer carry the stray `#"` literal that
+    /// disabled block-comment highlighting, and the inert JavaScript `regex`
+    /// entry was removed. The fixtures mirror the corrected grammars so the
+    /// parity checks still describe the shipped rules.
     private let legacyRules: [Language: [String: [String]]] = [
         .python: [
             "keyword": [#"\b(def|class|if|elif|else|while|for|in|return|import|from|as|with|try|except|finally|raise|pass|break|continue|and|or|not|is|None|True|False|lambda|yield|global|nonlocal|assert|del)\b"#],
@@ -31,16 +37,15 @@ final class LexerDefinitionTests: XCTestCase {
         .javascript: [
             "keyword": [#"\b(const|let|var|function|if|else|elif|while|for|do|switch|case|break|continue|return|new|this|class|extends|import|export|from|default|async|await|try|catch|finally|throw|typeof|instanceof|in|of|yield|delete|void|typeof)\b"#],
             "string": [#"(?:`[^`]*`|'[^']*'|\"[^\"]*\")"#],
-            "comment": [#"(?m)(?:^|[^\\])\/\/[^\n]*|#"(?ms)/\*[\s\S]*?\*/"#],
+            "comment": [#"(?m)(?:^|[^\\])\/\/[^\n]*|(?ms)/\*[\s\S]*?\*/"#],
             "number": [#"\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?(?:n)?\b"#],
             "function": [#"\b[a-zA-Z_$]\w*(?=\s*\()"#],
-            "type": [#"\b(String|Number|Boolean|Object|Array|Function|Symbol|undefined|null|Promise|Map|Set|WeakMap|WeakSet|RegExp|Date|Error|JSON|Math|console)\b"#],
-            "regex": [#"/[^/\n]*[/igmu]*"#]
+            "type": [#"\b(String|Number|Boolean|Object|Array|Function|Symbol|undefined|null|Promise|Map|Set|WeakMap|WeakSet|RegExp|Date|Error|JSON|Math|console)\b"#]
         ],
         .typescript: [
             "keyword": [#"\b(const|let|var|function|if|else|while|for|switch|case|break|continue|return|new|this|class|extends|interface|type|enum|implements|import|export|from|default|async|await|try|catch|finally|throw|typeof|instanceof|in|of|yield|declare|abstract|readonly|as|is|keyof|namespace|module|package)\b"#],
             "string": [#"(?:`[^`]*`|'[^']*'|\"[^\"]*\")"#],
-            "comment": [#"(?m)(?:^|[^\\])\/\/[^\n]*|#"(?ms)/\*[\s\S]*?\*/"#],
+            "comment": [#"(?m)(?:^|[^\\])\/\/[^\n]*|(?ms)/\*[\s\S]*?\*/"#],
             "number": [#"\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?(?:n)?\b"#],
             "function": [#"\b[a-zA-Z_$]\w*(?=\s*\()"#],
             "type": [#"\b(String|Number|Boolean|Object|Array|Function|Symbol|undefined|null|void|never|any|unknown|true|false|Promise|Map|Set|Partial|Required|Record|Pick|Omit|Exclude|Extract|NonNullable|ReturnType|Parameters|InstanceType)\b"#]
@@ -287,13 +292,45 @@ final class LexerDefinitionTests: XCTestCase {
         }
     }
 
-    func testUnmappedLegacyRuleNameStaysInert() {
-        // JavaScript's "regex" entry never mapped to a token type in the legacy
-        // table, so the loader skipped it then and skips it now. The copied
-        // definition keeps the rule verbatim; behavior is unchanged.
+    func testUnmappedRuleNameStaysInert() {
+        // Contract change (card 8416808d): JavaScript's inert "regex" rule was
+        // removed from the definition rather than mapped, because mapping it to
+        // an existing token type would highlight `/` division and comment text
+        // as regex literals. The loader still skips any unmapped rule name, so
+        // keep that guarantee covered with a synthetic definition.
         XCTAssertNil(SyntaxTokenizer.tokenTypeByName["regex"])
-        XCTAssertTrue(LexerDefinitions.definition(for: .javascript)?
-            .rules.contains { $0.name == "regex" } ?? false)
+
+        let definition = LexerDefinition(
+            language: "Sample",
+            rules: [
+                .init(name: "regex", patterns: [#"/[^/\n]*[/igmu]*"#]),
+                .init(name: "keyword", patterns: [#"\blet\b"#])
+            ]
+        )
+        XCTAssertEqual(LexerDefinitionLoader.compiledRules(from: definition).map(\.type),
+                       [.keyword],
+                       "an unmapped rule name must not compile into a token rule")
+    }
+
+    // MARK: - JavaScript/TypeScript regressions
+
+    func testJavaScriptAndTypeScriptBlockCommentPatternsHaveNoRawLiteralArtifact() throws {
+        for language in [Language.javascript, .typescript] {
+            let definition = try XCTUnwrap(LexerDefinitions.definition(for: language))
+            let comment = try XCTUnwrap(definition.rules.first { $0.name == "comment" },
+                                        "\(language.rawValue) has no comment rule")
+            XCTAssertEqual(comment.patterns,
+                           [#"(?m)(?:^|[^\\])\/\/[^\n]*|(?ms)/\*[\s\S]*?\*/"#],
+                           "\(language.rawValue) comment rule still carries the #\" artifact")
+        }
+    }
+
+    func testJavaScriptDefinitionHasNoInertRegexRule() throws {
+        // Contract change (card 8416808d): the JS regex-literal rule never had
+        // a token type and could not be made useful without a new TokenType, so
+        // it was deleted instead of left as dead data.
+        let definition = try XCTUnwrap(LexerDefinitions.definition(for: .javascript))
+        XCTAssertFalse(definition.rules.contains { $0.name == "regex" })
     }
 
     func testCompiledRulesForLanguageComeFromTheDefinition() {
