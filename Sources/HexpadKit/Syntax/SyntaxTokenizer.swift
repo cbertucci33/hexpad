@@ -213,7 +213,7 @@ public final class SyntaxTokenizer {
 
     private static let regexCache = RegexCache()
 
-    private static func compiledRules(for language: Language) -> [CompiledRule] {
+    static func compiledRules(for language: Language) -> [CompiledRule] {
         regexCache.rules(for: language) {
             // Data-driven definitions take precedence; the cache is keyed by
             // language either way, so migrated languages still compile once.
@@ -237,7 +237,12 @@ public final class SyntaxTokenizer {
     /// `text`, so callers can attribute just a viewport without touching the
     /// rest of the buffer.
     public static func tokenize(_ text: String, language: Language, in range: NSRange) -> [Token] {
-        tokenize(text, rules: compiledRules(for: language), in: range)
+        switch language {
+        case .html, .xml:
+            return tokenizeEmbeddedLanguages(text, language: language, in: range)
+        default:
+            return tokenize(text, rules: compiledRules(for: language), in: range)
+        }
     }
 
     /// Tokenize `range` with an already-compiled rule set. This is the shared
@@ -307,6 +312,243 @@ public final class SyntaxTokenizer {
             appendGap(nsText, from: cursor, to: limit, into: &tokens)
         }
         return tokens
+    }
+
+    // MARK: - Embedded Languages
+
+    /// A region whose interior is tokenized by a different language.
+    private struct EmbeddedRegion {
+        let language: Language
+        let contentRange: NSRange
+    }
+
+    /// Tokenizes HTML/XML documents while delegating `<style>` interiors to the
+    /// CSS rules and `<script>` interiors to the JavaScript rules.
+    ///
+    /// The first pass locates the embedded interiors, skipping HTML comments and
+    /// quoted attribute values. The second pass tokenizes each markup gap with
+    /// the document language's rules and each interior with the embedded
+    /// language's rules. Both rule sets come from `compiledRules(for:)`, so the
+    /// regex cache is reused and nothing is recompiled per keystroke.
+    private static func tokenizeEmbeddedLanguages(_ text: String,
+                                                  language: Language,
+                                                  in range: NSRange) -> [Token] {
+        let nsText = text as NSString
+        let length = nsText.length
+        guard range.location >= 0, range.length >= 0,
+              range.location <= length,
+              range.length <= length - range.location else {
+            return []
+        }
+        let markupRules = compiledRules(for: language)
+        guard range.length > 0 else { return [] }
+
+        let regions = embeddedRegions(in: nsText)
+        let rangeEnd = NSMaxRange(range)
+        var interiors: [(range: NSRange, language: Language)] = []
+        for region in regions {
+            let start = max(region.contentRange.location, range.location)
+            let end = min(NSMaxRange(region.contentRange), rangeEnd)
+            if end > start {
+                interiors.append((NSRange(location: start, length: end - start),
+                                  region.language))
+            }
+        }
+
+        // Nothing embedded in the requested viewport: keep the plain HTML/XML
+        // path byte-for-byte identical.
+        guard !interiors.isEmpty else {
+            return tokenize(text, rules: markupRules, in: range)
+        }
+
+        interiors.sort { $0.range.location < $1.range.location }
+
+        var tokens: [Token] = []
+        var cursor = range.location
+        for interior in interiors {
+            if interior.range.location > cursor {
+                let gap = NSRange(location: cursor,
+                                  length: interior.range.location - cursor)
+                tokens.append(contentsOf: tokenize(text, rules: markupRules, in: gap))
+            }
+            tokens.append(contentsOf: tokenize(text,
+                                               rules: compiledRules(for: interior.language),
+                                               in: interior.range))
+            cursor = NSMaxRange(interior.range)
+        }
+        if cursor < rangeEnd {
+            let gap = NSRange(location: cursor, length: rangeEnd - cursor)
+            tokens.append(contentsOf: tokenize(text, rules: markupRules, in: gap))
+        }
+
+        tokens.sort { $0.range.location < $1.range.location }
+        return tokens
+    }
+
+    /// First pass: finds `<style>` and `<script>` interiors in document order.
+    ///
+    /// Comments (`<!-- ... -->`), declarations, processing instructions, and
+    /// quoted attribute values are skipped, so markup that merely mentions a
+    /// tag does not start an embedded region.
+    private static func embeddedRegions(in text: NSString) -> [EmbeddedRegion] {
+        var regions: [EmbeddedRegion] = []
+        let length = text.length
+        var index = 0
+
+        while index < length {
+            let searchRange = NSRange(location: index, length: length - index)
+            let tagStart = text.range(of: "<", options: [], range: searchRange)
+            guard tagStart.location != NSNotFound else { break }
+            let start = tagStart.location
+
+            if hasPrefix("<!--", in: text, at: start) {
+                let commentContent = start + 4
+                let rest = NSRange(location: commentContent, length: length - commentContent)
+                let close = text.range(of: "-->", options: [], range: rest)
+                index = close.location == NSNotFound ? length : NSMaxRange(close)
+                continue
+            }
+
+            if start + 1 < length {
+                let marker = text.character(at: start + 1)
+                if marker == 0x21 /* ! */ || marker == 0x3F /* ? */ {
+                    index = endOfTag(in: text, from: start + 2)
+                    continue
+                }
+                if marker == 0x2F /* / */ {
+                    index = endOfTag(in: text, from: start + 2)
+                    continue
+                }
+            }
+
+            guard let nameRange = tagNameRange(in: text, at: start) else {
+                index = start + 1
+                continue
+            }
+            let name = text.substring(with: nameRange).lowercased()
+            let tagEnd = endOfTag(in: text, from: NSMaxRange(nameRange))
+            guard tagEnd > start else { index = length; break }
+
+            // A slash immediately before `>` marks a self-closing tag, which
+            // has no embedded interior.
+            let closeBracket = tagEnd - 1
+            var last = closeBracket - 1
+            while last > start && isWhitespace(text.character(at: last)) {
+                last -= 1
+            }
+            let selfClosing = last > start && text.character(at: last) == 0x2F
+
+            if (name == "style" || name == "script") && !selfClosing {
+                let embeddedLanguage: Language = name == "style" ? .css : .javascript
+                let closing = closingTag(in: text, named: name, from: tagEnd)
+                if let closing {
+                    let contentLength = closing.location - tagEnd
+                    if contentLength > 0 {
+                        regions.append(EmbeddedRegion(
+                            language: embeddedLanguage,
+                            contentRange: NSRange(location: tagEnd, length: contentLength)
+                        ))
+                    }
+                    index = NSMaxRange(closing)
+                } else {
+                    if tagEnd < length {
+                        regions.append(EmbeddedRegion(
+                            language: embeddedLanguage,
+                            contentRange: NSRange(location: tagEnd, length: length - tagEnd)
+                        ))
+                    }
+                    index = length
+                }
+                continue
+            }
+
+            index = tagEnd
+        }
+
+        return regions
+    }
+
+    private static func hasPrefix(_ prefix: String, in text: NSString, at location: Int) -> Bool {
+        let prefixLength = (prefix as NSString).length
+        guard location >= 0, location + prefixLength <= text.length else { return false }
+        return text.compare(prefix,
+                            options: [],
+                            range: NSRange(location: location, length: prefixLength)) == .orderedSame
+    }
+
+    private static func tagNameRange(in text: NSString, at start: Int) -> NSRange? {
+        var index = start + 1
+        guard index < text.length, isLetter(text.character(at: index)) else { return nil }
+        index += 1
+        while index < text.length {
+            let character = text.character(at: index)
+            guard isLetter(character) || isDigit(character)
+                    || character == 0x2D /* - */ || character == 0x3A /* : */ else {
+                break
+            }
+            index += 1
+        }
+        return NSRange(location: start + 1, length: index - (start + 1))
+    }
+
+    /// Returns the offset just past the tag's closing `>`, ignoring `>` inside
+    /// single- or double-quoted attribute values.
+    private static func endOfTag(in text: NSString, from start: Int) -> Int {
+        var index = start
+        var quote: unichar = 0
+        while index < text.length {
+            let character = text.character(at: index)
+            if quote != 0 {
+                if character == quote { quote = 0 }
+            } else if character == 0x22 /* " */ || character == 0x27 /* ' */ {
+                quote = character
+            } else if character == 0x3E /* > */ {
+                return index + 1
+            }
+            index += 1
+        }
+        return text.length
+    }
+
+    /// Finds the `</name ...>` that closes an embedded block, case-insensitively,
+    /// and returns its full range (including the closing `>`).
+    private static func closingTag(in text: NSString, named name: String, from start: Int) -> NSRange? {
+        let needle = "</" + name
+        let length = text.length
+        var searchStart = start
+        while searchStart < length {
+            let searchRange = NSRange(location: searchStart, length: length - searchStart)
+            let match = text.range(of: needle, options: .caseInsensitive, range: searchRange)
+            guard match.location != NSNotFound else { return nil }
+            let afterName = NSMaxRange(match)
+            if afterName < length {
+                let character = text.character(at: afterName)
+                if character == 0x3E /* > */ {
+                    return NSRange(location: match.location,
+                                   length: afterName + 1 - match.location)
+                }
+                if character == 0x2F /* / */ || isWhitespace(character) {
+                    let end = endOfTag(in: text, from: afterName)
+                    return NSRange(location: match.location, length: end - match.location)
+                }
+            } else {
+                return NSRange(location: match.location, length: length - match.location)
+            }
+            searchStart = afterName
+        }
+        return nil
+    }
+
+    private static func isLetter(_ character: unichar) -> Bool {
+        (character >= 0x41 && character <= 0x5A) || (character >= 0x61 && character <= 0x7A)
+    }
+
+    private static func isDigit(_ character: unichar) -> Bool {
+        character >= 0x30 && character <= 0x39
+    }
+
+    private static func isWhitespace(_ character: unichar) -> Bool {
+        character == 0x20 || character == 0x09 || character == 0x0A || character == 0x0D
     }
 
     /// Emits the unmatched run between two matches as one token instead of one
