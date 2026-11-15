@@ -130,12 +130,19 @@ public final class DocumentModel: Identifiable, ObservableObject {
         let doc = DocumentModel(text: text, filePath: filePath, encoding: encoding, eolType: eolType)
         doc.name = name
         doc._language = language
-        // Restore dirty state: if marked modified but file exists on disk, reset original
-        // so the in-memory diff reflects actual unsaved changes
-        if isModified, FileManager.default.fileExists(atPath: filePath?.path ?? "") {
-            // Document was modified and file exists — keep current text as-is (unsaved)
-            // _originalText stays empty so isModified returns true
-        } else if !isModified {
+        // Restore dirty state: if marked modified, diff against the real saved baseline.
+        // File-backed docs diff against their on-disk content; untitled buffers have no
+        // file, so their baseline is the empty (never-saved) buffer.
+        if isModified {
+            if let filePath, FileManager.default.fileExists(atPath: filePath.path) {
+                // Document was modified and file exists — read the on-disk content as
+                // the saved original so the in-memory diff reflects unsaved changes.
+                doc._originalText = (try? String(contentsOf: filePath, encoding: .utf8)) ?? text
+            } else {
+                // Untitled restored buffer — no file to diff against, mark modified directly.
+                doc._originalText = ""
+            }
+        } else {
             doc.setModified(false)
         }
         return doc
