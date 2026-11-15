@@ -1,4 +1,0 @@
-module HexpadKit {
-header "HexpadKit-Swift.h"
-export *
-}
