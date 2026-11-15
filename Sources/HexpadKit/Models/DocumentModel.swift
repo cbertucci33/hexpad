@@ -1,17 +1,37 @@
-import Foundation
+import AppKit
 
-/// Represents an opened document with text content, file backing, and metadata
+/// Represents an opened document with text content, file backing, and metadata.
+///
+/// The document owns the one authoritative buffer (`textStorage`). The editor's
+/// NSTextView is attached to this storage through its layout manager, so there
+/// is no second copy to keep in sync: typing and programmatic edits (find,
+/// replace, line ops, reloads) all mutate the same characters.
 public final class DocumentModel: Identifiable, ObservableObject {
     public let id: UUID
     public private(set) var filePath: URL?
-    public var text: String
+
+    /// The single source of truth for this document's text.
+    public let textStorage: NSTextStorage
+
+    /// Convenience view of the shared buffer. Assigning routes through
+    /// `textStorage` and registers undo like any other edit.
+    public var text: String {
+        get { textStorage.string }
+        set { replaceAllText(with: newValue) }
+    }
+
     public var name: String
+
+    /// Posted after a programmatic mutation of `textStorage`. Typing is
+    /// reported by NSTextView through its delegate instead.
+    public static let textDidChangeNotification = Notification.Name("DocumentModelTextDidChange")
     
     /// Dirty means the in-memory text differs from what was last saved.
     /// This used to compare the file's on-disk mtime, which ordinary typing
     /// does not change, so a saved file never reported modified and quit-time
-    /// autosave skipped it. External-change detection is separate and not yet
-    /// implemented, so the in-memory diff is the truthful signal here.
+    /// autosave skipped it. The in-memory diff remains the truthful signal;
+    /// the app's external-change watcher resets the baseline via
+    /// `reloadText(_:)` when it replaces a clean buffer.
     public var isModified: Bool { unsavedChanges }
     
     public var unsavedChanges: Bool { text != _originalText }
@@ -37,7 +57,7 @@ public final class DocumentModel: Identifiable, ObservableObject {
     public init(text: String = "", filePath: URL? = nil, encoding: String = "UTF-8", eolType: String = "LF") {
         self.id = UUID()
         self.filePath = filePath
-        self.text = text
+        self.textStorage = NSTextStorage(string: text)
         self.name = filePath?.lastPathComponent ?? "Untitled"
         self._encoding = encoding
         self._eolType = eolType
@@ -47,6 +67,46 @@ public final class DocumentModel: Identifiable, ObservableObject {
                 self.savedModificationDate = try FileManager.default.attributesOfItem(atPath: filePath.path)[.modificationDate] as? Date
             } catch {}
         }
+    }
+
+    // MARK: - Text mutation
+
+    /// Replaces `range` in the shared buffer and registers the change on this
+    /// document's undo stack. All programmatic edits go through here so the
+    /// attached editor shows them immediately and Cmd+Z can revert them.
+    public func replaceCharacters(in range: NSRange, with replacement: String) {
+        let current = textStorage.string as NSString
+        let length = current.length
+        guard range.location != NSNotFound,
+              range.location >= 0, range.length >= 0,
+              range.location <= length,
+              range.length <= length - range.location else { return }
+
+        let oldText = current.substring(with: range)
+        guard oldText != replacement else { return }
+
+        undoManager.registerUndo(withTarget: self) { doc in
+            // Registering while undoing turns this call into the matching redo.
+            doc.replaceCharacters(in: NSRange(location: range.location,
+                                             length: (replacement as NSString).length),
+                                  with: oldText)
+        }
+        textStorage.replaceCharacters(in: range, with: replacement)
+        NotificationCenter.default.post(name: Self.textDidChangeNotification, object: self)
+    }
+
+    /// Replaces the whole buffer through the shared storage, preserving undo.
+    public func replaceAllText(with newText: String) {
+        replaceCharacters(in: NSRange(location: 0, length: (textStorage.string as NSString).length),
+                          with: newText)
+    }
+
+    /// Loads on-disk text as the new clean baseline. The replacement is still
+    /// undoable, but observers see the final baseline in the single notification
+    /// instead of a transient dirty state.
+    public func reloadText(_ newText: String) {
+        _originalText = newText
+        replaceAllText(with: newText)
     }
     
     public func setModified(_ modified: Bool) {

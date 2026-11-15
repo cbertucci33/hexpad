@@ -1,7 +1,21 @@
 import XCTest
+import AppKit
 @testable import HexpadKit
 
 final class DocumentModelTests: XCTestCase {
+
+    /// Attaches a real NSTextView to the document's storage the same way
+    /// EditorContainer does, so tests exercise the shared buffer rather than a
+    /// stand-in.
+    private func makeTextView(for doc: DocumentModel) -> NSTextView {
+        let layoutManager = NSLayoutManager()
+        doc.textStorage.addLayoutManager(layoutManager)
+        let container = NSTextContainer(size: NSSize(width: 400, height: 400))
+        layoutManager.addTextContainer(container)
+        return NSTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 400),
+                          textContainer: container)
+    }
+
     func testInitialState() {
         let doc = DocumentModel(text: "hello")
         XCTAssertEqual(doc.text, "hello")
@@ -136,6 +150,110 @@ final class DocumentModelTests: XCTestCase {
         let doc = DocumentModel(text: "a")
         XCTAssertFalse(doc.isModified)
         doc.text = "b"
+        XCTAssertTrue(doc.isModified)
+    }
+
+    // MARK: - Shared buffer: model edits are visible in the attached editor
+
+    func testReplaceCharactersIsVisibleInSharedTextView() {
+        let doc = DocumentModel(text: "hello world")
+        let textView = makeTextView(for: doc)
+
+        doc.replaceCharacters(in: NSRange(location: 0, length: 5), with: "goodbye")
+
+        XCTAssertEqual(doc.text, "goodbye world")
+        XCTAssertEqual(textView.string, "goodbye world", "find/replace must update the visible editor")
+        XCTAssertTrue(doc.undoManager.canUndo)
+    }
+
+    func testTextViewTypingWritesThroughToModel() {
+        let doc = DocumentModel(text: "hello")
+        let textView = makeTextView(for: doc)
+
+        let end = (doc.text as NSString).length
+        textView.insertText("!", replacementRange: NSRange(location: end, length: 0))
+
+        XCTAssertEqual(textView.string, "hello!")
+        XCTAssertEqual(doc.text, "hello!", "typing must update the model without a copy step")
+        XCTAssertTrue(doc.isModified)
+    }
+
+    func testReplaceAllUndoRestoresVisibleText() {
+        let doc = DocumentModel(text: "alpha beta")
+        let textView = makeTextView(for: doc)
+
+        doc.replaceAllText(with: "gamma")
+        XCTAssertEqual(textView.string, "gamma")
+
+        doc.undoManager.undo()
+        XCTAssertEqual(doc.text, "alpha beta")
+        XCTAssertEqual(textView.string, "alpha beta", "undo must restore the visible buffer")
+
+        doc.undoManager.redo()
+        XCTAssertEqual(textView.string, "gamma")
+    }
+
+    func testProgrammaticReplaceUsesOnlyThisDocumentsUndoStack() {
+        let edited = DocumentModel(text: "hello world")
+        let other = DocumentModel(text: "other")
+
+        edited.replaceCharacters(in: NSRange(location: 0, length: 5), with: "goodbye")
+
+        XCTAssertEqual(edited.text, "goodbye world")
+        XCTAssertTrue(edited.isModified)
+        XCTAssertTrue(edited.undoManager.canUndo)
+        XCTAssertFalse(other.undoManager.canUndo, "an edit must not touch another tab's stack")
+
+        edited.undoManager.undo()
+        XCTAssertEqual(edited.text, "hello world")
+        XCTAssertFalse(edited.isModified)
+    }
+
+    func testUndoSurvivesStorageRebindBetweenTabs() {
+        let first = DocumentModel(text: "alpha")
+        let second = DocumentModel(text: "beta")
+        let textView = makeTextView(for: first)
+        let layoutManager = textView.layoutManager!
+
+        first.replaceAllText(with: "ALPHA")
+        XCTAssertEqual(textView.string, "ALPHA")
+
+        // Same swap EditorContainer.bind(to:) performs on a tab switch.
+        layoutManager.replaceTextStorage(second.textStorage)
+        XCTAssertEqual(textView.string, "beta")
+        second.replaceAllText(with: "BETA")
+
+        layoutManager.replaceTextStorage(first.textStorage)
+        XCTAssertEqual(textView.string, "ALPHA", "returning to a tab keeps its edits")
+
+        first.undoManager.undo()
+        XCTAssertEqual(textView.string, "alpha", "undo applies to the visible buffer")
+        XCTAssertEqual(second.text, "BETA", "the other tab's edits are untouched")
+    }
+
+    func testEOLConversionIsVisibleAndUndoable() {
+        let doc = DocumentModel(text: "a\nb")
+        let textView = makeTextView(for: doc)
+
+        doc.convertEOL(to: "CRLF")
+        XCTAssertEqual(textView.string, "a\r\nb")
+
+        doc.undoManager.undo()
+        XCTAssertEqual(textView.string, "a\nb")
+    }
+
+    func testReloadTextIsCleanAndUndoable() {
+        let doc = DocumentModel(text: "old")
+        let textView = makeTextView(for: doc)
+
+        doc.reloadText("from disk")
+
+        XCTAssertEqual(textView.string, "from disk")
+        XCTAssertFalse(doc.isModified, "external reload becomes the clean baseline")
+        XCTAssertTrue(doc.undoManager.canUndo, "external reload is undoable")
+
+        doc.undoManager.undo()
+        XCTAssertEqual(textView.string, "old")
         XCTAssertTrue(doc.isModified)
     }
 }

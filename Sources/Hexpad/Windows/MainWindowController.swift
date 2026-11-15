@@ -51,6 +51,10 @@ class MainWindowController: NSViewController {
     private func setupNotificationObservers() {
         NotificationCenter.default.addObserver(self, selector: #selector(handleTabCloseRequested(_:)), name: NSNotification.Name("TabCloseRequested"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleDocumentModified(_:)), name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
+        // Programmatic edits (find/replace, line ops, reloads) mutate the shared
+        // storage directly, so they never reach the NSTextView delegate. Watch
+        // the model to refresh highlighting, dirty dots, and the status bar.
+        NotificationCenter.default.addObserver(self, selector: #selector(handleModelTextChange(_:)), name: DocumentModel.textDidChangeNotification, object: nil)
         // Any close path (menu toggle, Escape, × button) must restore the
         // editor to full height. Previously nothing observed this notice.
         NotificationCenter.default.addObserver(self, selector: #selector(handleFindBarClosed(_:)), name: NSNotification.Name("FindBarClosed"), object: nil)
@@ -108,6 +112,15 @@ class MainWindowController: NSViewController {
     @objc private func handleDocumentModified(_ notification: Notification) {
         refreshTabBar()
         updateStatusBar()
+    }
+
+    @objc private func handleModelTextChange(_ notification: Notification) {
+        guard let doc = notification.object as? DocumentModel else { return }
+        if doc === tabStore.selectedDocument, let editor = editorContainer {
+            applySyntaxHighlighting(to: editor, for: doc)
+        }
+        // Tab dirty dots, the status bar, and FindBar counts all key off this.
+        NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
     }
     
     // MARK: - UI Setup
@@ -496,29 +509,24 @@ class MainWindowController: NSViewController {
     
     func updateEditor() {
         guard let editor = editorContainer else { return }
-        // Flush the outgoing tab's live buffer into its model before swapping,
-        // so the just-edited text is never lost by switching tabs.
-        if let bound = editorBoundDoc, bound !== tabStore.selectedDocument {
-            bound.text = editor.textView.string
-        }
+        // There is nothing to flush: the editor's text view shares the
+        // document's storage, so the model already holds every keystroke.
         if let doc = tabStore.selectedDocument {
             editorBoundDoc = doc
             // Per-document undo stacks: switching tabs must not wipe undo.
             // NSTextView.undoManager is get-only (delegate-provided); rebind
             // the layout manager so typing registers on this doc's stack.
-            let um = doc.undoManager
-            um.disableUndoRegistration()
             let selRange = editor.textView.selectedRange
-            editor.textView.string = doc.text
+            editor.bind(to: doc)
             let maxLoc = (doc.text as NSString).length
             editor.textView.selectedRange = NSRange(location: min(selRange.location, maxLoc),
                                                     length: min(selRange.length,
                                                                 max(0, maxLoc - min(selRange.location, maxLoc))))
-            um.enableUndoRegistration()
             applySyntaxHighlighting(to: editor, for: doc)
         } else {
             editorBoundDoc = nil
-            editor.textView.string = ""
+            editor.bind(to: nil)
+            editor.textView.selectedRange = NSRange(location: 0, length: 0)
         }
         updateStatusBar()
     }
@@ -531,9 +539,11 @@ class MainWindowController: NSViewController {
         let nsText = text as NSString
         let fullRange = NSRange(location: 0, length: nsText.length)
         
-        // Plain Text = no highlighting, clear attributes
+        // Plain Text = no highlighting, but keep the editor's monospaced font:
+        // an unattributed shared storage would render as Helvetica.
         guard let langStr = Language.allCases.first(where: { $0.rawValue == doc.language }) else {
             textStorage.beginEditing()
+            textStorage.addAttribute(.font, value: editor.bodyFont, range: fullRange)
             textStorage.removeAttribute(.foregroundColor, range: fullRange)
             textStorage.removeAttribute(.backgroundColor, range: fullRange)
             textStorage.endEditing()
@@ -544,10 +554,10 @@ class MainWindowController: NSViewController {
         let theme = HexpadTheme.dark.theme
         
         textStorage.beginEditing()
-        // Reset to default foreground color and monospaced font
+        // Reset to default foreground color and the current editor font
         textStorage.setAttributes([
             .foregroundColor: theme.foreground,
-            .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+            .font: editor.bodyFont
         ], range: fullRange)
         
         // Apply per-token colors
@@ -638,13 +648,13 @@ class MainWindowController: NSViewController {
             guard let data = try? Data(contentsOf: doc.filePath!) else { continue }
             let nsEnc = String.Encoding(rawValue: EncodingDetective.nsEncoding(from: doc.encoding))
             guard let text = String(data: data, encoding: nsEnc), text != doc.text else { continue }
-            doc.text = text
+            // Reload through the shared buffer: the visible editor updates
+            // immediately and the reload stays undoable. reloadText also makes
+            // the on-disk text the clean baseline in the same notification.
+            doc.reloadText(text)
             if doc === tabStore.selectedDocument {
                 updateEditor()
-            } else {
-                refreshTabBar()
             }
-            doc.setModified(false)
         }
     }
 
@@ -655,17 +665,17 @@ class MainWindowController: NSViewController {
     }
     
     func zoomIn() {
-        guard let font = editorContainer?.textView.font else { return }
-        editorContainer?.textView.font = NSFont.monospacedSystemFont(ofSize: font.pointSize + 1, weight: .regular)
+        guard let editor = editorContainer else { return }
+        editor.setBodyFont(NSFont.monospacedSystemFont(ofSize: editor.bodyFont.pointSize + 1, weight: .regular))
     }
     
     func zoomOut() {
-        guard let font = editorContainer?.textView.font, font.pointSize > 8 else { return }
-        editorContainer?.textView.font = NSFont.monospacedSystemFont(ofSize: font.pointSize - 1, weight: .regular)
+        guard let editor = editorContainer, editor.bodyFont.pointSize > 8 else { return }
+        editor.setBodyFont(NSFont.monospacedSystemFont(ofSize: editor.bodyFont.pointSize - 1, weight: .regular))
     }
     
     func resetZoom() {
-        editorContainer?.textView.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        editorContainer?.setBodyFont(NSFont.monospacedSystemFont(ofSize: 13, weight: .regular))
     }
     
     // MARK: - Encoding
@@ -692,10 +702,10 @@ class MainWindowController: NSViewController {
 
     func setEOL(_ eol: String) {
         guard let doc = tabStore.selectedDocument else { return }
+        // convertEOL replaces through the shared storage, so the edit is
+        // visible and undoable; the model notice drives the UI refresh.
         doc.convertEOL(to: eol)
-        doc.setModified(true)
-        updateEditor()
-        NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
+        updateStatusBar()
     }
 
     // MARK: - Line operations
@@ -706,14 +716,13 @@ class MainWindowController: NSViewController {
         guard let editor = editorContainer, let doc = tabStore.selectedDocument else { return }
         let sel = editor.textView.selectedRange
         if sel.length > 0 {
-            guard let swiftRange = Range(sel, in: editor.textView.string) else { return }
-            let slice = String(editor.textView.string[swiftRange])
-            editor.textView.insertText(transform(slice), replacementRange: sel)
+            guard let swiftRange = Range(sel, in: doc.text) else { return }
+            let slice = String(doc.text[swiftRange])
+            // Mutating the shared storage keeps the visible text and the model
+            // in step, and registers the transform on this document's undo stack.
+            doc.replaceCharacters(in: sel, with: transform(slice))
         } else {
-            doc.text = transform(doc.text)
-            updateEditor()
-            doc.setModified(true)
-            NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
+            doc.replaceAllText(with: transform(doc.text))
         }
     }
 
@@ -730,11 +739,8 @@ class MainWindowController: NSViewController {
     // MARK: - Session
     
     func saveSession() {
-        // Flush the live editor buffer into the selected document so untitled
-        // (never-saved-to-disk) edits survive quit → restore.
-        if let editor = editorContainer, let doc = tabStore.selectedDocument {
-            doc.text = editor.textView.string
-        }
+        // The editor and every document share one buffer, so untitled
+        // (never-saved-to-disk) edits are already in tabStore.
         try? SessionStore.save(tabStore)
     }
     
@@ -770,8 +776,8 @@ extension MainWindowController: NSTextViewDelegate {
 
     func textDidChange(_ notification: Notification) {
         guard let doc = tabStore.selectedDocument, let editor = editorContainer else { return }
-        doc.text = editor.textView.string
-        doc.setModified(true)
+        // NSTextView wrote straight into doc.textStorage; dirty state is
+        // derived from that buffer, so only the derived UI needs refreshing.
         refreshTabBar()
         updateStatusBar()
         applySyntaxHighlighting(to: editor, for: doc)
