@@ -49,6 +49,9 @@ extension LexerDefinition {
           ]
         }
       ],
+      "symbols": [
+        { "rule": "function", "kind": "method" }
+      ],
       "comments": {
         "linePrefix": "#",
         "blockStart": "=begin",

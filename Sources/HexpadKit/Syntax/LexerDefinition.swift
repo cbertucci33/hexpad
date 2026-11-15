@@ -1,5 +1,31 @@
 import Foundation
 
+/// The kind of document symbol an outline entry represents.
+///
+/// Symbol kinds are deliberately coarse: they describe the role a construct
+/// plays in a document outline, not its exact language-specific spelling. A
+/// Swift `func`, a Python `def`, and a C function all end up as `.function` or
+/// `.method`; a Markdown heading becomes a `.section`.
+public enum SymbolKind: String, Codable, CaseIterable {
+    /// A free function or top-level callable.
+    case function
+    /// A callable that normally lives inside a type or object.
+    case method
+    /// A stored or computed property. Declared for completeness; the current
+    /// lexer rules only expose callables and document structure.
+    case property
+    /// A named type (class, struct, enum, protocol, interface, and so on).
+    case type
+    /// A document section, such as a Markdown heading.
+    case section
+    /// A CSS selector.
+    case selector
+    /// A markup element name.
+    case tag
+    /// A markup attribute name.
+    case attribute
+}
+
 /// A data-driven description of a language grammar.
 ///
 /// `LexerDefinition` is the serializable grammar description consumed by
@@ -89,6 +115,28 @@ public struct LexerDefinition: Codable, Equatable {
         }
     }
 
+    /// Declares that matches of an existing highlighting rule are document
+    /// outline symbols.
+    ///
+    /// The mapping reuses the grammar instead of duplicating it: the outline
+    /// runs the named rule's regexes over the document, so a language's notion
+    /// of a function or heading cannot drift from what it highlights. The rule
+    /// name is resolved against `rules`; a definition may declare several
+    /// symbol rules and may map the same rule to only one kind.
+    public struct SymbolRule: Codable, Equatable {
+
+        /// Name of a rule in `rules` whose matches become symbols.
+        public let rule: String
+
+        /// The outline kind assigned to those matches.
+        public let kind: SymbolKind
+
+        public init(rule: String, kind: SymbolKind) {
+            self.rule = rule
+            self.kind = kind
+        }
+    }
+
     /// Language name. Matches `Language.rawValue` for languages that have a
     /// tokenizer entry (for example `"JSON"`).
     public let language: String
@@ -98,17 +146,23 @@ public struct LexerDefinition: Codable, Equatable {
     /// Line-oriented fold constructs that brackets and comments cannot describe.
     /// Empty for every language except Markdown.
     public let foldableRangeRules: [FoldableRangeRule]
+    /// Which highlighting rules participate in the document outline. `nil`
+    /// (or an empty list) means the language has no meaningful symbols, so the
+    /// function-list model produces an empty outline.
+    public let symbols: [SymbolRule]?
 
     public init(language: String,
                 rules: [Rule],
                 comments: CommentSyntax? = nil,
                 brackets: [BracketPair] = [],
-                foldableRangeRules: [FoldableRangeRule] = []) {
+                foldableRangeRules: [FoldableRangeRule] = [],
+                symbols: [SymbolRule]? = nil) {
         self.language = language
         self.rules = rules
         self.comments = comments
         self.brackets = brackets
         self.foldableRangeRules = foldableRangeRules
+        self.symbols = symbols
     }
 
     /// Decodes a definition from its JSON representation.
@@ -122,10 +176,12 @@ public struct LexerDefinition: Codable, Equatable {
         case comments
         case brackets
         case foldableRangeRules
+        case symbols
     }
 
-    /// `comments`, `brackets`, and `foldableRangeRules` are optional in the
-    /// file format so a compact definition can omit metadata it does not need.
+    /// `comments`, `brackets`, `foldableRangeRules`, and `symbols` are optional
+    /// in the file format so a compact definition can omit metadata it does not
+    /// need.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         language = try container.decode(String.self, forKey: .language)
@@ -134,6 +190,7 @@ public struct LexerDefinition: Codable, Equatable {
         brackets = try container.decodeIfPresent([BracketPair].self, forKey: .brackets) ?? []
         foldableRangeRules = try container.decodeIfPresent([FoldableRangeRule].self,
                                                            forKey: .foldableRangeRules) ?? []
+        symbols = try container.decodeIfPresent([SymbolRule].self, forKey: .symbols)
     }
 }
 

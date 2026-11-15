@@ -76,6 +76,9 @@ extension LexerDefinition {
           ]
         }
       ],
+      "symbols": [
+        { "rule": "heading", "kind": "section" }
+      ],
       "comments": {
         "blockStart": "<!--",
         "blockEnd": "-->"

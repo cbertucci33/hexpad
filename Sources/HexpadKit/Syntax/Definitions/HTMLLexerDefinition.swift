@@ -59,6 +59,10 @@ extension LexerDefinition {
           ]
         }
       ],
+      "symbols": [
+        { "rule": "tag", "kind": "tag" },
+        { "rule": "attribute", "kind": "attribute" }
+      ],
       "comments": {
         "blockStart": "<!--",
         "blockEnd": "-->"
