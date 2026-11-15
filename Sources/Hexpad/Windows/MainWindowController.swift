@@ -15,6 +15,9 @@ class MainWindowController: NSViewController {
     private weak var editorBoundDoc: DocumentModel?
     private var statusBar: StatusBar?
     private var findBar: FindBar?
+    /// Block-based observer token for NSTextView selection changes; drives the
+    /// status bar's live Ln/Col display.
+    private var textSelectionObserver: NSObjectProtocol?
 
     // Syntax highlighting pipeline: one sparse token cache for the selected
     // document, plus the last attributed range, so a keystroke or scroll never
@@ -55,6 +58,9 @@ class MainWindowController: NSViewController {
     deinit {
         stopFileWatching()
         NotificationCenter.default.removeObserver(self)
+        if let observer = textSelectionObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
     
     private func setupNotificationObservers() {
@@ -67,6 +73,15 @@ class MainWindowController: NSViewController {
         // Any close path (menu toggle, Escape, × button) must restore the
         // editor to full height. Previously nothing observed this notice.
         NotificationCenter.default.addObserver(self, selector: #selector(handleFindBarClosed(_:)), name: NSNotification.Name("FindBarClosed"), object: nil)
+        // Live Ln/Col: caret moves (arrows, clicks, typing, find navigation,
+        // programmatic selection) all post this notification from the text view.
+        textSelectionObserver = NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("NSTextViewDidChangeSelectionNotification"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.updateStatusBar()
+        }
     }
 
     @objc private func handleFindBarClosed(_ notification: Notification) {

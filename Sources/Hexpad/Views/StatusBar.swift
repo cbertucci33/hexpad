@@ -84,9 +84,12 @@ class StatusBar: NSView {
         guard let textView = textView else { return }
         
         let selRange = textView.selectedRange
-        let text = textView.string as NSString
-        let line = lineNumberAtPosition(text, position: selRange.location)
-        let col = columnAtPosition(text, position: selRange.location)
+        let text = textView.string
+        // GutterGeometry is the single source of truth for line math (it is
+        // unit-tested and UTF-16 aware); derive the caret's 1-based line and
+        // 1-based column from it.
+        let line = GutterGeometry.logicalLine(of: selRange.location, in: text)
+        let col = selRange.location - GutterGeometry.firstCharIndex(of: line, in: text) + 1
         positionLabel?.stringValue = "Ln \(line), Col \(col)"
         
         if selRange.length > 0 {
@@ -98,22 +101,5 @@ class StatusBar: NSView {
         eolLabel?.stringValue = doc?.eolType ?? "LF"
         encodingLabel?.stringValue = doc?.encoding ?? "UTF-8"
         languageLabel?.stringValue = doc?.language ?? "Plain Text"
-    }
-    
-    private func lineNumberAtPosition(_ text: NSString, position: Int) -> Int {
-        var lineNum = 1
-        var loc = 0
-        while loc < position {
-            let lineRange = text.lineRange(for: NSRange(location: loc, length: 0))
-            if lineRange.location == NSNotFound { break }
-            lineNum += 1
-            loc = lineRange.upperBound
-        }
-        return lineNum
-    }
-    
-    private func columnAtPosition(_ text: NSString, position: Int) -> Int {
-        let lineRange = text.lineRange(for: NSRange(location: position, length: 0))
-        return position - lineRange.location + 1
     }
 }
