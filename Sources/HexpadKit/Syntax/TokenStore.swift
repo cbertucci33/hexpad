@@ -117,10 +117,18 @@ public final class TokenStore {
             coveredRanges.removeAll(keepingCapacity: true)
         } else {
             // Drop the edited line and everything after it; those offsets may
-            // have moved by the edit delta.
+            // have moved by the edit delta. A covered range that crosses the
+            // cut is not wholesale invalid, though: trim it at the cut so the
+            // still-correct text before the edit stays covered and a later
+            // viewport request does not re-tokenize it.
             let cut = band.location
             tokens.removeAll { NSMaxRange($0.range) > cut }
-            coveredRanges.removeAll { NSMaxRange($0) > cut }
+            coveredRanges = coveredRanges.compactMap { covered in
+                let end = NSMaxRange(covered)
+                guard end > cut else { return covered }
+                let length = min(cut, end) - covered.location
+                return length > 0 ? NSRange(location: covered.location, length: length) : nil
+            }
         }
 
         let fresh = SyntaxTokenizer.tokenize(text, language: language, in: band)

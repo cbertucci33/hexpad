@@ -368,19 +368,44 @@ class FindBar: NSView, NSSearchFieldDelegate {
     @objc private func replaceAction() {
         guard let doc = tabStore?.selectedDocument, !searchField.stringValue.isEmpty else { return }
         commitSearchHistory()
+        let pattern = searchField.stringValue
         let scope = activeSearchScope()
-        let matches = SearchEngine.search(doc.text, pattern: searchField.stringValue,
+        let matches = SearchEngine.search(doc.text, pattern: pattern,
                                           options: searchOptions, range: scope)
-        guard currentMatchIndex < matches.count else { return }
-        
-        // Replace ONLY the current match, not all occurrences. Mutating the
-        // document's shared storage updates the visible editor in place and
-        // registers undo, unlike the old model-only string assignment.
-        doc.replaceCharacters(in: matches[currentMatchIndex].range, with: replaceField.stringValue)
-        
-        // Re-run the find against the new content, then advance to the next match.
+        guard !matches.isEmpty else { return }
+
+        // Prefer the text the user actually has selected when it is one of the
+        // matches; currentMatchIndex can lag behind a caret/selection move.
+        let selection = editorContainer?.textView.selectedRange ?? NSRange(location: NSNotFound, length: 0)
+        let targetIndex = matches.firstIndex { NSEqualRanges($0.range, selection) }
+            ?? min(currentMatchIndex, matches.count - 1)
+        let target = matches[targetIndex]
+        currentMatchIndex = targetIndex
+
+        // Expand the replacement through SearchEngine's replace path so regex
+        // templates ($1, $2, …) behave exactly like Replace All, but apply
+        // only the target range so undo and highlighting stay local.
+        let oldText = doc.text
+        let nsText = oldText as NSString
+        let replaced = SearchEngine.replace(oldText, pattern: pattern,
+                                            replacement: replaceField.stringValue,
+                                            options: searchOptions, range: target.range)
+        let suffixLength = nsText.length - NSMaxRange(target.range)
+        let insertedLength = (replaced as NSString).length - target.range.location - suffixLength
+        if insertedLength >= 0 {
+            let inserted = (replaced as NSString).substring(
+                with: NSRange(location: target.range.location, length: insertedLength))
+            doc.replaceCharacters(in: target.range, with: inserted)
+        } else {
+            // Defensive fallback: apply the engine's full result if extracting
+            // the inserted slice ever becomes ambiguous.
+            doc.replaceAllText(with: replaced)
+        }
+
+        // Re-run the find against the new content. The caller does not need an
+        // extra findNext(): the match list has already shifted, so the same
+        // index now points at the following match.
         performFind()
-        findNext()
     }
     
     @objc private func replaceAllAction() {
@@ -611,7 +636,10 @@ class FindBar: NSView, NSSearchFieldDelegate {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            guard let self, !isFinding else { return }
+            // A hidden bar has nothing to display, and show() re-runs the
+            // search when reopened. Skip the search/highlight work entirely so
+            // typing in a document does not pay for an invisible find bar.
+            guard let self, isVisible, !isFinding else { return }
             isFinding = true
             defer { isFinding = false }
             // Recompute counts without stealing the caret: the user is mid-edit.

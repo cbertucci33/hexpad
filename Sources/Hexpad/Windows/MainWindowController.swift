@@ -125,9 +125,21 @@ class MainWindowController: NSViewController {
 
     @objc private func handleModelTextChange(_ notification: Notification) {
         guard let doc = notification.object as? DocumentModel else { return }
+
+        // Typing posts this notice from textDidChange after it has already
+        // incrementally re-highlighted and refreshed the chrome. Handling it
+        // again here would tokenize the same edit twice and refresh the tab
+        // bar/status bar twice per keystroke. Other observers (FindBar gets
+        // the original notification directly) still see the change.
+        if notification.userInfo?["editedRange"] != nil {
+            return
+        }
+
         if doc === tabStore.selectedDocument, let editor = editorContainer {
-            // Programmatic edits (find/replace, line ops, reloads) do not carry
-            // an edited range, so rebuild the sparse cache for the viewport.
+            // Programmatic edits (find/replace, line ops, reloads) can replace
+            // the whole buffer. Forget the theme record so the next pass
+            // re-attributes the full storage, not just the visible band.
+            docThemeNames.removeValue(forKey: doc.id)
             applySyntaxHighlighting(to: editor, for: doc, forceReset: true)
         }
         // Tab dirty dots, the status bar, and FindBar counts all key off this.
@@ -411,21 +423,32 @@ class MainWindowController: NSViewController {
 
     /// Save-as flow used by the close prompt for untitled docs: close the tab
     /// only when the user picked a destination and the write succeeded.
-    private func saveAsAndClose(_ doc: DocumentModel) {
+    ///
+    /// Returns false when the panel was cancelled or the write failed, so a
+    /// multi-tab sweep can halt instead of silently moving on.
+    @discardableResult
+    private func saveAsAndClose(_ doc: DocumentModel) -> Bool {
         let panel = NSSavePanel()
         panel.title = "Save As"
         panel.nameFieldStringValue = doc.name
 
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard panel.runModal() == .OK, let url = panel.url else { return false }
         do {
+            let oldPath = doc.filePath?.path
             try doc.saveAs(to: url)
-            recentFilesManager?.replaceRecent(oldPath: nil, newPath: url.path)
+            recentFilesManager?.replaceRecent(oldPath: oldPath, newPath: url.path)
             NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
             refreshTabBar()
             updateStatusBar()
-            closeTabAtIndex(tabStore.selectedIndex)
+            // Close the document we just saved, not whatever tab happens to
+            // be selected now (the save panel can change focus/selection).
+            if let index = tabStore.documents.firstIndex(where: { $0 === doc }) {
+                closeTabAtIndex(index)
+            }
+            return true
         } catch {
             showError("Failed to save file: \(error.localizedDescription)")
+            return false
         }
     }
     
@@ -490,9 +513,13 @@ class MainWindowController: NSViewController {
                         case .alertFirstButtonReturn: // Save
                             // Untitled docs need a save panel; doc.save() throws
                             // noFilePath for them. Only close once the save succeeded
-                            // (or the user actually picked a destination).
+                            // (or the user actually picked a destination). A
+                            // cancelled panel must stop the whole sweep.
                             if doc.isUntitled {
-                                self.saveAsAndClose(doc)
+                                guard self.saveAsAndClose(doc) else {
+                                    shouldContinueClosing = false
+                                    return
+                                }
                             } else {
                                 self.saveDocument(doc)
                                 self.closeTabAtIndex(index)
@@ -934,10 +961,18 @@ extension MainWindowController: NSTextViewDelegate {
                                 for: doc,
                                 editedRange: editedRange,
                                 forceReset: editedRange == nil)
-        // Republish the model's own change notice so observers (find counts,
-        // dirty dots) see typing through the same path as programmatic
-        // replace/line edits.
-        NotificationCenter.default.post(name: DocumentModel.textDidChangeNotification, object: doc)
+        // Republish the model's own change notice so observers (find counts)
+        // see typing through the same path as programmatic replace/line edits.
+        // Tagging it with the edited range lets this controller's own observer
+        // recognise the already-handled incremental path instead of repeating
+        // the highlight and UI refresh.
+        var userInfo: [AnyHashable: Any] = [:]
+        if let editedRange {
+            userInfo["editedRange"] = NSValue(range: editedRange)
+        }
+        NotificationCenter.default.post(name: DocumentModel.textDidChangeNotification,
+                                        object: doc,
+                                        userInfo: userInfo)
     }
     
     func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
