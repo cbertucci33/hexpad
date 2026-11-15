@@ -340,18 +340,13 @@ class MainWindowController: NSViewController {
             let encoding = EncodingDetective.detect(data)
             let nsEnc = String.Encoding(rawValue: EncodingDetective.nsEncoding(from: encoding))
             let text = String(data: data, encoding: nsEnc) ?? ""
-            let extLang = Language.fromFileName(url.lastPathComponent)
-            
-            var finalLang = extLang
-            if extLang == .plain {
-                // No recognized extension — trust the sniffer
-                if let sniffed = ContentSniffer.sniffLanguage(data) {
-                    finalLang = sniffed
-                }
-            } else if let sniffed = ContentSniffer.sniffLanguage(data), sniffed != extLang {
-                // Extension says one language, content says another — ask the user
-                finalLang = askLanguageMismatch(ext: extLang, sniffed: sniffed)
-            }
+            // A recognized extension always wins; only unknown/plain-text
+            // files are sniffed, so opening modern-language sources never
+            // triggers a spurious Language Mismatch prompt.
+            let finalLang = ContentSniffer.resolveLanguage(
+                fileName: url.lastPathComponent,
+                data: data
+            )
             
             let doc = DocumentModel(text: text, filePath: url, encoding: encoding)
             doc.setLanguage(finalLang.rawValue)
@@ -362,47 +357,6 @@ class MainWindowController: NSViewController {
             recentFilesManager?.addRecent(url.path)
         } catch {
             showError("Failed to open file: \(error.localizedDescription)")
-        }
-    }
-    
-    private func askLanguageMismatch(ext: Language, sniffed: Language) -> Language {
-        let alert = NSAlert()
-        alert.messageText = "Language Mismatch"
-        alert.informativeText = "This file is .\(extensionForLanguage(ext)) but its contents look like \(sniffed.rawValue). Open as which?"
-        alert.addButton(withTitle: "Keep \(ext.rawValue)")
-        alert.addButton(withTitle: "Open as \(sniffed.rawValue)")
-        let response = alert.runModal()
-        return response == .alertSecondButtonReturn ? sniffed : ext
-    }
-    
-    private func extensionForLanguage(_ lang: Language) -> String {
-        switch lang {
-        case .json: return "json"
-        case .python: return "py"
-        case .javascript: return "js"
-        case .typescript: return "ts"
-        case .html: return "html"
-        case .css: return "css"
-        case .markdown: return "md"
-        case .xml: return "xml"
-        case .shell: return "sh"
-        case .swift: return "swift"
-        case .c: return "c"
-        case .cpp: return "cpp"
-        case .csharp: return "cs"
-        case .java: return "java"
-        case .kotlin: return "kt"
-        case .ruby: return "rb"
-        case .go: return "go"
-        case .rust: return "rs"
-        case .php: return "php"
-        case .sql: return "sql"
-        case .yaml: return "yaml"
-        case .toml: return "toml"
-        case .ini: return "ini"
-        case .lua: return "lua"
-        case .r: return "r"
-        case .plain: return "txt"
         }
     }
     

@@ -2,6 +2,16 @@ import Foundation
 
 /// Sniffs file content to guess a language. Returns nil when unsure.
 public enum ContentSniffer {
+    /// Resolves the language to use for a file. A recognized extension always
+    /// wins; the content sniffer only runs for files whose extension maps to
+    /// plain text (including unknown extensions). This prevents a modern-language
+    /// file from being re-labelled because, say, two `import` lines look Pythonic.
+    public static func resolveLanguage(fileName: String, data: Data) -> Language {
+        let extLang = Language.fromFileName(fileName)
+        guard extLang == .plain else { return extLang }
+        return sniffLanguage(data) ?? .plain
+    }
+
     /// Returns a confident Language guess from file data, or nil.
     public static func sniffLanguage(_ data: Data) -> Language? {
         guard let text = String(data: data, encoding: .utf8) else {
@@ -46,18 +56,62 @@ public enum ContentSniffer {
             }
         }
 
-        // 5. Python density: def, import, from x import
-        let pySignals = countOccurrences(of: ["def ", "import ", "from "], in: sample)
-        if pySignals >= 2 { return .python }
+        // 5. Python: a `def`/`class` header ending in `:` followed by an
+        // indented suite. Bare `import`/`def` counts are shared with Swift,
+        // Java, Kotlin, C#, etc. and must not be treated as Python signals.
+        if looksLikePython(lines) { return .python }
 
-        // 6. JavaScript density: function, const, =>
+        // 6. TypeScript before JavaScript: interface, type aliases, enums,
+        // and lowercase primitive annotations are TS-only markers.
+        if looksLikeTypeScript(sample, lines: lines) { return .typescript }
+
+        // 7. JavaScript density: function, const, =>
         let jsSignals = countOccurrences(of: ["function ", "const ", "=>"], in: sample)
         if jsSignals >= 2 { return .javascript }
 
-        // 7. CSS: selector followed by { and ; inside
+        // 8. CSS: selector followed by { and ; inside
         if looksLikeCSS(sample) { return .css }
 
         return nil
+    }
+
+    private static func looksLikePython(_ lines: [String]) -> Bool {
+        for (index, line) in lines.enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            let isSuiteHeader = trimmed.hasPrefix("def ")
+                || trimmed.hasPrefix("async def ")
+                || trimmed.hasPrefix("class ")
+            guard isSuiteHeader, trimmed.hasSuffix(":") else { continue }
+
+            // A colon-terminated header means Python only when an indented
+            // statement follows it (blank lines are allowed in between).
+            for next in lines.dropFirst(index + 1) {
+                let nextTrimmed = next.trimmingCharacters(in: .whitespaces)
+                if nextTrimmed.isEmpty { continue }
+                if next.hasPrefix(" ") || next.hasPrefix("\t") { return true }
+                break
+            }
+        }
+        return false
+    }
+
+    private static func looksLikeTypeScript(_ sample: String, lines: [String]) -> Bool {
+        let typeScriptMarkers = [
+            "interface ", "enum ",
+            ": string", ": number", ": boolean", ": void", ": any", ": unknown", ": never"
+        ]
+        if countOccurrences(of: typeScriptMarkers, in: sample) > 0 { return true }
+
+        // `type Name = ...` is a TS alias; a bare `type ` mention (e.g. in a
+        // comment) is not enough on its own.
+        for line in lines.prefix(60) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if (trimmed.hasPrefix("type ") || trimmed.hasPrefix("export type "))
+                && trimmed.contains("=") {
+                return true
+            }
+        }
+        return false
     }
 
     private static func countOccurrences(of patterns: [String], in text: String) -> Int {

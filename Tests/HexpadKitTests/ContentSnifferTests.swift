@@ -58,4 +58,61 @@ final class ContentSnifferTests: XCTestCase {
         // Should not crash; may return nil
         _ = ContentSniffer.sniffLanguage(data)
     }
+    
+    func testSwiftImportsDoNotSniffAsPython() {
+        let data = Data("""
+        import Foundation
+        import AppKit
+        
+        class FileLoader {
+            func load() {
+                let value = 1
+            }
+        }
+        """.utf8)
+        XCTAssertNotEqual(ContentSniffer.sniffLanguage(data), .python)
+    }
+    
+    func testTypeScriptSniffsAsTypeScriptNotJavaScript() {
+        let data = Data("""
+        interface User {
+            name: string
+            age: number
+        }
+        const first = 1;
+        const second = 2;
+        """.utf8)
+        XCTAssertEqual(ContentSniffer.sniffLanguage(data), .typescript)
+    }
+    
+    func testUnknownExtensionStillSniffs() {
+        let data = Data("""
+        def main():
+            print('hi')
+        """.utf8)
+        XCTAssertEqual(
+            ContentSniffer.resolveLanguage(fileName: "mystery.xyz", data: data),
+            .python
+        )
+    }
+    
+    func testRecognizedExtensionWinsOverContent() {
+        let pythonLooking = Data("""
+        import os
+        import sys
+        
+        def main():
+            print('hi')
+        """.utf8)
+        XCTAssertEqual(
+            ContentSniffer.resolveLanguage(fileName: "Main.swift", data: pythonLooking),
+            .swift
+        )
+        
+        let javaScriptLooking = Data("const x = 1;\nconst y = 2;\n".utf8)
+        XCTAssertEqual(
+            ContentSniffer.resolveLanguage(fileName: "app.ts", data: javaScriptLooking),
+            .typescript
+        )
+    }
 }
