@@ -10,6 +10,20 @@ public enum HexpadTheme: String, CaseIterable, Identifiable {
     
     public var id: String { rawValue }
     
+    /// Resolves the built-in theme for an AppKit appearance. System mode,
+    /// explicit Light/Dark overrides, and high-contrast variants all land on a
+    /// matching foreground/background pair instead of the old hardcoded dark
+    /// theme (which rendered white text on a white light-mode background).
+    public static func forAppearance(_ appearance: NSAppearance) -> Theme {
+        let candidates: [NSAppearance.Name] = [
+            .darkAqua, .accessibilityHighContrastDarkAqua,
+            .aqua, .accessibilityHighContrastAqua
+        ]
+        let match = appearance.bestMatch(from: candidates)
+        let isDark = match == .darkAqua || match == .accessibilityHighContrastDarkAqua
+        return (isDark ? HexpadTheme.dark : HexpadTheme.light).theme
+    }
+
     public var theme: Theme {
         switch self {
         case .light:

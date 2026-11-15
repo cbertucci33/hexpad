@@ -15,6 +15,15 @@ class MainWindowController: NSViewController {
     private weak var editorBoundDoc: DocumentModel?
     private var statusBar: StatusBar?
     private var findBar: FindBar?
+
+    // Syntax highlighting pipeline: one sparse token cache for the selected
+    // document, plus the last attributed range, so a keystroke or scroll never
+    // resets the whole buffer.
+    private let syntaxStore = TokenStore(language: .plain)
+    private var lastHighlightedRange = NSRange(location: 0, length: 0)
+    private weak var highlightedDoc: DocumentModel?
+    private var docThemeNames: [UUID: String] = [:]
+    private var pendingEditRange: NSRange?
     
     // MARK: - Init
     
@@ -117,7 +126,9 @@ class MainWindowController: NSViewController {
     @objc private func handleModelTextChange(_ notification: Notification) {
         guard let doc = notification.object as? DocumentModel else { return }
         if doc === tabStore.selectedDocument, let editor = editorContainer {
-            applySyntaxHighlighting(to: editor, for: doc)
+            // Programmatic edits (find/replace, line ops, reloads) do not carry
+            // an edited range, so rebuild the sparse cache for the viewport.
+            applySyntaxHighlighting(to: editor, for: doc, forceReset: true)
         }
         // Tab dirty dots, the status bar, and FindBar counts all key off this.
         NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
@@ -166,6 +177,12 @@ class MainWindowController: NSViewController {
         find.setupObservers()
         
         editor.textView.delegate = self
+        editor.onViewportChange = { [weak self] in
+            self?.refreshVisibleHighlighting()
+        }
+        editor.onAppearanceChange = { [weak self] in
+            self?.handleAppearanceChange()
+        }
         
         if let ruler = editor.ruler as? LineNumberGutter {
             ruler.setClickHandler { [weak self] charIndex in
@@ -522,51 +539,167 @@ class MainWindowController: NSViewController {
             editor.textView.selectedRange = NSRange(location: min(selRange.location, maxLoc),
                                                     length: min(selRange.length,
                                                                 max(0, maxLoc - min(selRange.location, maxLoc))))
-            applySyntaxHighlighting(to: editor, for: doc)
+            applySyntaxHighlighting(to: editor, for: doc, forceReset: true)
         } else {
             editorBoundDoc = nil
+            highlightedDoc = nil
+            syntaxStore.reset()
+            lastHighlightedRange = NSRange(location: 0, length: 0)
             editor.bind(to: nil)
             editor.textView.selectedRange = NSRange(location: 0, length: 0)
         }
         updateStatusBar()
     }
-    
-    private func applySyntaxHighlighting(to editor: EditorContainer, for doc: DocumentModel) {
+
+    // MARK: - Syntax highlighting
+
+    /// Highlights only the visible line band (plus a margin). Typing passes the
+    /// edited range so the token cache re-tokenizes that line band only;
+    /// programmatic edits force a viewport rebuild.
+    private func applySyntaxHighlighting(to editor: EditorContainer,
+                                         for doc: DocumentModel,
+                                         editedRange: NSRange? = nil,
+                                         forceReset: Bool = false) {
         let textStorage = editor.textView.textStorage
         guard let textStorage else { return }
-        
+
         let text = doc.text
-        let nsText = text as NSString
-        let fullRange = NSRange(location: 0, length: nsText.length)
-        
-        // Plain Text = no highlighting, but keep the editor's monospaced font:
-        // an unattributed shared storage would render as Helvetica.
-        guard let langStr = Language.allCases.first(where: { $0.rawValue == doc.language }) else {
+        let textLength = (text as NSString).length
+        let theme = theme(for: editor)
+        editor.apply(theme: theme)
+
+        let docChanged = highlightedDoc !== doc
+        if docChanged {
+            highlightedDoc = doc
+            lastHighlightedRange = NSRange(location: 0, length: 0)
+        }
+
+        // A cold document or an appearance change cannot know which characters
+        // still carry old theme colours, so reset them once. Switching to an
+        // already-themed tab and the per-keystroke path never do this.
+        var needsReset = forceReset || docChanged
+        if docThemeNames[doc.id] != theme.name {
             textStorage.beginEditing()
-            textStorage.addAttribute(.font, value: editor.bodyFont, range: fullRange)
-            textStorage.removeAttribute(.foregroundColor, range: fullRange)
-            textStorage.removeAttribute(.backgroundColor, range: fullRange)
+            textStorage.setAttributes([
+                .font: editor.bodyFont,
+                .foregroundColor: theme.foreground
+            ], range: NSRange(location: 0, length: textLength))
             textStorage.endEditing()
+            docThemeNames[doc.id] = theme.name
+            lastHighlightedRange = NSRange(location: 0, length: 0)
+            needsReset = true
+        }
+
+        // Plain Text = no token colors, but keep the editor's monospaced font:
+        // an unattributed shared storage would render as Helvetica.
+        guard let language = Language(rawValue: doc.language),
+              language != .plain else {
+            clearHighlighting(in: textStorage, range: lastHighlightedRange,
+                              theme: theme, font: editor.bodyFont, textLength: textLength)
+            syntaxStore.reset(language: .plain)
             return
         }
-        
-        let tokens = SyntaxTokenizer.tokenize(text, language: langStr)
-        let theme = HexpadTheme.dark.theme
-        
+
+        if syntaxStore.language != language {
+            syntaxStore.reset(language: language)
+            clearHighlighting(in: textStorage, range: lastHighlightedRange,
+                              theme: theme, font: editor.bodyFont, textLength: textLength)
+        } else if needsReset || docChanged {
+            syntaxStore.reset(language: language)
+        }
+
+        if let editedRange {
+            syntaxStore.update(text: text, language: language, editedRange: editedRange)
+        } else if syntaxStore.textLength != textLength {
+            syntaxStore.reset(language: language)
+        }
+
+        let visibleRange = editor.visibleCharacterRange()
+        let target = syntaxStore.ensureTokens(for: text, range: visibleRange)
+
         textStorage.beginEditing()
-        // Reset to default foreground color and the current editor font
-        textStorage.setAttributes([
-            .foregroundColor: theme.foreground,
-            .font: editor.bodyFont
-        ], range: fullRange)
-        
-        // Apply per-token colors
-        for token in tokens {
-            guard token.type != .whitespace, token.type != .plain else { continue }
-            let color = SyntaxTokenizer.color(for: token.type, theme: theme)
-            textStorage.setAttributes([.foregroundColor: color], range: token.range)
+        // Reset the previous viewport before painting the new one so stale
+        // colours cannot survive outside the current band.
+        if lastHighlightedRange.length > 0 {
+            let previous = clipped(lastHighlightedRange, to: textLength)
+            if previous.length > 0 {
+                textStorage.setAttributes([
+                    .font: editor.bodyFont,
+                    .foregroundColor: theme.foreground
+                ], range: previous)
+            }
+        }
+        if target.length > 0 {
+            let safeTarget = clipped(target, to: textLength)
+            textStorage.setAttributes([
+                .font: editor.bodyFont,
+                .foregroundColor: theme.foreground
+            ], range: safeTarget)
+
+            for token in syntaxStore.tokens(in: safeTarget) {
+                guard token.type != .whitespace, token.type != .plain else { continue }
+                let tokenRange = clipped(token.range, to: textLength)
+                guard tokenRange.length > 0 else { continue }
+                textStorage.addAttribute(.foregroundColor,
+                                         value: SyntaxTokenizer.color(for: token.type, theme: theme),
+                                         range: tokenRange)
+            }
         }
         textStorage.endEditing()
+        lastHighlightedRange = target
+    }
+
+    /// Scroll/resize hook: only re-run the pipeline when the viewport leaves
+    /// the band that is already highlighted.
+    private func refreshVisibleHighlighting() {
+        guard let editor = editorContainer,
+              let doc = tabStore.selectedDocument,
+              doc === editorBoundDoc else { return }
+
+        let textLength = (doc.text as NSString).length
+        let visible = clipped(editor.visibleCharacterRange(), to: textLength)
+        if lastHighlightedRange.length > 0,
+           visible.location >= lastHighlightedRange.location,
+           NSMaxRange(visible) <= NSMaxRange(lastHighlightedRange) {
+            return
+        }
+        applySyntaxHighlighting(to: editor, for: doc)
+    }
+
+    /// Resolves the theme from the text view's effective appearance, so System
+    /// mode and the explicit Light/Dark menu both agree with what is rendered.
+    private func theme(for editor: EditorContainer) -> Theme {
+        HexpadTheme.forAppearance(editor.textView.effectiveAppearance)
+    }
+
+    private func handleAppearanceChange() {
+        guard let editor = editorContainer else { return }
+        // Every document may have been painted with the old theme; invalidate
+        // their records so the next display performs one corrective reset.
+        docThemeNames.removeAll()
+        lastHighlightedRange = NSRange(location: 0, length: 0)
+        syntaxStore.reset()
+        guard let doc = tabStore.selectedDocument else { return }
+        applySyntaxHighlighting(to: editor, for: doc, forceReset: true)
+    }
+
+    private func clearHighlighting(in textStorage: NSTextStorage,
+                                   range: NSRange,
+                                   theme: Theme,
+                                   font: NSFont,
+                                   textLength: Int) {
+        let safe = clipped(range, to: textLength)
+        guard safe.length > 0 else { return }
+        textStorage.beginEditing()
+        textStorage.setAttributes([.font: font, .foregroundColor: theme.foreground], range: safe)
+        textStorage.endEditing()
+        lastHighlightedRange = NSRange(location: 0, length: 0)
+    }
+
+    private func clipped(_ range: NSRange, to length: Int) -> NSRange {
+        let location = min(max(0, range.location), length)
+        let available = max(0, length - location)
+        return NSRange(location: location, length: min(max(0, range.length), available))
     }
     
     func updateStatusBar() {
@@ -732,7 +865,12 @@ class MainWindowController: NSViewController {
     func removeBlankLines() { applyLineOp(LineOps.removeBlankLines) }
     
     func setLanguage(_ lang: Language) {
-        if let doc = tabStore.selectedDocument { doc.setLanguage(lang.rawValue) }
+        if let doc = tabStore.selectedDocument {
+            doc.setLanguage(lang.rawValue)
+            // Force one full reset so colours from the previous language do not
+            // linger outside the viewport.
+            docThemeNames.removeValue(forKey: doc.id)
+        }
         updateEditor()
     }
     
@@ -774,11 +912,31 @@ extension MainWindowController: NSTextViewDelegate {
         editorBoundDoc?.undoManager ?? textView.undoManager
     }
 
+    func textView(_ textView: NSTextView,
+                  shouldChangeTextIn affectedCharRange: NSRange,
+                  replacementString: String?) -> Bool {
+        // Remember the post-edit range so textDidChange can re-tokenize only
+        // the touched line band instead of the whole document.
+        pendingEditRange = NSRange(location: affectedCharRange.location,
+                                   length: (replacementString ?? "").utf16.count)
+        return true
+    }
+
     func textDidChange(_ notification: Notification) {
-        guard let doc = tabStore.selectedDocument else { return }
-        // NSTextView wrote straight into doc.textStorage. Republish the model's
-        // own change notice so observers (find counts/highlights, dirty dots)
-        // see typing through the same path as programmatic replace/line edits.
+        guard let doc = tabStore.selectedDocument, let editor = editorContainer else { return }
+        let editedRange = pendingEditRange
+        pendingEditRange = nil
+        // NSTextView wrote straight into doc.textStorage; dirty state is
+        // derived from that buffer, so only the derived UI needs refreshing.
+        refreshTabBar()
+        updateStatusBar()
+        applySyntaxHighlighting(to: editor,
+                                for: doc,
+                                editedRange: editedRange,
+                                forceReset: editedRange == nil)
+        // Republish the model's own change notice so observers (find counts,
+        // dirty dots) see typing through the same path as programmatic
+        // replace/line edits.
         NotificationCenter.default.post(name: DocumentModel.textDidChangeNotification, object: doc)
     }
     

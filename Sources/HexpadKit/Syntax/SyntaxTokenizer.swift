@@ -18,7 +18,9 @@ public enum TokenType: String {
 
 /// Represents a highlighted token
 public struct Token: Identifiable {
-    public let id = UUID()
+    /// Derived from the token's range. Syntax tokens never overlap, so the
+    /// location is unique; deriving the id avoids allocating a UUID per token.
+    public var id: Int { range.location }
     public let type: TokenType
     public let range: NSRange
     public let text: String
@@ -175,54 +177,155 @@ public final class SyntaxTokenizer {
         "punctuation": .punctuation, "whitespace": .whitespace, "plain": .plain
     ]
 
-    /// Tokenize text for a given language
+    // MARK: - Compiled Regex Cache
+
+    /// One rule, with its regex compiled exactly once per language.
+    private struct CompiledRule {
+        let type: TokenType
+        let regex: NSRegularExpression
+    }
+
+    /// A match gathered from one rule before overlapping matches are resolved.
+    private struct Candidate {
+        let type: TokenType
+        let range: NSRange
+    }
+
+    /// NSRegularExpression is documented as thread-safe for matching, so each
+    /// language's compiled rule list is built once and shared by every caller.
+    private final class RegexCache {
+        private let lock = NSLock()
+        private var cache: [Language: [CompiledRule]] = [:]
+
+        func rules(for language: Language, make: () -> [CompiledRule]) -> [CompiledRule] {
+            lock.lock()
+            defer { lock.unlock() }
+            if let cached = cache[language] { return cached }
+            let built = make()
+            cache[language] = built
+            return built
+        }
+    }
+
+    private static let regexCache = RegexCache()
+
+    private static func compiledRules(for language: Language) -> [CompiledRule] {
+        regexCache.rules(for: language) {
+            guard let ruleTable = languageRules[language] else { return [] }
+            // Dictionary iteration order is not stable; sorting the rule names
+            // keeps tie-breaking deterministic across runs and processes.
+            return ruleTable.keys.sorted().flatMap { name -> [CompiledRule] in
+                guard let type = tokenTypeByName[name],
+                      let patterns = ruleTable[name] else { return [] }
+                return patterns.compactMap { pattern in
+                    guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+                        return nil
+                    }
+                    return CompiledRule(type: type, regex: regex)
+                }
+            }
+        }
+    }
+
+    // MARK: - Tokenizing
+
+    /// Tokenize the whole text for a given language.
     public static func tokenize(_ text: String, language: Language) -> [Token] {
-        guard let rules = languageRules[language], !rules.isEmpty else {
-            return [Token(type: .plain, range: NSRange(location: 0, length: text.count), text: text)]
+        let length = (text as NSString).length
+        return tokenize(text, language: language, in: NSRange(location: 0, length: length))
+    }
+
+    /// Tokenize only `range` of `text`. Token ranges are absolute offsets into
+    /// `text`, so callers can attribute just a viewport without touching the
+    /// rest of the buffer.
+    public static func tokenize(_ text: String, language: Language, in range: NSRange) -> [Token] {
+        let nsText = text as NSString
+        let length = nsText.length
+        guard range.location >= 0, range.length >= 0,
+              range.location <= length,
+              range.length <= length - range.location else {
+            return []
         }
-        
+
+        let rules = compiledRules(for: language)
+        guard !rules.isEmpty else {
+            // Plain text: one token covering the requested range.
+            return [Token(type: .plain, range: range, text: nsText.substring(with: range))]
+        }
+        guard range.length > 0 else { return [] }
+
+        // Collect each rule's matches once over the whole requested range, then
+        // merge them in document order. This replaces the old O(tokens × rules)
+        // loop, which recompiled every regex and rescanned the remainder of the
+        // document at every token boundary.
+        var candidates: [Candidate] = []
+        for rule in rules {
+            for match in rule.regex.matches(in: text, options: [], range: range)
+            where match.range.length > 0 {
+                candidates.append(Candidate(type: rule.type, range: match.range))
+            }
+        }
+
+        candidates.sort { lhs, rhs in
+            if lhs.range.location != rhs.range.location {
+                return lhs.range.location < rhs.range.location
+            }
+            if lhs.range.length != rhs.range.length {
+                return lhs.range.length > rhs.range.length
+            }
+            return lhs.type.rawValue < rhs.type.rawValue
+        }
+
         var tokens: [Token] = []
-        var location = 0
-        let textCount = text.count
-        
-        while location < textCount {
-            var bestMatch: (type: TokenType, range: NSRange, text: String, length: Int)?
-            
-            for (name, patterns) in rules {
-                guard let type = tokenTypeByName[name] else { continue }
-                for pattern in patterns {
-                    guard let regex = try? NSRegularExpression(pattern: pattern, options: []),
-                          let match = regex.firstMatch(in: text, options: [],
-                                                       range: NSRange(location: location, length: textCount - location)) else {
-                        continue
-                    }
-                    
-                    if bestMatch == nil || match.range.location < bestMatch!.range.location {
-                        let matchedText = String(text[text.index(text.startIndex, offsetBy: match.range.location)..<text.index(text.startIndex, offsetBy: match.range.location + match.range.length)])
-                        bestMatch = (type, match.range, matchedText, match.range.length)
-                    }
-                }
+        tokens.reserveCapacity(candidates.count * 2 + 2)
+        let limit = NSMaxRange(range)
+        var cursor = range.location
+
+        for candidate in candidates {
+            // A match that starts inside an already-chosen token can only come
+            // from a lower-priority construct (keyword inside a string, etc.).
+            guard candidate.range.location >= cursor else { continue }
+            guard candidate.range.location < limit else { break }
+
+            if candidate.range.location > cursor {
+                appendGap(nsText, from: cursor, to: candidate.range.location, into: &tokens)
             }
-            
-            if let match = bestMatch {
-                // Add whitespace/plain token before match
-                if match.range.location > location {
-                    let beforeText = String(text[text.index(text.startIndex, offsetBy: location)..<text.index(text.startIndex, offsetBy: match.range.location)])
-                    tokens.append(Token(type: .whitespace, range: NSRange(location: location, length: match.range.location - location), text: beforeText))
-                }
-                
-                tokens.append(Token(type: match.type, range: match.range, text: match.text))
-                location = match.range.location + match.range.length
-            } else {
-                // Plain text character
-                tokens.append(Token(type: .plain, range: NSRange(location: location, length: 1), text: String(text[text.index(text.startIndex, offsetBy: location)])))
-                location += 1
-            }
+
+            let end = min(NSMaxRange(candidate.range), limit)
+            let tokenRange = NSRange(location: candidate.range.location, length: end - candidate.range.location)
+            tokens.append(Token(type: candidate.type,
+                                range: tokenRange,
+                                text: nsText.substring(with: tokenRange)))
+            cursor = end
         }
-        
+
+        if cursor < limit {
+            appendGap(nsText, from: cursor, to: limit, into: &tokens)
+        }
         return tokens
     }
-    
+
+    /// Emits the unmatched run between two matches as one token instead of one
+    /// token per character.
+    private static func appendGap(_ text: NSString,
+                                  from location: Int,
+                                  to end: Int,
+                                  into tokens: inout [Token]) {
+        guard end > location else { return }
+        let range = NSRange(location: location, length: end - location)
+        var onlyWhitespace = true
+        for index in location..<end {
+            let character = text.character(at: index)
+            if character != 0x20 && character != 0x09 && character != 0x0A && character != 0x0D {
+                onlyWhitespace = false
+                break
+            }
+        }
+        tokens.append(Token(type: onlyWhitespace ? .whitespace : .plain,
+                            range: range,
+                            text: text.substring(with: range)))
+    }
+
     /// Get highlight color for a token type in a theme
     public static func color(for type: TokenType, theme: Theme) -> NSColor {
         return theme.colors[type] ?? theme.foreground
