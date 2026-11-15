@@ -14,6 +14,14 @@ class EditorContainer: NSView {
     /// own, and swapping one in makes NSTextView fall back to Helvetica 12, so
     /// bind and highlighting must restore this value explicitly.
     private(set) var bodyFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+
+    /// Fired when the visible character range changes (scroll or resize).
+    var onViewportChange: (() -> Void)?
+    /// Fired when the effective light/dark appearance changes.
+    var onAppearanceChange: (() -> Void)?
+
+    private var viewportObservers: [NSObjectProtocol] = []
+    private var pendingViewportUpdate = false
     
     init() {
         scrollView = NSScrollView()
@@ -40,6 +48,46 @@ class EditorContainer: NSView {
         guard layoutManager.textStorage !== storage else { return }
         layoutManager.replaceTextStorage(storage)
         applyBodyFont()
+    }
+
+    deinit {
+        viewportObservers.forEach { NotificationCenter.default.removeObserver($0) }
+    }
+
+    /// Character range currently visible in the clip view, resolved through the
+    /// layout manager rather than by guessing a character-per-pixel ratio.
+    func visibleCharacterRange() -> NSRange {
+        guard let storage = textView.textStorage, storage.length > 0 else {
+            return NSRange(location: 0, length: 0)
+        }
+        guard let layoutManager = textView.layoutManager,
+              let container = textView.textContainer else {
+            return NSRange(location: 0, length: min(storage.length, 4_000))
+        }
+        let glyphRange = layoutManager.glyphRange(forBoundingRect: textView.visibleRect,
+                                                  in: container)
+        let charRange = layoutManager.characterRange(forGlyphRange: glyphRange,
+                                                     actualGlyphRange: nil)
+        guard charRange.length > 0 else {
+            // TextKit has not laid the view out yet; start at the top.
+            return NSRange(location: 0, length: min(storage.length, 4_000))
+        }
+        return charRange
+    }
+
+    /// Applies theme chrome. Colors on the text itself are applied per visible
+    /// viewport by the window controller.
+    func apply(theme: Theme) {
+        layer?.backgroundColor = theme.background.cgColor
+        textView.backgroundColor = theme.background
+        textView.textColor = theme.foreground
+        scrollView.drawsBackground = true
+        scrollView.backgroundColor = theme.background
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        onAppearanceChange?()
     }
 
     /// Changes the global editor font (zoom) and updates the visible buffer.
@@ -89,5 +137,39 @@ class EditorContainer: NSView {
         
         addSubview(ruler)
         addSubview(scrollView)
+        startViewportObservation()
+    }
+
+    // MARK: - Viewport observation
+
+    private func startViewportObservation() {
+        let center = NotificationCenter.default
+        let clip = scrollView.contentView
+        clip.postsBoundsChangedNotifications = true
+
+        let watched: [(Any, Notification.Name)] = [
+            (clip, NSView.boundsDidChangeNotification),
+            (clip, NSView.frameDidChangeNotification)
+        ]
+        for (object, name) in watched {
+            viewportObservers.append(center.addObserver(forName: name,
+                                                        object: object,
+                                                        queue: .main) { [weak self] _ in
+                self?.scheduleViewportChange()
+            })
+        }
+    }
+
+    /// Coalesces continuous scrolling into one viewport update. The controller
+    /// still skips the work entirely while the viewport stays inside the
+    /// already-highlighted band.
+    private func scheduleViewportChange() {
+        guard !pendingViewportUpdate else { return }
+        pendingViewportUpdate = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.pendingViewportUpdate = false
+            self.onViewportChange?()
+        }
     }
 }
