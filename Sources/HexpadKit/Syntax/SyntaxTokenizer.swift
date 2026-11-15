@@ -83,13 +83,10 @@ public final class SyntaxTokenizer {
     
     // MARK: - Language Rule Tables
     
+    /// Swift-side rule tables. Languages migrated to
+    /// `LexerDefinitions.dataDriven` (currently JSON) are intentionally absent
+    /// and resolve through the data-driven loader instead.
     public static let languageRules: [Language: [String: [String]]] = [
-        .json: [
-            "keyword": [#"true"#, #"false"#, #"null"#],
-            "string": [#""[^"\\]*(?:\\.[^"\\]*)*""#],
-            "number": [#"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?"#],
-            "punctuation": [#"[{}\[\],:]"#]
-        ],
         .python: [
             "keyword": [#"\b(def|class|if|elif|else|while|for|in|return|import|from|as|with|try|except|finally|raise|pass|break|continue|and|or|not|is|None|True|False|lambda|yield|global|nonlocal|assert|del)\b"#],
             "string": [#"(?:'''[\s\S]*?'''|\"\"\"[\s\S]*?\"\"\"|'[^']*'|\"[^\"]*\")"#],
@@ -170,8 +167,9 @@ public final class SyntaxTokenizer {
         ]
     ]
     
-    /// Map rule dictionary keys to token types
-    private static let tokenTypeByName: [String: TokenType] = [
+    /// Map rule names to token types. Shared by the Swift rule tables and the
+    /// data-driven `LexerDefinitionLoader`.
+    static let tokenTypeByName: [String: TokenType] = [
         "keyword": .keyword, "string": .string, "comment": .comment, "number": .number,
         "type": .type, "function": .function, "variable": .variable, "operator": .`operator`,
         "punctuation": .punctuation, "whitespace": .whitespace, "plain": .plain,
@@ -184,7 +182,9 @@ public final class SyntaxTokenizer {
     // MARK: - Compiled Regex Cache
 
     /// One rule, with its regex compiled exactly once per language.
-    private struct CompiledRule {
+    /// Internal rather than private so the data-driven loader can build the
+    /// same rule set the tokenizer consumes.
+    struct CompiledRule {
         let type: TokenType
         let regex: NSRegularExpression
     }
@@ -215,19 +215,13 @@ public final class SyntaxTokenizer {
 
     private static func compiledRules(for language: Language) -> [CompiledRule] {
         regexCache.rules(for: language) {
-            guard let ruleTable = languageRules[language] else { return [] }
-            // Dictionary iteration order is not stable; sorting the rule names
-            // keeps tie-breaking deterministic across runs and processes.
-            return ruleTable.keys.sorted().flatMap { name -> [CompiledRule] in
-                guard let type = tokenTypeByName[name],
-                      let patterns = ruleTable[name] else { return [] }
-                return patterns.compactMap { pattern in
-                    guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
-                        return nil
-                    }
-                    return CompiledRule(type: type, regex: regex)
-                }
+            // Data-driven definitions take precedence; the cache is keyed by
+            // language either way, so migrated languages still compile once.
+            if let definition = LexerDefinitions.definition(for: language) {
+                return LexerDefinitionLoader.compiledRules(from: definition)
             }
+            guard let ruleTable = languageRules[language] else { return [] }
+            return LexerDefinitionLoader.compiledRules(fromLegacyTable: ruleTable)
         }
     }
 
@@ -243,6 +237,13 @@ public final class SyntaxTokenizer {
     /// `text`, so callers can attribute just a viewport without touching the
     /// rest of the buffer.
     public static func tokenize(_ text: String, language: Language, in range: NSRange) -> [Token] {
+        tokenize(text, rules: compiledRules(for: language), in: range)
+    }
+
+    /// Tokenize `range` with an already-compiled rule set. This is the shared
+    /// implementation behind both the language entry point and the parity
+    /// checks for data-driven definitions.
+    static func tokenize(_ text: String, rules: [CompiledRule], in range: NSRange) -> [Token] {
         let nsText = text as NSString
         let length = nsText.length
         guard range.location >= 0, range.length >= 0,
@@ -251,7 +252,6 @@ public final class SyntaxTokenizer {
             return []
         }
 
-        let rules = compiledRules(for: language)
         guard !rules.isEmpty else {
             // Plain text: one token covering the requested range.
             return [Token(type: .plain, range: range, text: nsText.substring(with: range))]
