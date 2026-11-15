@@ -154,4 +154,66 @@ final class SearchEngineTests: XCTestCase {
         let hitsNone = SearchEngine.searchInFiles(directory: dir, pattern: "needle", options: [], maxBytes: 1)
         XCTAssertEqual(hitsNone.count, 0)
     }
+
+    // Notepad++ whole-word applies in regex mode too: foo must not match
+    // foobar, foo_bar, or barfoo.
+    func testWholeWordWithRegex() {
+        let text = "foo foobar foo_bar barfoo foo."
+        let matches = SearchEngine.search(text, pattern: "foo", options: [.wholeWord, .regex])
+        XCTAssertEqual(matches.count, 2)
+        XCTAssertEqual(matches.map(\.text), ["foo", "foo"])
+    }
+
+    // ^ and $ anchor at every line boundary (multiline), not just buffer ends.
+    func testRegexAnchorsMatchLines() {
+        let text = "alpha\nbeta\ngamma\n"
+        let matches = SearchEngine.search(text, pattern: "^[a-z]+$", options: [.regex])
+        XCTAssertEqual(matches.count, 3)
+        XCTAssertEqual(matches.map(\.text), ["alpha", "beta", "gamma"])
+    }
+
+    // In-selection search keeps absolute ranges and ignores matches outside the range.
+    func testSearchWithinRange() {
+        let text = "one two one two"
+        let matches = SearchEngine.search(text, pattern: "one", options: [.inSelection],
+                                          range: NSRange(location: 8, length: 7))
+        XCTAssertEqual(matches.count, 1)
+        XCTAssertEqual(matches[0].range.location, 8)
+        XCTAssertEqual(matches[0].text, "one")
+    }
+
+    // Replace-in-selection must leave text before and after the scope untouched.
+    func testReplaceWithinRange() {
+        let text = "cat dog cat dog"
+        let result = SearchEngine.replace(text, pattern: "cat", replacement: "dog",
+                                          options: [.inSelection],
+                                          range: NSRange(location: 8, length: 7))
+        XCTAssertEqual(result, "cat dog dog dog")
+    }
+
+    // Replace All in Files rewrites each matching file and reports per-file counts.
+    func testReplaceInFilesReportsPerFileCounts() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("hexpad-rif-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let first = dir.appendingPathComponent("first.txt")
+        let second = dir.appendingPathComponent("second.txt")
+        let untouched = dir.appendingPathComponent("untouched.txt")
+        try "foo foo".write(to: first, atomically: true, encoding: .utf8)
+        try "foo".write(to: second, atomically: true, encoding: .utf8)
+        try "bar".write(to: untouched, atomically: true, encoding: .utf8)
+
+        let replaced = SearchEngine.replaceInFiles(directory: dir, pattern: "foo",
+                                                   replacement: "baz", options: [])
+        let counts = Dictionary(uniqueKeysWithValues: replaced.map { ($0.0.lastPathComponent, $0.1) })
+
+        XCTAssertEqual(replaced.count, 2)
+        XCTAssertEqual(counts["first.txt"], 2)
+        XCTAssertEqual(counts["second.txt"], 1)
+        XCTAssertNil(counts["untouched.txt"])
+        XCTAssertEqual(try String(contentsOf: first, encoding: .utf8), "baz baz")
+        XCTAssertEqual(try String(contentsOf: second, encoding: .utf8), "baz")
+        XCTAssertEqual(try String(contentsOf: untouched, encoding: .utf8), "bar")
+    }
 }

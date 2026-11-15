@@ -9,6 +9,8 @@ class FindBar: NSView, NSSearchFieldDelegate {
     private let replaceField: NSSearchField
     private let regexButton: NSButton
     private let literalButton: NSButton
+    private let wholeWordButton: NSButton
+    private let inSelectionButton: NSButton
     let matchCountLabel: NSTextField
     private let wrapButton: NSButton
     private let findNextButton: NSButton
@@ -23,6 +25,19 @@ class FindBar: NSView, NSSearchFieldDelegate {
     // other options were previously unreachable from the UI at all.
     private var searchOptions: SearchOptions = [.wrapAround]
     private var lastQuery = ""
+
+    /// Original selection captured when "In selection" starts, so selecting a
+    /// match does not shrink the search scope to that match on the next pass.
+    private var selectionScope: NSRange?
+    /// The range we last selected to show a match. Used to tell "the user
+    /// selected this" apart from "the find bar selected this".
+    private var lastSelectedMatchRange: NSRange?
+
+    // Notepad++-style find history. Newest first; cap at searchHistoryLimit.
+    private static let searchHistoryKey = "HexpadFindSearchHistory"
+    private static let searchHistoryLimit = 10
+    private var searchHistory: [String] = []
+    private var historyIndex: Int?
     
     // Observers for document changes
     private var documentChangeObserver: NSObjectProtocol?
@@ -33,6 +48,8 @@ class FindBar: NSView, NSSearchFieldDelegate {
         replaceField = NSSearchField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
         regexButton = NSButton(frame: NSRect(x: 0, y: 0, width: 60, height: 24))
         literalButton = NSButton(frame: NSRect(x: 0, y: 0, width: 60, height: 24))
+        wholeWordButton = NSButton(frame: NSRect(x: 0, y: 0, width: 82, height: 24))
+        inSelectionButton = NSButton(frame: NSRect(x: 0, y: 0, width: 86, height: 24))
         matchCountLabel = NSTextField(labelWithString: "")
         wrapButton = NSButton(frame: NSRect(x: 0, y: 0, width: 62, height: 24))
         findNextButton = NSButton(frame: NSRect(x: 0, y: 0, width: 70, height: 24))
@@ -90,6 +107,23 @@ class FindBar: NSView, NSSearchFieldDelegate {
         regexButton.action = #selector(searchModeToggled)
         regexButton.frame = NSRect(x: 448, y: yCenter, width: 60, height: 24)
         addSubview(regexButton)
+        
+        wholeWordButton.title = "Whole Word"
+        wholeWordButton.bezelStyle = .rounded
+        wholeWordButton.font = font
+        wholeWordButton.state = .off
+        wholeWordButton.target = self
+        wholeWordButton.action = #selector(wholeWordToggled)
+        addSubview(wholeWordButton)
+        
+        inSelectionButton.title = "Selection"
+        inSelectionButton.toolTip = "Search only inside the current selection"
+        inSelectionButton.bezelStyle = .rounded
+        inSelectionButton.font = font
+        inSelectionButton.state = .off
+        inSelectionButton.target = self
+        inSelectionButton.action = #selector(inSelectionToggled)
+        addSubview(inSelectionButton)
         
         matchCountLabel.font = font
         matchCountLabel.alignment = .center
@@ -156,13 +190,15 @@ class FindBar: NSView, NSSearchFieldDelegate {
         // isHidden=false at a zero frame used to leave a phantom bar whose
         // custom isVisible flag disagreed with AppKit state from birth.
         isHidden = true
+
+        loadSearchHistory()
     }
 
     /// Height the bar needs at a given width: one row when there is room,
-    /// two compact rows when the window is narrow (min width is 800pt, and the
-    /// single row needs ~1150pt).
+    /// two compact rows when the window is narrow. Adding whole-word and
+    /// selection controls pushed the single-row minimum past 1100pt.
     func preferredHeight(for width: CGFloat) -> CGFloat {
-        width < 900 ? 62 : 36
+        width < 1180 ? 62 : 36
     }
 
     /// Single place that positions the control row from the real bounds width.
@@ -172,7 +208,7 @@ class FindBar: NSView, NSSearchFieldDelegate {
         let h: CGFloat = 24
         let closeWidth: CGFloat = 24
         let rightInset: CGFloat = 4
-        let twoRows = bounds.width < 900
+        let twoRows = bounds.width < 1180
         let row1Y: CGFloat = twoRows ? bounds.height - h - 4 : 6
         let row2Y: CGFloat = 6
 
@@ -186,8 +222,9 @@ class FindBar: NSView, NSSearchFieldDelegate {
             replaceField.frame = NSRect(x: 12 + fieldWidth, y: row1Y, width: fieldWidth, height: h)
             // Row 2: every other control left to right.
             var x: CGFloat = 8
-            for (control, width) in [(literalButton, 58), (regexButton, 58), (wrapButton, 62),
-                                     (matchCountLabel, 80), (findPrevButton, 56), (findNextButton, 56),
+            for (control, width) in [(literalButton, 58), (regexButton, 58), (wholeWordButton, 82),
+                                     (inSelectionButton, 86), (wrapButton, 62), (matchCountLabel, 80),
+                                     (findPrevButton, 56), (findNextButton, 56),
                                      (replaceButton, 70), (replaceAllButton, 80)] as [(NSView, CGFloat)] {
                 control.frame = NSRect(x: x, y: row2Y, width: width, height: h)
                 x += width + 6
@@ -199,24 +236,18 @@ class FindBar: NSView, NSSearchFieldDelegate {
         replaceField.frame = NSRect(x: 196, y: row1Y, width: 180, height: h)
         literalButton.frame = NSRect(x: 384, y: row1Y, width: 58, height: h)
         regexButton.frame = NSRect(x: 446, y: row1Y, width: 58, height: h)
-        wrapButton.frame = NSRect(x: 508, y: row1Y, width: 62, height: h)
-        matchCountLabel.frame = NSRect(x: 574, y: row1Y, width: 80, height: h)
-        findPrevButton.frame = NSRect(x: 658, y: row1Y, width: 56, height: h)
-        findNextButton.frame = NSRect(x: 718, y: row1Y, width: 56, height: h)
+        wholeWordButton.frame = NSRect(x: 508, y: row1Y, width: 82, height: h)
+        inSelectionButton.frame = NSRect(x: 594, y: row1Y, width: 86, height: h)
+        wrapButton.frame = NSRect(x: 684, y: row1Y, width: 62, height: h)
+        matchCountLabel.frame = NSRect(x: 750, y: row1Y, width: 80, height: h)
+        findPrevButton.frame = NSRect(x: 834, y: row1Y, width: 56, height: h)
+        findNextButton.frame = NSRect(x: 894, y: row1Y, width: 56, height: h)
 
         // Replace controls hug the close button on the right.
         let replaceAllX = max(8, closeX - 84)
         let replaceX = max(8, replaceAllX - 74)
         replaceAllButton.frame = NSRect(x: replaceAllX, y: row1Y, width: 80, height: h)
         replaceButton.frame = NSRect(x: replaceX, y: row1Y, width: 70, height: h)
-
-        // Just under the two-row breakpoint the fields yield first.
-        if replaceX < 780 {
-            let squeeze = max(0, 780 - replaceX)
-            let fieldWidth = max(56, 180 - squeeze / 2)
-            searchField.frame.size.width = fieldWidth
-            replaceField.frame.size.width = fieldWidth
-        }
     }
     
     // Single source of truth for visibility. The view stays in its parent
@@ -227,9 +258,22 @@ class FindBar: NSView, NSSearchFieldDelegate {
     func show() {
         isVisible = true
         isHidden = false
+        selectionScope = nil
+        lastSelectedMatchRange = nil
+        historyIndex = nil
+        // Reopen with the last query, like Notepad++ does. MainWindowController
+        // still overwrites this when the editor has a fresh selection to seed.
+        if searchField.stringValue.isEmpty, let last = searchHistory.first {
+            searchField.stringValue = last
+        }
+        if !searchField.stringValue.isEmpty {
+            performFind()
+        }
     }
 
     func hide() {
+        commitSearchHistory()
+        clearHighlights()
         isVisible = false
         isHidden = true
         NotificationCenter.default.post(name: NSNotification.Name("FindBarClosed"), object: nil)
@@ -258,10 +302,14 @@ class FindBar: NSView, NSSearchFieldDelegate {
     }
     
     @objc private func searchTextChanged() {
+        historyIndex = nil
         // Enter fires this action too, after the delegate already advanced a
         // match. Skip the redundant re-find when the query did not change so
         // one Enter press advances exactly one match instead of two.
-        if searchField.stringValue == lastQuery, !allMatches.isEmpty { return }
+        if searchField.stringValue == lastQuery, !allMatches.isEmpty {
+            commitSearchHistory()
+            return
+        }
         performFind()
     }
     
@@ -288,6 +336,27 @@ class FindBar: NSView, NSSearchFieldDelegate {
         }
     }
     
+    @objc private func wholeWordToggled() {
+        if wholeWordButton.state == .on {
+            searchOptions.insert(.wholeWord)
+        } else {
+            searchOptions.remove(.wholeWord)
+        }
+        performFind()
+    }
+    
+    @objc private func inSelectionToggled() {
+        if inSelectionButton.state == .on {
+            searchOptions.insert(.inSelection)
+        } else {
+            searchOptions.remove(.inSelection)
+        }
+        // Re-capture from the current editor selection the next time find runs.
+        selectionScope = nil
+        lastSelectedMatchRange = nil
+        performFind()
+    }
+    
     @objc private func findNextAction() {
         findNext()
     }
@@ -298,7 +367,10 @@ class FindBar: NSView, NSSearchFieldDelegate {
     
     @objc private func replaceAction() {
         guard let doc = tabStore?.selectedDocument, !searchField.stringValue.isEmpty else { return }
-        let matches = SearchEngine.search(doc.text, pattern: searchField.stringValue, options: searchOptions)
+        commitSearchHistory()
+        let scope = activeSearchScope()
+        let matches = SearchEngine.search(doc.text, pattern: searchField.stringValue,
+                                          options: searchOptions, range: scope)
         guard currentMatchIndex < matches.count else { return }
         
         // Replace ONLY the current match, not all occurrences. Mutating the
@@ -313,8 +385,13 @@ class FindBar: NSView, NSSearchFieldDelegate {
     
     @objc private func replaceAllAction() {
         guard let doc = tabStore?.selectedDocument, !searchField.stringValue.isEmpty else { return }
-        let matches = SearchEngine.search(doc.text, pattern: searchField.stringValue, options: searchOptions)
-        let newContent = SearchEngine.replace(doc.text, pattern: searchField.stringValue, replacement: replaceField.stringValue, options: searchOptions)
+        commitSearchHistory()
+        let scope = activeSearchScope()
+        let matches = SearchEngine.search(doc.text, pattern: searchField.stringValue,
+                                          options: searchOptions, range: scope)
+        let newContent = SearchEngine.replace(doc.text, pattern: searchField.stringValue,
+                                              replacement: replaceField.stringValue,
+                                              options: searchOptions, range: scope)
         // Replace all goes through the shared storage as one undoable edit, so
         // the editor reflects it immediately instead of silently keeping the
         // old visible text.
@@ -331,13 +408,20 @@ class FindBar: NSView, NSSearchFieldDelegate {
         guard let doc = tabStore?.selectedDocument, let textView = editorContainer?.textView else { return }
 
         let pattern = searchField.stringValue
+        // A new query starts at the first match; navigation/edits keep the
+        // current index so Replace still targets the match the user sees.
+        if pattern != lastQuery {
+            currentMatchIndex = 0
+        }
         lastQuery = pattern
-        allMatches = SearchEngine.search(doc.text, pattern: pattern, options: searchOptions)
+        let scope = activeSearchScope()
+        allMatches = SearchEngine.search(doc.text, pattern: pattern, options: searchOptions, range: scope)
 
         if pattern.isEmpty {
             // Empty query: show nothing
             matchCountLabel.stringValue = ""
             currentMatchIndex = 0
+            clearHighlights()
             return
         }
 
@@ -350,6 +434,7 @@ class FindBar: NSView, NSSearchFieldDelegate {
                 matchCountLabel.stringValue = "No matches"
             }
             currentMatchIndex = 0
+            clearHighlights()
             return
         }
 
@@ -359,6 +444,7 @@ class FindBar: NSView, NSSearchFieldDelegate {
             currentMatchIndex = 0
         }
         matchCountLabel.stringValue = "\(currentMatchIndex + 1) of \(allMatches.count)"
+        applyHighlights()
 
         // Selection is only applied on explicit navigation/toggle so that
         // typing in the document does not yank the caret to a match.
@@ -366,10 +452,112 @@ class FindBar: NSView, NSSearchFieldDelegate {
         let match = allMatches[currentMatchIndex]
         textView.setSelectedRange(match.range)
         textView.scrollRangeToVisible(match.range)
+        lastSelectedMatchRange = match.range
+    }
+
+    /// Returns the selection captured for "In selection", or nil when the
+    /// option is off / there was no selection to begin with (Notepad++ falls
+    /// back to the whole document in that case).
+    ///
+    /// A selection equal to the match we last highlighted is our own doing, not
+    /// a new user scope, so it must not shrink the search region.
+    private func activeSearchScope() -> NSRange? {
+        guard searchOptions.contains(.inSelection), let textView = editorContainer?.textView else {
+            return nil
+        }
+        let selected = textView.selectedRange
+        if let last = lastSelectedMatchRange, NSEqualRanges(selected, last) {
+            return selectionScope
+        }
+        if selected.length > 0 {
+            selectionScope = selected
+        }
+        return selectionScope
+    }
+
+    // MARK: - Match highlighting
+
+    /// Paints every match with a temporary background attribute. Temporary
+    /// attributes belong to the layout manager, not the document, so they are
+    /// never saved and never pollute undo/syntax colouring.
+    private func applyHighlights() {
+        guard isVisible,
+              let textView = editorContainer?.textView,
+              let layoutManager = textView.layoutManager else {
+            clearHighlights()
+            return
+        }
+        clearHighlights()
+        let length = (textView.string as NSString).length
+        guard length > 0 else { return }
+
+        let color = NSColor.findHighlightColor.withAlphaComponent(0.25)
+        for match in allMatches where match.range.length > 0 {
+            guard match.range.location != NSNotFound,
+                  match.range.location + match.range.length <= length else { continue }
+            layoutManager.addTemporaryAttributes([.backgroundColor: color], forCharacterRange: match.range)
+        }
+    }
+
+    private func clearHighlights() {
+        guard let textView = editorContainer?.textView,
+              let layoutManager = textView.layoutManager else { return }
+        let length = (textView.string as NSString).length
+        guard length > 0 else { return }
+        layoutManager.removeTemporaryAttribute(.backgroundColor,
+                                               forCharacterRange: NSRange(location: 0, length: length))
+    }
+
+    // MARK: - Search history
+
+    private func loadSearchHistory() {
+        searchHistory = Array((UserDefaults.standard.stringArray(forKey: Self.searchHistoryKey) ?? [])
+            .prefix(Self.searchHistoryLimit))
+    }
+
+    private func commitSearchHistory() {
+        let query = searchField.stringValue
+        guard !query.isEmpty else { return }
+        searchHistory.removeAll { $0 == query }
+        searchHistory.insert(query, at: 0)
+        if searchHistory.count > Self.searchHistoryLimit {
+            searchHistory.removeLast(searchHistory.count - Self.searchHistoryLimit)
+        }
+        UserDefaults.standard.set(searchHistory, forKey: Self.searchHistoryKey)
+        historyIndex = nil
+    }
+
+    /// Up/Down cycle through recent queries. Starting from an empty field
+    /// loads the newest; Down past the newest clears the field again.
+    private func moveInHistory(up: Bool) {
+        guard !searchHistory.isEmpty else { return }
+        if let index = historyIndex {
+            if up {
+                guard index + 1 < searchHistory.count else { NSSound.beep(); return }
+                historyIndex = index + 1
+                searchField.stringValue = searchHistory[index + 1]
+            } else {
+                if index > 0 {
+                    historyIndex = index - 1
+                    searchField.stringValue = searchHistory[index - 1]
+                } else {
+                    historyIndex = nil
+                    searchField.stringValue = ""
+                }
+            }
+        } else {
+            // From an empty field either arrow opens history at the newest
+            // entry; Up then walks older, Down walks newer / clears.
+            guard searchField.stringValue.isEmpty else { return }
+            historyIndex = 0
+            searchField.stringValue = searchHistory[0]
+        }
+        performFind()
     }
     
     func findNext() {
         guard !allMatches.isEmpty else { return }
+        commitSearchHistory()
         if !searchOptions.contains(.wrapAround), currentMatchIndex == allMatches.count - 1 {
             NSSound.beep()
             updateMatchDisplay()
@@ -381,6 +569,7 @@ class FindBar: NSView, NSSearchFieldDelegate {
     
     func findPrevious() {
         guard !allMatches.isEmpty else { return }
+        commitSearchHistory()
         if !searchOptions.contains(.wrapAround), currentMatchIndex == 0 {
             NSSound.beep()
             updateMatchDisplay()
@@ -395,6 +584,7 @@ class FindBar: NSView, NSSearchFieldDelegate {
         let match = allMatches[currentMatchIndex]
         textView.setSelectedRange(match.range)
         textView.scrollRangeToVisible(match.range)
+        lastSelectedMatchRange = match.range
         matchCountLabel.stringValue = "\(currentMatchIndex + 1) of \(allMatches.count)"
     }
     
@@ -408,12 +598,16 @@ class FindBar: NSView, NSSearchFieldDelegate {
             object: nil,
             queue: .main
         ) { [weak self] _ in
+            self?.selectionScope = nil
+            self?.lastSelectedMatchRange = nil
             self?.performFind()
         }
         
-        // Observe document text changes
+        // Observe document text changes. Programmatic edits post this from
+        // DocumentModel; typing is forwarded by MainWindowController's text
+        // view delegate, so the count and highlights stay live either way.
         documentChangeObserver = NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("DocumentModifiedDidChange"),
+            forName: DocumentModel.textDidChangeNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
@@ -440,6 +634,7 @@ class FindBar: NSView, NSSearchFieldDelegate {
     // This is the only reliable Enter hook for the typed-into case.
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+            commitSearchHistory()
             if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
                 findPrevious()
             } else {
@@ -447,7 +642,30 @@ class FindBar: NSView, NSSearchFieldDelegate {
             }
             return true
         }
+        // Up/Down browse recent queries while the field is empty; once cycling
+        // has started they keep moving through history. Any text edit resets it.
+        if commandSelector == #selector(NSResponder.moveUp(_:)) {
+            if searchField.stringValue.isEmpty || historyIndex != nil {
+                moveInHistory(up: true)
+                return true
+            }
+            return false
+        }
+        if commandSelector == #selector(NSResponder.moveDown(_:)) {
+            if searchField.stringValue.isEmpty || historyIndex != nil {
+                moveInHistory(up: false)
+                return true
+            }
+            return false
+        }
         return false
+    }
+    
+    func controlTextDidChange(_ obj: Notification) {
+        // NSSearchField's action alone is not fired for every keystroke, so
+        // hook the field editor for live counts and highlights while typing.
+        historyIndex = nil
+        performFind()
     }
     
     // Direct references injected by MainWindowController. The responder-chain walks

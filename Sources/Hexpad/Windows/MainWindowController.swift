@@ -684,12 +684,11 @@ extension MainWindowController: NSTextViewDelegate {
     }
 
     func textDidChange(_ notification: Notification) {
-        guard let doc = tabStore.selectedDocument, let editor = editorContainer else { return }
-        // NSTextView wrote straight into doc.textStorage; dirty state is
-        // derived from that buffer, so only the derived UI needs refreshing.
-        refreshTabBar()
-        updateStatusBar()
-        applySyntaxHighlighting(to: editor, for: doc)
+        guard let doc = tabStore.selectedDocument else { return }
+        // NSTextView wrote straight into doc.textStorage. Republish the model's
+        // own change notice so observers (find counts/highlights, dirty dots)
+        // see typing through the same path as programmatic replace/line edits.
+        NotificationCenter.default.post(name: DocumentModel.textDidChangeNotification, object: doc)
     }
     
     func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {

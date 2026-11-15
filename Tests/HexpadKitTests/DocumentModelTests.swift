@@ -256,4 +256,25 @@ final class DocumentModelTests: XCTestCase {
         XCTAssertEqual(textView.string, "old")
         XCTAssertTrue(doc.isModified)
     }
+
+    // FindBar's live count/highlight path keys off this notification; a
+    // programmatic replace must reach observers with the edited document.
+    func testProgrammaticEditPostsTextDidChangeNotification() {
+        let doc = DocumentModel(text: "alpha")
+        let expectation = expectation(description: "model text change posted")
+        let token = NotificationCenter.default.addObserver(
+            forName: DocumentModel.textDidChangeNotification,
+            object: doc,
+            queue: nil
+        ) { note in
+            XCTAssertTrue((note.object as? DocumentModel) === doc)
+            expectation.fulfill()
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        doc.replaceCharacters(in: NSRange(location: 0, length: 5), with: "beta")
+
+        wait(for: [expectation], timeout: 1)
+        XCTAssertEqual(doc.text, "beta")
+    }
 }
