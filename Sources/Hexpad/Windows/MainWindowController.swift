@@ -313,6 +313,29 @@ class MainWindowController: NSViewController {
     }
 
     private func openFile(atURL url: URL) {
+        // Dedupe: if a tab already shows this file, switch to that tab instead of
+        // opening a second one. A dirty buffer keeps the user's unsaved edits;
+        // a clean one may have changed on disk since it was opened, so reload it
+        // through the same path the external-change watcher uses before focusing.
+        if let existingIndex = tabStore.documents.firstIndex(where: { $0.filePath?.path == url.path }) {
+            let existingDoc = tabStore.documents[existingIndex]
+            var didReload = false
+            if !existingDoc.unsavedChanges {
+                didReload = reloadDocument(existingDoc, from: url)
+            }
+            selectTab(at: existingIndex)
+            if didReload {
+                // The reload swapped the buffer, so force the chrome to re-read
+                // the new text even when the tab was already selected (selectTab
+                // early-returns in that case and would skip the refresh).
+                refreshTabBar()
+                updateEditor()
+                updateStatusBar()
+            }
+            recentFilesManager?.addRecent(url.path)
+            return
+        }
+
         do {
             let data = try Data(contentsOf: url)
             let encoding = EncodingDetective.detect(data)
@@ -881,6 +904,21 @@ class MainWindowController: NSViewController {
         watchTimer = nil
     }
 
+    /// Reloads a clean file-backed document's buffer from disk through the
+    /// shared storage, making the on-disk text the clean undoable baseline.
+    /// Returns true when a reload actually happened (on-disk text differed from
+    /// the in-memory buffer); the caller decides how to surface it.
+    private func reloadDocument(_ doc: DocumentModel, from url: URL) -> Bool {
+        guard let data = try? Data(contentsOf: url) else { return false }
+        let nsEnc = String.Encoding(rawValue: EncodingDetective.nsEncoding(from: doc.encoding))
+        guard let text = String(data: data, encoding: nsEnc), text != doc.text else { return false }
+        // Reload through the shared buffer: the visible editor updates
+        // immediately and the reload stays undoable. reloadText also makes
+        // the on-disk text the clean baseline in the same notification.
+        doc.reloadText(text)
+        return true
+    }
+
     private func checkExternalChanges() {
         for doc in tabStore.documents {
             guard let path = doc.filePath?.path else { continue }
@@ -900,13 +938,7 @@ class MainWindowController: NSViewController {
                 doc.setModified(true)
                 continue
             }
-            guard let data = try? Data(contentsOf: doc.filePath!) else { continue }
-            let nsEnc = String.Encoding(rawValue: EncodingDetective.nsEncoding(from: doc.encoding))
-            guard let text = String(data: data, encoding: nsEnc), text != doc.text else { continue }
-            // Reload through the shared buffer: the visible editor updates
-            // immediately and the reload stays undoable. reloadText also makes
-            // the on-disk text the clean baseline in the same notification.
-            doc.reloadText(text)
+            guard reloadDocument(doc, from: doc.filePath!) else { continue }
             if doc === tabStore.selectedDocument {
                 updateEditor()
             }
