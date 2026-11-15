@@ -17,6 +17,7 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     
     private var mainWindow: MainWindow?
     private var windowController: MainWindowController?
+    private var preferencesWindowController: PreferencesWindowController?
     private let recentFilesManager = RecentFilesManager()
     private var openRecentMenu: NSMenu?
     private var appearanceMenu: NSMenu?
@@ -96,8 +97,8 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         let appItem = NSMenuItem()
         let appSubMenu = NSMenu()
         let aboutItem = NSMenuItem(title: "About Hexpad", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
-        let preferencesItem = NSMenuItem(title: "Preferences...", action: nil, keyEquivalent: ",")
-        preferencesItem.isEnabled = false
+        let preferencesItem = NSMenuItem(title: "Preferences…", action: #selector(showPreferences), keyEquivalent: ",")
+        preferencesItem.target = self
         let hideItem = NSMenuItem(title: "Hide Hexpad", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         let hideOthersItem = NSMenuItem(title: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
         hideOthersItem.keyEquivalentModifierMask = [.command, .option]
@@ -495,6 +496,21 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     
     @objc private func resetZoom() {
         windowController?.resetZoom()
+    }
+
+    // MARK: - Preferences
+
+    /// Standard Cmd+, entry point. The delegate owns the controller, so the
+    /// same window is reused for the lifetime of the app instead of stacking
+    /// up duplicate preferences windows.
+    @objc private func showPreferences() {
+        if preferencesWindowController == nil {
+            preferencesWindowController = PreferencesWindowController()
+        }
+        preferencesWindowController?.targetController = windowController
+        preferencesWindowController?.showWindow(nil)
+        preferencesWindowController?.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     @objc private func setEOLLF() { windowController?.setEOL("LF") }
