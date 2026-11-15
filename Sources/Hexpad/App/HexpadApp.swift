@@ -43,14 +43,8 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        // Save any modified documents before terminating
+        // Dirty documents stay dirty on quit; the session store preserves dirty buffers.
         if let wc = windowController {
-            // First, save all modified documents with file paths
-            for doc in wc.tabStore.documents {
-                if doc.isModified, let _ = doc.filePath {
-                    try? doc.save()
-                }
-            }
             // Then save the session state
             wc.saveSession()
         }
