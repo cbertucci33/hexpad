@@ -26,6 +26,10 @@ enum LexerDefinitionLoader {
 
     /// Compiles a legacy `rule name -> regex patterns` table.
     ///
+    /// The production tokenizer no longer uses this path; it is retained so the
+    /// lexer-definition tests can tokenize a sample with the pre-migration rule
+    /// tables and compare the result against the data-driven definitions.
+    ///
     /// Dictionary iteration order is not stable, so rule names are sorted to
     /// keep tie-breaking deterministic across runs and processes.
     static func compiledRules(fromLegacyTable ruleTable: [String: [String]]) -> [SyntaxTokenizer.CompiledRule] {

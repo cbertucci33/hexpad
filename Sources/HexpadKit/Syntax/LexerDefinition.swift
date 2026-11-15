@@ -2,10 +2,10 @@ import Foundation
 
 /// A data-driven description of a language grammar.
 ///
-/// `LexerDefinition` is the serializable counterpart to
-/// `SyntaxTokenizer.languageRules`. Rules are declared in priority order and
-/// are compiled in that order; the tokenizer's merge step still resolves
-/// overlapping matches by location and length.
+/// `LexerDefinition` is the serializable grammar description consumed by
+/// `SyntaxTokenizer`. Rules are declared in priority order and are compiled in
+/// that order; the tokenizer's merge step still resolves overlapping matches by
+/// location and length.
 ///
 /// The comment and bracket metadata is intentionally not consumed by the
 /// tokenizer yet. It is the groundwork for comment-aware editing and code
@@ -92,16 +92,26 @@ public struct LexerDefinition: Codable, Equatable {
     }
 }
 
-/// Registry of languages that have been migrated from
-/// `SyntaxTokenizer.languageRules` to data-driven definitions.
+/// Registry of every language grammar.
 ///
-/// Only migrated languages appear here. Every other language keeps using its
-/// Swift dictionary, so the two paths run side by side until later migration
-/// slices move them across.
+/// All highlighted languages live here; `Language.plain` is intentionally
+/// absent because it has no rules and tokenizes as a single plain token.
 public enum LexerDefinitions {
 
-    /// Definitions that take precedence over the legacy Swift rule tables.
-    public static let dataDriven: [LexerDefinition] = [.json]
+    /// The grammars resolved by `SyntaxTokenizer`, in `Language` declaration
+    /// order.
+    public static let dataDriven: [LexerDefinition] = [
+        .json,
+        .python,
+        .javascript,
+        .typescript,
+        .html,
+        .css,
+        .markdown,
+        .xml,
+        .shell,
+        .swift
+    ]
 
     private static let byLanguage: [Language: LexerDefinition] = {
         var result: [Language: LexerDefinition] = [:]
@@ -112,8 +122,7 @@ public enum LexerDefinitions {
         return result
     }()
 
-    /// Returns the data-driven definition for `language`, or `nil` when the
-    /// language still uses its Swift dictionary.
+    /// Returns the definition for `language`, or `nil` for `Language.plain`.
     public static func definition(for language: Language) -> LexerDefinition? {
         byLanguage[language]
     }

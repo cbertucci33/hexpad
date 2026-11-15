@@ -81,93 +81,13 @@ public struct Theme {
 /// Regex-based syntax tokenizer
 public final class SyntaxTokenizer {
     
-    // MARK: - Language Rule Tables
-    
-    /// Swift-side rule tables. Languages migrated to
-    /// `LexerDefinitions.dataDriven` (currently JSON) are intentionally absent
-    /// and resolve through the data-driven loader instead.
-    public static let languageRules: [Language: [String: [String]]] = [
-        .python: [
-            "keyword": [#"\b(def|class|if|elif|else|while|for|in|return|import|from|as|with|try|except|finally|raise|pass|break|continue|and|or|not|is|None|True|False|lambda|yield|global|nonlocal|assert|del)\b"#],
-            "string": [#"(?:'''[\s\S]*?'''|\"\"\"[\s\S]*?\"\"\"|'[^']*'|\"[^\"]*\")"#],
-            "comment": [#"(?m)#[^\n]*"#],
-            "number": [#"\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?j?\b"#],
-            "function": [#"\b[a-zA-Z_]\w*(?=\s*\()"#],
-            "type": [#"\b(bool|int|float|str|list|dict|tuple|set|None|object|Any|Optional|Union|Type)\b"#]
-        ],
-        .javascript: [
-            "keyword": [#"\b(const|let|var|function|if|else|elif|while|for|do|switch|case|break|continue|return|new|this|class|extends|import|export|from|default|async|await|try|catch|finally|throw|typeof|instanceof|in|of|yield|delete|void|typeof)\b"#],
-            "string": [#"(?:`[^`]*`|'[^']*'|\"[^\"]*\")"#],
-            "comment": [#"(?m)(?:^|[^\\])\/\/[^\n]*|#"(?ms)/\*[\s\S]*?\*/"#],
-            "number": [#"\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?(?:n)?\b"#],
-            "function": [#"\b[a-zA-Z_$]\w*(?=\s*\()"#],
-            "type": [#"\b(String|Number|Boolean|Object|Array|Function|Symbol|undefined|null|Promise|Map|Set|WeakMap|WeakSet|RegExp|Date|Error|JSON|Math|console)\b"#],
-            "regex": [#"/[^/\n]*[/igmu]*"#]
-        ],
-        .typescript: [
-            "keyword": [#"\b(const|let|var|function|if|else|while|for|switch|case|break|continue|return|new|this|class|extends|interface|type|enum|implements|import|export|from|default|async|await|try|catch|finally|throw|typeof|instanceof|in|of|yield|declare|abstract|readonly|as|is|keyof|namespace|module|package)\b"#],
-            "string": [#"(?:`[^`]*`|'[^']*'|\"[^\"]*\")"#],
-            "comment": [#"(?m)(?:^|[^\\])\/\/[^\n]*|#"(?ms)/\*[\s\S]*?\*/"#],
-            "number": [#"\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?(?:n)?\b"#],
-            "function": [#"\b[a-zA-Z_$]\w*(?=\s*\()"#],
-            "type": [#"\b(String|Number|Boolean|Object|Array|Function|Symbol|undefined|null|void|never|any|unknown|true|false|Promise|Map|Set|Partial|Required|Record|Pick|Omit|Exclude|Extract|NonNullable|ReturnType|Parameters|InstanceType)\b"#]
-        ],
-        .html: [
-            "tag": [#"<[a-zA-Z][a-zA-Z0-9]*"#],
-            "closing_tag": [#"</[a-zA-Z][a-zA-Z0-9]*>"#],
-            "attribute": [#"[a-zA-Z:-][a-zA-Z0-9:-]*(?=\s*=)"#],
-            "string": [#""[^"\\]*(?:\\.[^"\\]*)*""#],
-            "comment": [#"(?ms)<!--[\s\S]*?-->"#],
-            "entity": [#"&[a-zA-Z0-9#];"#]
-        ],
-        .css: [
-            "comment": [#"(?ms)/\*[\s\S]*?\*/"#],
-            "selector": [#"[.#]?[a-zA-Z_-][a-zA-Z0-9_-]*(?=\s*\{)"#],
-            "property": [#"(?m)\s([a-zA-Z-]+)\s*:"#],
-            "value": [#"(?<=:)[^;{}]+(?=;)"#],
-            "number": [#"\b\d+(?:\.\d+)?(%|px|em|rem|pt|vh|vw|vmin|vmax|deg|rad|turn|s|ms)?\b"#],
-            "string": [#""[^"\\]*(?:\\.[^"\\]*)*""#],
-            "function": [#"\b[a-zA-Z-]+(?=\()"#]
-        ],
-        .markdown: [
-            "heading": [#"(?m)^#{1,6}\s.*"#],
-            "bold": [##"\*\*[^*]+\*\*|##[^#]+##"##],
-            "italic": [#"\*[^*]+\*"#],
-            "code": [#"`[^`]+`"#],
-            "link": [#"\[.+?\]\(.+?\)"#],
-            "image": [#"\[[^\]]*\]\([^\)]*\)"#],
-            "blockquote": [#"(?m)^\s*>.*"#],
-            "list": [#"(?m)^\s*[-*+]\s"#],
-            "hrule": [#"(?m)^\s*[-*_]{3,}\s*"#]
-        ],
-        .xml: [
-            "tag": [#"<[a-zA-Z][a-zA-Z0-9]*"#],
-            "closing_tag": [#"</[a-zA-Z][a-zA-Z0-9]*>"#],
-            "attribute": [#"[a-zA-Z:-][a-zA-Z0-9:-]*(?=\s*=)"#],
-            "string": [#""[^"\\]*(?:\\.[^"\\]*)*""#],
-            "comment": [#"(?ms)<!--[\s\S]*?-->"#],
-            "entity": [#"&[a-zA-Z0-9#];"#]
-        ],
-        .shell: [
-            "keyword": [#"\b(if|then|else|elif|fi|for|while|do|done|case|esac|function|select|until|in|time|coproc)\b"#],
-            "string": [#"(?:"""[\s\S]*?"""|"[^"\\]*(?:\\.[^"\\]*)*")"#],
-            "comment": [#"(?m)#[^\n]*"#],
-            "number": [#"\b\d+\b"#],
-            "variable": [#"\$\{?[\w@#*?!$]+\}?"#],
-            "function": [#"\b[a-zA-Z_][\w]*\s*\(\)"#],
-            "operator": [#"[|&;<>`=\]"#]
-        ],
-        .swift: [
-            "keyword": [#"\b(func|let|var|if|else|guard|for|while|switch|case|return|class|struct|enum|protocol|extension|import|public|private|internal|static|final|override|init|deinit|self|nil|try|catch|throw|throws|async|await|defer|where|in|is|as|some|any)\b"#],
-            "string": [#"(?:"""[\s\S]*?"""|"[^"\\]*(?:\\.[^"\\]*)*")"#],
-            "comment": [#"(?m)(?:^|[^\\])\/\/[^\n]*|(?ms)\/\*[\s\S]*?\*\/"#],
-            "number": [#"\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b"#],
-            "type": [#"\b(Int|String|Double|Bool|Array|Dictionary|Optional)\b"#],
-            "function": [#"\b[a-zA-Z_]\w*(?=\s*\()"#]
-        ]
-    ]
-    
-    /// Map rule names to token types. Shared by the Swift rule tables and the
+    // MARK: - Rule Metadata
+
+    /// Every highlighted language is described by a `LexerDefinition` in
+    /// `LexerDefinitions.dataDriven`; `Language.plain` has no definition and
+    /// therefore no compiled rules.
+    ///
+    /// Map rule names to token types. Shared by the definitions and the
     /// data-driven `LexerDefinitionLoader`.
     static let tokenTypeByName: [String: TokenType] = [
         "keyword": .keyword, "string": .string, "comment": .comment, "number": .number,
@@ -215,13 +135,11 @@ public final class SyntaxTokenizer {
 
     static func compiledRules(for language: Language) -> [CompiledRule] {
         regexCache.rules(for: language) {
-            // Data-driven definitions take precedence; the cache is keyed by
-            // language either way, so migrated languages still compile once.
-            if let definition = LexerDefinitions.definition(for: language) {
-                return LexerDefinitionLoader.compiledRules(from: definition)
-            }
-            guard let ruleTable = languageRules[language] else { return [] }
-            return LexerDefinitionLoader.compiledRules(fromLegacyTable: ruleTable)
+            // The cache is keyed by language, so each definition compiles once.
+            // A language without a definition (`plain`) has no rules, which the
+            // tokenizer renders as a single plain token.
+            guard let definition = LexerDefinitions.definition(for: language) else { return [] }
+            return LexerDefinitionLoader.compiledRules(from: definition)
         }
     }
 
