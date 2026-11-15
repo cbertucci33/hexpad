@@ -16,6 +16,17 @@ final class DocumentModelTests: XCTestCase {
                           textContainer: container)
     }
 
+    /// Simulates opening `url` the way the editor does: the buffer is
+    /// normalized to LF-only, while the file's original line-ending style is
+    /// recorded so the next save writes it back.
+    private func openDocumentKeepingFileEOL(at url: URL) throws -> DocumentModel {
+        let data = try Data(contentsOf: url)
+        let raw = try XCTUnwrap(String(data: data, encoding: .utf8))
+        return DocumentModel(text: EOLDetective.converting(raw, to: "LF"),
+                             filePath: url,
+                             eolType: EOLDetective.detect(data))
+    }
+
     func testInitialState() {
         let doc = DocumentModel(text: "hello")
         XCTAssertEqual(doc.text, "hello")
@@ -70,18 +81,23 @@ final class DocumentModelTests: XCTestCase {
     }
     
     func testEOLConversion() {
-        var doc = DocumentModel(text: "a\nb\nc")
+        let doc = DocumentModel(text: "a\nb\nc")
+        XCTAssertFalse(doc.isModified)
+
         doc.convertEOL(to: "CRLF")
-        XCTAssertEqual(doc.text, "a\r\nb\r\nc")
+        XCTAssertEqual(doc.text, "a\nb\nc", "the buffer must stay LF-only")
         XCTAssertEqual(doc.eolType, "CRLF")
-        
+        XCTAssertTrue(doc.isModified, "changing the save style must mark the document modified")
+
         doc.convertEOL(to: "LF")
         XCTAssertEqual(doc.text, "a\nb\nc")
         XCTAssertEqual(doc.eolType, "LF")
-        
+        XCTAssertTrue(doc.isModified)
+
         doc.convertEOL(to: "CR")
-        XCTAssertEqual(doc.text, "a\rb\rc")
+        XCTAssertEqual(doc.text, "a\nb\nc", "converting to CR must not put lone \\r into the buffer")
         XCTAssertEqual(doc.eolType, "CR")
+        XCTAssertTrue(doc.isModified)
     }
     
     func testSessionRoundTrip() {
@@ -146,6 +162,58 @@ final class DocumentModelTests: XCTestCase {
         try doc.save()
 
         XCTAssertEqual(try Data(contentsOf: tmp), Data("one\rtwo\rthree\r".utf8))
+    }
+
+    /// Converting a CRLF document to LF must leave the LF-only buffer byte
+    /// identical and only change the bytes written by save().
+    func testConvertCRLFToLFThenSaveWritesLFWithLFBuffer() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hexpad-convert-eol-lf-\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        try Data("one\r\ntwo\r\nthree\r\n".utf8).write(to: tmp)
+        let doc = try openDocumentKeepingFileEOL(at: tmp)
+        XCTAssertEqual(doc.eolType, "CRLF")
+        XCTAssertEqual(doc.text, "one\ntwo\nthree\n", "the buffer is LF-only")
+        XCTAssertFalse(doc.isModified)
+
+        doc.convertEOL(to: "LF")
+        XCTAssertEqual(doc.text, "one\ntwo\nthree\n", "convertEOL must not touch the buffer")
+        XCTAssertEqual(doc.eolType, "LF")
+        XCTAssertTrue(doc.isModified)
+
+        doc.replaceCharacters(in: NSRange(location: 4, length: 3), with: "TWO")
+        XCTAssertEqual(doc.text, "one\nTWO\nthree\n")
+        try doc.save()
+
+        XCTAssertEqual(try Data(contentsOf: tmp), Data("one\nTWO\nthree\n".utf8))
+        XCTAssertFalse(doc.isModified)
+    }
+
+    /// The CR variant: the buffer stays LF-only, but save() writes lone CR
+    /// bytes for a document converted to the classic-Mac style.
+    func testConvertCRLFToCRThenSaveWritesCRWithLFBuffer() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hexpad-convert-eol-cr-\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        try Data("one\r\ntwo\r\nthree\r\n".utf8).write(to: tmp)
+        let doc = try openDocumentKeepingFileEOL(at: tmp)
+        XCTAssertEqual(doc.eolType, "CRLF")
+        XCTAssertEqual(doc.text, "one\ntwo\nthree\n")
+
+        doc.convertEOL(to: "CR")
+        XCTAssertEqual(doc.text, "one\ntwo\nthree\n", "the buffer must not gain lone \\r")
+        XCTAssertEqual(doc.eolType, "CR")
+        XCTAssertTrue(doc.isModified)
+
+        doc.replaceCharacters(in: NSRange(location: 4, length: 3), with: "TWO")
+        XCTAssertFalse(doc.text.contains("\r"), "line-based subsystems require LF-only text")
+        try doc.save()
+
+        XCTAssertEqual(try Data(contentsOf: tmp), Data("one\rTWO\rthree\r".utf8))
+        XCTAssertEqual(doc.text, "one\nTWO\nthree\n", "saving must not rewrite the buffer")
+        XCTAssertFalse(doc.isModified)
     }
     
     func testSessionWithoutFilePath() {
@@ -281,15 +349,16 @@ final class DocumentModelTests: XCTestCase {
         XCTAssertEqual(second.text, "BETA", "the other tab's edits are untouched")
     }
 
-    func testEOLConversionIsVisibleAndUndoable() {
+    func testEOLConversionLeavesVisibleBufferAndUndoStackUntouched() {
         let doc = DocumentModel(text: "a\nb")
         let textView = makeTextView(for: doc)
 
         doc.convertEOL(to: "CRLF")
-        XCTAssertEqual(textView.string, "a\r\nb")
 
-        doc.undoManager.undo()
-        XCTAssertEqual(textView.string, "a\nb")
+        XCTAssertEqual(textView.string, "a\nb", "line endings are applied on save, not in the editor")
+        XCTAssertEqual(doc.eolType, "CRLF")
+        XCTAssertTrue(doc.isModified, "a pending save conversion dirties the document")
+        XCTAssertFalse(doc.undoManager.canUndo, "an EOL conversion is not a text edit")
     }
 
     func testReloadTextIsCleanAndUndoable() {

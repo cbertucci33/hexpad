@@ -35,8 +35,9 @@ public final class DocumentModel: Identifiable, ObservableObject {
     public var isModified: Bool { unsavedChanges }
     
     /// Dirty means the buffer differs from the saved baseline, or a "Convert
-    /// to" changed the save encoding without touching a single character.
-    public var unsavedChanges: Bool { text != _originalText || _encodingConversionPending }
+    /// to" changed the save encoding or line endings without touching a single
+    /// character.
+    public var unsavedChanges: Bool { text != _originalText || _saveConversionPending }
     public var isUntitled: Bool { filePath == nil }
 
     /// Per-document undo stack. The editor swaps its undoManager to this on
@@ -51,7 +52,9 @@ public final class DocumentModel: Identifiable, ObservableObject {
     /// "Convert to" sets this without changing the encoding the buffer was
     /// decoded with, so the two menu sections can mark different entries.
     private var _saveEncoding: String?
-    private var _encodingConversionPending = false
+    /// True when a "Convert to" changed how the next save serializes the
+    /// buffer (encoding or line endings) without editing the text itself.
+    private var _saveConversionPending = false
     private var _eolType: String = "LF"
     private var _language: String = "Plain Text"
     
@@ -182,14 +185,14 @@ public final class DocumentModel: Identifiable, ObservableObject {
     /// instead of a transient dirty state.
     public func reloadText(_ newText: String) {
         _originalText = newText
-        _encodingConversionPending = false
+        _saveConversionPending = false
         replaceAllText(with: newText)
     }
     
     public func setModified(_ modified: Bool) {
         if !modified {
             self._originalText = self.text
-            self._encodingConversionPending = false
+            self._saveConversionPending = false
             if let filePath {
                 self.savedModificationDate = try? FileManager.default.attributesOfItem(atPath: filePath.path)[.modificationDate] as? Date
             }
@@ -224,9 +227,14 @@ public final class DocumentModel: Identifiable, ObservableObject {
         return data
     }
     
+    /// "Convert to" line endings: retarget the next save at `newType` without
+    /// touching the buffer. The editor buffer stays LF-only because every
+    /// line-based subsystem (gutter, folds, bookmarks, minimap, Ln/Col) keys on
+    /// `\n`; `encodedData()` applies the chosen style when bytes are written.
+    /// The document becomes dirty so the conversion is not forgotten.
     public func convertEOL(to newType: String) {
-        self.text = EOLDetective.converting(self.text, to: newType)
         self._eolType = newType
+        self._saveConversionPending = true
     }
 
     // MARK: - Encoding (Encode in / Convert to)
@@ -273,7 +281,7 @@ public final class DocumentModel: Identifiable, ObservableObject {
             throw DocumentError.saveFailed("cannot encode text as \(encoding)")
         }
         _saveEncoding = encoding
-        _encodingConversionPending = true
+        _saveConversionPending = true
     }
     
     public func toSessionData() -> [String: Any] {
