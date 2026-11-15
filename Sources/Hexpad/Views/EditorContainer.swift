@@ -7,6 +7,11 @@ class EditorContainer: NSView {
     let textView: MultiCaretTextView
     let ruler: LineNumberGutter
 
+    /// Fixed-width document overview on the trailing edge. It observes the
+    /// shared storage and scroll view itself; the container only binds it,
+    /// themes it, and makes room for it in the layout.
+    let minimap: MinimapView
+
     /// The authoritative multi-caret state for the selected document. The text
     /// view's single selection always mirrors the primary (first) caret; extra
     /// carets live only here, so selection notifications and gestures cannot
@@ -83,6 +88,7 @@ class EditorContainer: NSView {
         let view = MultiCaretTextView()
         textView = view
         ruler = LineNumberGutter(textView: view)
+        minimap = MinimapView(textView: view, scrollView: scrollView)
         
         super.init(frame: .zero)
         view.host = self
@@ -99,6 +105,9 @@ class EditorContainer: NSView {
     func bind(to document: DocumentModel?) {
         let storage = document?.textStorage ?? unboundStorage
         boundDocument = document
+        minimap.bind(to: document)
+        needsLayout = true
+        layoutEditorSubviews()
         guard let layoutManager = textView.layoutManager else {
             assertionFailure("Editor requires the TextKit 1 layout manager")
             return
@@ -158,6 +167,7 @@ class EditorContainer: NSView {
         textView.textColor = theme.foreground
         scrollView.drawsBackground = true
         scrollView.backgroundColor = theme.background
+        minimap.apply(theme: theme)
     }
 
     override func viewDidChangeEffectiveAppearance() {
@@ -221,11 +231,49 @@ class EditorContainer: NSView {
         // the layout manager delegate nil in TextKit 1, so this is additive.
         textView.layoutManager?.delegate = foldHider
 
+        minimap.frame = NSRect(x: 820, y: 0, width: MinimapView.width, height: 500)
+
         addSubview(ruler)
         addSubview(scrollView)
+        addSubview(minimap)
+        layoutEditorSubviews()
         startViewportObservation()
         startSelectionObservation()
         startFoldObservation()
+    }
+
+    // MARK: - Layout
+
+    /// Manual layout: gutter on the leading edge, minimap on the trailing edge,
+    /// and the scroll view taking the remaining width. The gutter and minimap
+    /// keep their own widths so only the editor area grows on resize.
+    private func layoutEditorSubviews() {
+        let height = bounds.height
+        let available = max(0, bounds.width - LineNumberGutter.width)
+        let minimapWidth = minimap.isHidden
+            ? 0
+            : min(MinimapView.width, available)
+        let editorWidth = max(0, available - minimapWidth)
+
+        ruler.frame = NSRect(x: 0, y: 0,
+                             width: LineNumberGutter.width,
+                             height: height)
+        scrollView.frame = NSRect(x: LineNumberGutter.width, y: 0,
+                                  width: editorWidth,
+                                  height: height)
+        minimap.frame = NSRect(x: LineNumberGutter.width + editorWidth, y: 0,
+                               width: minimapWidth,
+                               height: height)
+    }
+
+    override func layout() {
+        super.layout()
+        layoutEditorSubviews()
+    }
+
+    override func resizeSubviews(withOldSize oldSize: NSSize) {
+        super.resizeSubviews(withOldSize: oldSize)
+        layoutEditorSubviews()
     }
 
     // MARK: - Multi-caret state
