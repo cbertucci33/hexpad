@@ -25,6 +25,42 @@ class EditorContainer: NSView {
     private weak var boundDocument: DocumentModel?
 
     private var selectionObserver: NSObjectProtocol?
+    private var foldEditObserver: NSObjectProtocol?
+
+    // MARK: - Folding
+    //
+    // Fold state is per document and owned by the editor container, keyed by
+    // document id. It cannot live on DocumentModel: that type is Kit-side and
+    // deliberately carries no UI/editor state, and it is also outside this
+    // slice's scope. It cannot live only on FoldModel either, because the
+    // container is reused across tabs and swapping the model for a different
+    // document would discard the previous tab's collapsed folds.
+    //
+    // `foldStates` holds the authoritative collapsed sets; `foldModel` is the
+    // derived fold ranges + state pair for the currently bound document.
+
+    /// Collapsed fold state per document id, retained across tab switches.
+    private var foldStates: [UUID: FoldState] = [:]
+
+    /// Fold ranges and state for the bound document. `nil` for plain text and
+    /// when no document is bound.
+    private(set) var foldModel: FoldModel?
+
+    /// Layout-only hider for collapsed fold content. It is retained here because
+    /// `NSLayoutManager.delegate` does not own its delegate.
+    private let foldHider = FoldGlyphHider()
+
+    /// Set when a text edit changed the document under the current model and
+    /// the foldable ranges need recomputing before markers are next drawn.
+    private var foldModelIsStale = false
+
+    /// Markers the fold gutter should draw for the selected document.
+    var foldMarkers: [Int: FoldMarkerState] {
+        FoldMargin.markers(for: foldModel)
+    }
+
+    /// Document ranges currently hidden by collapsed folds.
+    var foldHiddenRanges: [NSRange] { foldHider.hiddenRanges }
 
     /// Used when no tab is selected, so the text view always has a storage.
     private let unboundStorage = NSTextStorage()
@@ -67,19 +103,29 @@ class EditorContainer: NSView {
             assertionFailure("Editor requires the TextKit 1 layout manager")
             return
         }
-        guard layoutManager.textStorage !== storage else { return }
-        isSyncingSelection = true
-        layoutManager.replaceTextStorage(storage)
-        isSyncingSelection = false
-        columnAnchor = nil
-        setMultiCaretState(MultiCaretState(caret: textView.selectedRange))
-        applyBodyFont()
+        if layoutManager.textStorage !== storage {
+            isSyncingSelection = true
+            layoutManager.replaceTextStorage(storage)
+            isSyncingSelection = false
+            columnAnchor = nil
+            setMultiCaretState(MultiCaretState(caret: textView.selectedRange))
+            applyBodyFont()
+        }
+
+        // Runs on every bind, including rebinding the same buffer after a
+        // language change, so fold ranges always match the current grammar.
+        // The collapsed state survives rebuilds because it is stored per
+        // document id rather than inside the model.
+        bindFolds(for: document)
     }
 
     deinit {
         viewportObservers.forEach { NotificationCenter.default.removeObserver($0) }
         if let selectionObserver {
             NotificationCenter.default.removeObserver(selectionObserver)
+        }
+        if let foldEditObserver {
+            NotificationCenter.default.removeObserver(foldEditObserver)
         }
     }
 
@@ -163,11 +209,23 @@ class EditorContainer: NSView {
         
         ruler.frame = NSRect(x: 0, y: 0, width: LineNumberGutter.width, height: 500)
         ruler.autoresizingMask = [.height]
-        
+        ruler.foldMarkersProvider = { [weak self] in
+            self?.markersForGutter() ?? [:]
+        }
+        ruler.onToggleFold = { [weak self] line in
+            self?.toggleFold(atLine: line)
+        }
+
+        // Fold content is hidden at the glyph level so the shared text storage
+        // and its highlighting attributes are never rewritten. NSTextView leaves
+        // the layout manager delegate nil in TextKit 1, so this is additive.
+        textView.layoutManager?.delegate = foldHider
+
         addSubview(ruler)
         addSubview(scrollView)
         startViewportObservation()
         startSelectionObservation()
+        startFoldObservation()
     }
 
     // MARK: - Multi-caret state
@@ -347,6 +405,149 @@ class EditorContainer: NSView {
         }
         textView.needsDisplay = true
         return true
+    }
+
+    // MARK: - Folding
+
+    /// Toggles the fold that starts on `line` for the selected document.
+    ///
+    /// - Returns: `true` when a foldable range started on that line.
+    @discardableResult
+    func toggleFold(atLine line: Int) -> Bool {
+        refreshFoldModelIfStale()
+        guard var model = foldModel, model.toggleFold(atLine: line) else { return false }
+        foldModel = model
+        if let id = boundDocument?.id {
+            foldStates[id] = model.foldState
+        }
+        applyFoldVisibility()
+        ruler.needsDisplay = true
+        return true
+    }
+
+    /// Rebuilds the fold model for the bound document's current text and
+    /// grammar, preserving that document's collapsed ranges.
+    private func bindFolds(for document: DocumentModel?) {
+        guard let document else {
+            foldModel = nil
+            foldModelIsStale = false
+            applyFoldVisibility()
+            return
+        }
+        rebuildFoldModel(for: document)
+    }
+
+    private func rebuildFoldModel(for document: DocumentModel) {
+        guard let language = Language(rawValue: document.language),
+              let definition = LexerDefinitions.definition(for: language) else {
+            // Plain text (and any language without a definition) has nothing
+            // structural to fold.
+            foldModel = nil
+            foldModelIsStale = false
+            applyFoldVisibility()
+            return
+        }
+
+        let state = foldStates[document.id] ?? FoldState()
+        foldModel = FoldModel(text: document.text,
+                              definition: definition,
+                              foldState: state)
+        foldModelIsStale = false
+        applyFoldVisibility()
+    }
+
+    /// Recomputes foldable ranges after an edit, but only when the gutter or a
+    /// fold gesture actually needs them. Edits made while a fold is collapsed
+    /// rebuild eagerly so the hidden ranges stay valid.
+    private func refreshFoldModelIfStale() {
+        guard foldModelIsStale, let document = boundDocument else { return }
+        rebuildFoldModel(for: document)
+    }
+
+    /// Markers shared with the gutter. Pulled during drawing so an edit that
+    /// changed fold structure is reflected in the same frame.
+    private func markersForGutter() -> [Int: FoldMarkerState] {
+        refreshFoldModelIfStale()
+        return FoldMargin.markers(for: foldModel)
+    }
+
+    /// Observes character edits on the bound storage.
+    ///
+    /// Attribute-only edits are ignored: the incremental highlighting pipeline
+    /// rewrites attributes on every scroll and keystroke, and reacting to those
+    /// would rebuild the fold model for work that cannot change a fold span.
+    private func startFoldObservation() {
+        foldEditObserver = NotificationCenter.default.addObserver(
+            forName: NSTextStorage.didProcessEditingNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] notification in
+            self?.handleFoldEdit(notification)
+        }
+    }
+
+    private func handleFoldEdit(_ notification: Notification) {
+        guard let storage = notification.object as? NSTextStorage,
+              storage === textView.textStorage,
+              storage.editedMask.contains(.editedCharacters),
+              let document = boundDocument,
+              let model = foldModel else { return }
+
+        // NSTextStorage reports the post-edit range plus the length delta. A
+        // pure insertion has replacedLength 0; a deletion has insertedLength 0.
+        let insertedLength = storage.editedRange.length
+        let replacedLength = max(0, insertedLength - storage.changeInLength)
+        let edit = FoldTextEdit(location: storage.editedRange.location,
+                                replacedLength: replacedLength,
+                                insertedLength: insertedLength)
+
+        guard !model.foldState.isEmpty else {
+            // No fold is collapsed, so visibility cannot change. Defer the
+            // O(document) fold discovery until markers are next drawn.
+            foldModelIsStale = true
+            return
+        }
+
+        // Remapping is cheap and keeps surviving folds; rebuilding the model now
+        // keeps the layout hider's hidden ranges aligned with the edited text.
+        let remapped = model.foldState.remapped(for: edit)
+        foldStates[document.id] = remapped
+        foldModel = FoldModel(text: document.text,
+                              definition: model.definition,
+                              configuration: model.configuration,
+                              foldState: remapped)
+        foldModelIsStale = false
+        applyFoldVisibility()
+    }
+
+    /// Hands the model's hidden ranges to the glyph hider and relayouts when
+    /// visibility actually changed.
+    private func applyFoldVisibility() {
+        let hidden = foldModel?.visibility().hiddenRanges ?? []
+        guard foldHider.setHiddenRanges(hidden) else { return }
+        invalidateFoldLayout()
+    }
+
+    /// Invalidates glyph generation for the whole document so hidden ranges take
+    /// effect. Fold toggles are user-paced, so the full pass is preferable to
+    /// tracking partial ranges through edits.
+    private func invalidateFoldLayout() {
+        guard let storage = textView.textStorage,
+              let layoutManager = textView.layoutManager else { return }
+        let length = storage.length
+        guard length > 0 else {
+            textView.needsDisplay = true
+            ruler.needsDisplay = true
+            return
+        }
+        let range = NSRange(location: 0, length: length)
+        layoutManager.invalidateGlyphs(forCharacterRange: range,
+                                       changeInLength: 0,
+                                       actualCharacterRange: nil)
+        layoutManager.invalidateLayout(forCharacterRange: range,
+                                       actualCharacterRange: nil)
+        textView.needsDisplay = true
+        ruler.needsDisplay = true
     }
 
     // MARK: - Viewport observation

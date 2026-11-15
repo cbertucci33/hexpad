@@ -205,3 +205,255 @@ final class MultiCaretWiringTests: XCTestCase {
         XCTAssertNil(MultiCaretEditing.change(from: "same", to: "same"))
     }
 }
+
+// MARK: - Fold gutter
+
+/// Wiring tests for the fold margin and folded-document rendering. They assert
+/// marker/model state and laid-out line rows rather than pixels, so they cover
+/// the integration without depending on a window server.
+final class FoldGutterTests: XCTestCase {
+
+    /// `{` on line 1, close on line 3, trailing line 4.
+    private let nestedText = "func f() {\n    let x = 1\n}\nlet y = 2\n"
+
+    private func makeEditor(_ text: String,
+                            language: Language = .swift) -> (editor: EditorContainer,
+                                                              document: DocumentModel) {
+        let document = DocumentModel(text: text)
+        document.setLanguage(language.rawValue)
+        let editor = EditorContainer()
+        editor.bind(to: document)
+        return (editor, document)
+    }
+
+    private func visibleLines(_ editor: EditorContainer) -> [Int] {
+        let length = (editor.textView.string as NSString).length
+        return LineNumberGutter
+            .rows(in: editor.textView, characterRange: NSRange(location: 0, length: length))
+            .map(\.line)
+    }
+
+    // MARK: - Markers
+
+    func testFoldableLinesGetExpandedMarkers() {
+        let (editor, _) = makeEditor(nestedText)
+
+        XCTAssertEqual(editor.foldMarkers, [1: .expanded],
+                       "only the multi-line brace fold on line 1 is foldable")
+        XCTAssertEqual(editor.ruler.markerState(forLine: 1), .expanded)
+        XCTAssertNil(editor.ruler.markerState(forLine: 2))
+    }
+
+    func testPlainTextHasNoMarkers() {
+        let (editor, _) = makeEditor("{\n}", language: .plain)
+
+        XCTAssertTrue(editor.foldMarkers.isEmpty)
+        XCTAssertFalse(editor.toggleFold(atLine: 1), "plain text has no foldable ranges")
+        XCTAssertTrue(editor.foldHiddenRanges.isEmpty)
+    }
+
+    func testToggleFoldUpdatesMarkerState() {
+        let (editor, _) = makeEditor(nestedText)
+
+        XCTAssertTrue(editor.toggleFold(atLine: 1))
+        XCTAssertEqual(editor.foldMarkers[1], .collapsed)
+        XCTAssertEqual(editor.ruler.markerState(forLine: 1), .collapsed)
+
+        XCTAssertTrue(editor.toggleFold(atLine: 1))
+        XCTAssertEqual(editor.foldMarkers[1], .expanded)
+        XCTAssertEqual(editor.ruler.markerState(forLine: 1), .expanded)
+    }
+
+    func testTogglingALineWithoutAFoldIsANoOp() {
+        let (editor, _) = makeEditor(nestedText)
+
+        XCTAssertFalse(editor.toggleFold(atLine: 2))
+        XCTAssertEqual(editor.foldMarkers, [1: .expanded])
+        XCTAssertTrue(editor.foldHiddenRanges.isEmpty)
+    }
+
+    // MARK: - Collapsed content
+
+    func testCollapsedFoldHidesContentRanges() {
+        let (editor, _) = makeEditor(nestedText)
+        XCTAssertTrue(editor.foldHiddenRanges.isEmpty)
+
+        editor.toggleFold(atLine: 1)
+
+        // Hidden from the newline that ends line 1 through the closing brace:
+        // exactly the fold's interior plus its terminator, keeping line 1 visible.
+        XCTAssertEqual(editor.foldHiddenRanges, [NSRange(location: 10, length: 16)])
+
+        editor.toggleFold(atLine: 1)
+        XCTAssertTrue(editor.foldHiddenRanges.isEmpty, "expanding restores the full layout")
+    }
+
+    func testCollapsedFoldRemovesHiddenRowsFromLayout() {
+        let (editor, _) = makeEditor(nestedText)
+        XCTAssertEqual(visibleLines(editor), [1, 2, 3, 4])
+
+        editor.toggleFold(atLine: 1)
+
+        XCTAssertEqual(visibleLines(editor), [1, 4],
+                       "folded lines disappear from layout; numbering keeps document lines")
+        XCTAssertEqual(LineNumberGutter.rows(in: editor.textView,
+                                             characterRange: NSRange(location: 0, length: 39)).map(\.line),
+                       [1, 4])
+    }
+
+    func testNestedFoldInsideCollapsedOuterFoldIsHidden() {
+        let text = "outer {\n    inner {\n        x\n    }\n}\ntail\n"
+        let (editor, _) = makeEditor(text)
+        XCTAssertEqual(Set(editor.foldMarkers.keys), [1, 2])
+
+        editor.toggleFold(atLine: 1)
+
+        XCTAssertEqual(editor.foldMarkers[1], .collapsed)
+        XCTAssertEqual(editor.foldMarkers[2], .expanded,
+                       "inner marker state is retained even while its line is hidden")
+        XCTAssertEqual(visibleLines(editor), [1, 6])
+    }
+
+    // MARK: - Line numbers
+
+    func testLineNumbersStayCorrectAfterCollapse() {
+        let (editor, _) = makeEditor(nestedText)
+
+        editor.toggleFold(atLine: 1)
+
+        let rows = LineNumberGutter.rows(in: editor.textView,
+                                         characterRange: NSRange(location: 0, length: 39))
+        XCTAssertEqual(rows.map(\.line), [1, 4])
+        XCTAssertEqual(rows.count, 2)
+    }
+
+    func testLineNumberWidthLeavesRoomForTheMarkerColumn() {
+        XCTAssertEqual(LineNumberGutter.markerColumnWidth, 16)
+        XCTAssertEqual(LineNumberGutter.width,
+                       LineNumberGutter.numberColumnWidth + LineNumberGutter.markerColumnWidth)
+        XCTAssertGreaterThan(LineNumberGutter.width, LineNumberGutter.numberColumnWidth)
+    }
+
+    // MARK: - Per-document state
+
+    func testFoldStateIsRememberedPerDocument() {
+        let (editor, first) = makeEditor(nestedText)
+        let second = DocumentModel(text: "other {\n    body\n}\n")
+        second.setLanguage(Language.swift.rawValue)
+
+        editor.toggleFold(atLine: 1)
+        XCTAssertEqual(editor.foldMarkers[1], .collapsed)
+
+        editor.bind(to: second)
+        XCTAssertEqual(editor.foldMarkers[1], .expanded,
+                       "a different document starts unfolded")
+        XCTAssertTrue(editor.foldHiddenRanges.isEmpty)
+
+        editor.bind(to: first)
+        XCTAssertEqual(editor.foldMarkers[1], .collapsed,
+                       "returning to a tab restores its collapsed folds")
+        XCTAssertFalse(editor.foldHiddenRanges.isEmpty)
+    }
+
+    func testEditingWhileCollapsedRemapsHiddenRanges() {
+        let (editor, document) = makeEditor(nestedText)
+        editor.toggleFold(atLine: 1)
+        XCTAssertEqual(editor.foldHiddenRanges, [NSRange(location: 10, length: 16)])
+
+        document.replaceCharacters(in: NSRange(location: 0, length: 0), with: "// header\n")
+
+        XCTAssertEqual(editor.foldHiddenRanges, [NSRange(location: 20, length: 16)],
+                       "the fold shifts with text inserted before it")
+        XCTAssertEqual(editor.foldMarkers[2], .collapsed)
+    }
+
+    // MARK: - Marker clicks
+
+    private func markerPoint(forLine line: Int, x: CGFloat,
+                             in editor: EditorContainer) -> NSPoint? {
+        let length = (editor.textView.string as NSString).length
+        guard let row = LineNumberGutter
+            .rows(in: editor.textView, characterRange: NSRange(location: 0, length: length))
+            .first(where: { $0.line == line }) else { return nil }
+        return NSPoint(x: x,
+                       y: editor.ruler.bounds.height - row.topY - row.height / 2)
+    }
+
+    func testMarkerClickTogglesFoldAndIsConsumed() {
+        let (editor, _) = makeEditor(nestedText)
+        guard let point = markerPoint(forLine: 1,
+                                      x: LineNumberGutter.markerColumnWidth / 2,
+                                      in: editor) else {
+            return XCTFail("no laid-out row for line 1")
+        }
+
+        XCTAssertTrue(editor.ruler.handleFoldMarkerClick(at: point))
+        XCTAssertEqual(editor.foldMarkers[1], .collapsed,
+                       "the marker press toggled the fold through the model")
+        XCTAssertEqual(editor.ruler.markerState(forLine: 1), .collapsed)
+    }
+
+    func testNumberColumnPressIsLeftForLineSelection() {
+        let (editor, _) = makeEditor(nestedText)
+        guard let point = markerPoint(forLine: 1,
+                                      x: LineNumberGutter.markerColumnWidth + 8,
+                                      in: editor) else {
+            return XCTFail("no laid-out row for line 1")
+        }
+
+        XCTAssertFalse(editor.ruler.handleFoldMarkerClick(at: point),
+                       "the number column keeps its pre-existing line-click behavior")
+        XCTAssertEqual(editor.foldMarkers[1], .expanded)
+        XCTAssertTrue(editor.foldHiddenRanges.isEmpty)
+    }
+
+    func testMarkerColumnPressOnANonFoldableLineFallsThrough() {
+        let (editor, _) = makeEditor(nestedText)
+        guard let point = markerPoint(forLine: 2,
+                                      x: LineNumberGutter.markerColumnWidth / 2,
+                                      in: editor) else {
+            return XCTFail("no laid-out row for line 2")
+        }
+
+        XCTAssertFalse(editor.ruler.handleFoldMarkerClick(at: point),
+                       "no marker means the press still selects the line")
+        XCTAssertEqual(editor.foldMarkers, [1: .expanded])
+    }
+
+    // MARK: - Glyph hider
+
+    func testGlyphHiderSuppressesHiddenLineFragments() {
+        let storage = NSTextStorage(string: "aaa\nbbb\nccc\n")
+        let layoutManager = NSLayoutManager()
+        let container = NSTextContainer(size: NSSize(width: 100, height: 10_000))
+        layoutManager.addTextContainer(container)
+        storage.addLayoutManager(layoutManager)
+
+        func fragmentCount() -> Int {
+            layoutManager.ensureLayout(for: container)
+            var count = 0
+            layoutManager.enumerateLineFragments(
+                forGlyphRange: NSRange(location: 0, length: layoutManager.numberOfGlyphs)
+            ) { _, _, _, _, _ in count += 1 }
+            return count
+        }
+
+        XCTAssertEqual(fragmentCount(), 3)
+
+        let hider = FoldGlyphHider()
+        layoutManager.delegate = hider
+        XCTAssertTrue(hider.setHiddenRanges([NSRange(location: 3, length: 4)]),
+                      "hiding the newline after line 1 and line 2's content")
+        layoutManager.invalidateGlyphs(forCharacterRange: NSRange(location: 0, length: storage.length),
+                                       changeInLength: 0,
+                                       actualCharacterRange: nil)
+        layoutManager.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length),
+                                       actualCharacterRange: nil)
+
+        XCTAssertEqual(fragmentCount(), 2)
+        XCTAssertTrue(hider.isHidden(characterIndex: 3))
+        XCTAssertFalse(hider.isHidden(characterIndex: 0))
+        XCTAssertFalse(hider.setHiddenRanges([NSRange(location: 3, length: 4)]),
+                       "unchanged ranges report no change")
+    }
+}

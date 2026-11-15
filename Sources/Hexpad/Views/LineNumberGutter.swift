@@ -1,16 +1,164 @@
 import AppKit
 import HexpadKit
 
+/// Presentation state of a fold marker on one gutter line.
+enum FoldMarkerState: Equatable {
+    /// The fold is collapsed: content below the fold's first line is hidden.
+    case collapsed
+
+    /// The fold is expanded: the whole construct is drawn.
+    case expanded
+
+    /// Glyph the gutter draws for this state. `nil` lines draw nothing.
+    var glyph: String {
+        switch self {
+        case .collapsed: return "▸"
+        case .expanded: return "▾"
+        }
+    }
+}
+
+/// Derives gutter markers from a ``FoldModel``.
+///
+/// Markers are presentation, not state: the fold model remains the source of
+/// truth for which ranges are foldable and which are collapsed. Keeping the
+/// line mapping here (instead of inside the gutter) lets the editor container
+/// and the gutter agree on exactly one marker per line without duplicating the
+/// 1-based logical line math.
+enum FoldMargin {
+
+    /// One marker per logical line that starts a foldable range.
+    ///
+    /// `FoldModel.foldableRanges` sorts outer ranges before nested ranges at the
+    /// same offset, so the first fold seen for a line is the one a gutter marker
+    /// represents. Nesting deeper on the same line is still foldable through the
+    /// model; it just shares the outer marker.
+    static func markers(for model: FoldModel?) -> [Int: FoldMarkerState] {
+        guard let model else { return [:] }
+
+        var markers: [Int: FoldMarkerState] = [:]
+        for fold in model.foldableRanges {
+            let line = GutterGeometry.logicalLine(of: fold.location, in: model.text)
+            guard markers[line] == nil else { continue }
+            markers[line] = model.isCollapsed(fold) ? .collapsed : .expanded
+        }
+        return markers
+    }
+}
+
+/// Hides collapsed fold content from text layout without touching the text
+/// storage.
+///
+/// The editor's incremental highlighting pipeline owns character attributes on
+/// `DocumentModel.textStorage`. Zero-width fonts or clear foreground colours
+/// would be overwritten by the next highlight pass, and replacing the storage
+/// would break the shared buffer. Instead this layout-manager delegate swaps
+/// the glyphs of hidden characters for null glyphs: layout gives them zero
+/// advance and skips their line breaks, so folded lines disappear from the
+/// rendered document while the model, tokenizer, selections, and undo stack all
+/// keep operating on the full text.
+///
+/// Hidden ranges come from ``FoldVisibility``; call ``setHiddenRanges(_:)`` and
+/// then invalidate glyphs/layout for the affected range (the editor container
+/// does both).
+final class FoldGlyphHider: NSObject, NSLayoutManagerDelegate {
+
+    /// Document ranges whose glyphs layout suppresses. Sorted, non-overlapping.
+    private(set) var hiddenRanges: [NSRange] = []
+
+    /// Replaces the hidden ranges.
+    ///
+    /// - Returns: `true` when the effective set changed, so callers can skip a
+    ///   full layout invalidation when a fold toggle leaves visibility alone.
+    @discardableResult
+    func setHiddenRanges(_ ranges: [NSRange]) -> Bool {
+        let sorted = ranges.filter { $0.length > 0 }.sorted { lhs, rhs in
+            if lhs.location != rhs.location { return lhs.location < rhs.location }
+            return lhs.length < rhs.length
+        }
+        guard sorted != hiddenRanges else { return false }
+        hiddenRanges = sorted
+        return true
+    }
+
+    /// Whether the character at `characterIndex` is hidden by a collapsed fold.
+    func isHidden(characterIndex: Int) -> Bool {
+        hiddenRanges.contains { range in
+            range.location <= characterIndex && characterIndex < NSMaxRange(range)
+        }
+    }
+
+    // MARK: - NSLayoutManagerDelegate
+
+    func layoutManager(_ layoutManager: NSLayoutManager,
+                       shouldGenerateGlyphs glyphs: UnsafePointer<CGGlyph>,
+                       properties props: UnsafePointer<NSLayoutManager.GlyphProperty>,
+                       characterIndexes charIndexes: UnsafePointer<Int>,
+                       font aFont: NSFont,
+                       forGlyphRange glyphRange: NSRange) -> Int {
+        guard !hiddenRanges.isEmpty, glyphRange.length > 0 else { return 0 }
+
+        var newGlyphs = [CGGlyph]()
+        var newProperties = [NSLayoutManager.GlyphProperty]()
+        newGlyphs.reserveCapacity(glyphRange.length)
+        newProperties.reserveCapacity(glyphRange.length)
+
+        var changedAny = false
+        for offset in 0..<glyphRange.length {
+            if isHidden(characterIndex: charIndexes[offset]) {
+                // NSNullGlyph: no advance, no drawing, and a hidden newline does
+                // not start a new line fragment.
+                newGlyphs.append(0)
+                newProperties.append(.null)
+                changedAny = true
+            } else {
+                newGlyphs.append(glyphs[offset])
+                newProperties.append(props[offset])
+            }
+        }
+
+        guard changedAny else { return 0 }
+        layoutManager.setGlyphs(newGlyphs,
+                                properties: newProperties,
+                                characterIndexes: charIndexes,
+                                font: aFont,
+                                forGlyphRange: glyphRange)
+        return glyphRange.length
+    }
+}
+
 /// Vertical line-number gutter drawn from real text-layout geometry.
 ///
 /// Every line number's Y position is derived from the layout manager's
 /// line-fragment rects (TextKit 1) or text-segment layout rects (TextKit 2),
 /// never from a constant row height. Redraw is driven by scroll (clip-bounds
 /// change), resize (frame change), text mutation, and font/zoom changes.
+///
+/// The gutter also owns the fold margin: a narrow leading column that draws one
+/// ▸/▾ marker per foldable line. Integrating it here (rather than adding a
+/// second sibling view) keeps one source of scroll/zoom/text invalidation and
+/// one mapping from mouse Y to a logical line; the line-number column keeps its
+/// exact previous drawing and click behavior.
 final class LineNumberGutter: NSView {
 
-    /// Kept as NSRulerView for wiring compatibility; this view draws itself.
-    static let width: CGFloat = 40
+    /// Right-aligned line-number column.
+    static let numberColumnWidth: CGFloat = 40
+
+    /// Leading fold-marker column.
+    static let markerColumnWidth: CGFloat = 16
+
+    /// Total gutter width: marker column plus number column.
+    static let width: CGFloat = numberColumnWidth + markerColumnWidth
+
+    /// One laid-out gutter row: the first visual fragment of a logical line.
+    struct Row: Equatable {
+        /// 1-based logical line number.
+        let line: Int
+        /// Line-fragment top Y in text-view (flipped) coordinates.
+        let topY: CGFloat
+        /// Laid-out line-fragment height.
+        let height: CGFloat
+    }
 
     private weak var textView: NSTextView?
     private var observers: [NSObjectProtocol] = []
@@ -20,6 +168,14 @@ final class LineNumberGutter: NSView {
     /// index on a plain click — so the caller can select a whole line or extend
     /// a drag across lines without any pixel math of its own.
     private var clickHandler: ((Int, Int) -> Void)?
+
+    /// Supplies fold markers at draw and click time. Pulling instead of pushing
+    /// lets the editor container lazily refresh its fold model before the gutter
+    /// paints, so markers never lag one edit behind.
+    var foldMarkersProvider: (() -> [Int: FoldMarkerState])?
+
+    /// Called with the 1-based logical line whose fold marker was clicked.
+    var onToggleFold: ((Int) -> Void)?
 
     /// Character index where the current gutter drag started; drives
     /// click-and-drag line selection.
@@ -43,6 +199,11 @@ final class LineNumberGutter: NSView {
     /// positions by magic numbers and can extend a drag across lines.
     func setClickHandler(_ handler: ((Int, Int) -> Void)?) {
         clickHandler = handler
+    }
+
+    /// Marker currently shown for a logical line, if any.
+    func markerState(forLine line: Int) -> FoldMarkerState? {
+        foldMarkersProvider?()[line]
     }
 
     // MARK: - Redraw triggers
@@ -91,7 +252,15 @@ final class LineNumberGutter: NSView {
             .font: font,
             .foregroundColor: NSColor.tertiaryLabelColor,
         ]
-        drawTextKit1(in: textView, layoutManager: layoutManager, attributes: attributes)
+        let rows = Self.rows(in: textView)
+        let markers = foldMarkersProvider?() ?? [:]
+        for row in rows {
+            drawNumber("\(row.line)", atTopY: row.topY, height: row.height,
+                       textView: textView, attributes: attributes)
+            if let marker = markers[row.line] {
+                drawMarker(marker, atTopY: row.topY, height: row.height, textView: textView)
+            }
+        }
     }
 
     private func numberFont(for textView: NSTextView) -> NSFont {
@@ -100,25 +269,41 @@ final class LineNumberGutter: NSView {
         return NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
     }
 
-    private func drawTextKit1(in textView: NSTextView,
-                             layoutManager: NSLayoutManager,
-                             attributes: [NSAttributedString.Key: Any]) {
-        let visibleRect = textView.visibleRect
-        let glyphRange = layoutManager.glyphRange(forBoundingRect: visibleRect, in: textView.textContainer!)
-        let charRange = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
-        guard charRange.length > 0 else { return }
+    /// The logical rows a gutter pass draws, in layout order.
+    ///
+    /// Shared by drawing and tests so line numbering has one implementation.
+    /// Pass `characterRange` to force a range (tests); omit it to use the
+    /// text view's visible rect.
+    static func rows(in textView: NSTextView, characterRange: NSRange? = nil) -> [Row] {
+        guard let layoutManager = textView.layoutManager,
+              let container = textView.textContainer else { return [] }
+
+        let glyphRange: NSRange
+        if let characterRange {
+            let textLength = (textView.string as NSString).length
+            let location = min(max(0, characterRange.location), textLength)
+            let length = min(max(0, characterRange.length), textLength - location)
+            let clamped = NSRange(location: location, length: length)
+            guard clamped.length > 0 else { return [] }
+            glyphRange = layoutManager.glyphRange(forCharacterRange: clamped,
+                                                  actualCharacterRange: nil)
+        } else {
+            glyphRange = layoutManager.glyphRange(forBoundingRect: textView.visibleRect,
+                                                  in: container)
+        }
+        guard glyphRange.length > 0 else { return [] }
 
         let text = textView.string
+        var rows: [Row] = []
         var lastDrawnLine = -1
         layoutManager.enumerateLineFragments(forGlyphRange: glyphRange) {
-            [weak self] fragmentRect, _, _, fragmentCharRange, _ in
-            guard let self else { return }
+            fragmentRect, _, _, fragmentCharRange, _ in
             let line = GutterGeometry.logicalLine(of: fragmentCharRange.location, in: text)
             guard line != lastDrawnLine else { return } // wrapped visual line: draw once
             lastDrawnLine = line
-            self.drawNumber("\(line)", atTopY: fragmentRect.minY, height: fragmentRect.height,
-                            textView: textView, attributes: attributes)
+            rows.append(Row(line: line, topY: fragmentRect.minY, height: fragmentRect.height))
         }
+        return rows
     }
 
     /// Draws a right-aligned number + tick at the left edge of a line's actual
@@ -143,23 +328,81 @@ final class LineNumberGutter: NSView {
         tick.stroke()
     }
 
+    /// Draws ▸ (collapsed) or ▾ (expanded) centered in the marker column for a
+    /// row. The triangle is a path rather than text so it stays crisp at every
+    /// zoom level.
+    private func drawMarker(_ marker: FoldMarkerState, atTopY topY: CGFloat,
+                            height: CGFloat, textView: NSTextView) {
+        let side = max(5, min(9, numberFont(for: textView).pointSize))
+        let rowTop = bounds.height - topY - height
+        let midY = rowTop + height / 2
+        let centerX = Self.markerColumnWidth / 2
+
+        let path = NSBezierPath()
+        switch marker {
+        case .collapsed: // ▸ pointing at the code
+            let top = NSPoint(x: centerX - side * 0.3, y: midY + side / 2)
+            let bottom = NSPoint(x: centerX - side * 0.3, y: midY - side / 2)
+            let tip = NSPoint(x: centerX + side * 0.4, y: midY)
+            path.move(to: top)
+            path.line(to: bottom)
+            path.line(to: tip)
+        case .expanded: // ▾ pointing down at the hidden range
+            let left = NSPoint(x: centerX - side / 2, y: midY + side * 0.3)
+            let right = NSPoint(x: centerX + side / 2, y: midY + side * 0.3)
+            let tip = NSPoint(x: centerX, y: midY - side * 0.4)
+            path.move(to: left)
+            path.line(to: right)
+            path.line(to: tip)
+        }
+        path.close()
+        NSColor.secondaryLabelColor.setFill()
+        path.fill()
+    }
+
     // MARK: - Mouse
 
     /// Maps a mouse event into the character index it landed on, resolving it
     /// through the text layout. Our bounds are the same height as the clip view
     /// and we sit beside it; map the Y straight into text-view coordinates.
     private func characterIndex(for event: NSEvent) -> Int? {
+        characterIndex(atViewPoint: convert(event.locationInWindow, from: nil))
+    }
+
+    private func characterIndex(atViewPoint point: NSPoint) -> Int? {
         guard let textView, let layoutManager = textView.layoutManager,
               let container = textView.textContainer else { return nil }
-        let p = convert(event.locationInWindow, from: nil)
-        let textY = bounds.height - p.y // we are non-flipped, text view is flipped
+        let textY = bounds.height - point.y // we are non-flipped, text view is flipped
         var fraction: CGFloat = 0
         return layoutManager.characterIndex(for: NSPoint(x: 0, y: textY),
                                             in: container,
                                             fractionOfDistanceBetweenInsertionPoints: &fraction)
     }
 
+    /// Consumes a press that lands on a drawn fold marker.
+    ///
+    /// - Returns: `true` when the press was a marker click and a fold toggle was
+    ///   requested. `false` means the press belongs to the line-number column
+    ///   (including the marker column on a line with no fold), preserving the
+    ///   gutter's existing line-selection behavior.
+    @discardableResult
+    func handleFoldMarkerClick(at point: NSPoint) -> Bool {
+        guard point.x < Self.markerColumnWidth,
+              let line = logicalLine(atViewPoint: point),
+              markerState(forLine: line) != nil else { return false }
+        dragAnchorCharIndex = nil
+        onToggleFold?(line)
+        return true
+    }
+
     override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        // A press on a drawn fold marker toggles the fold and intentionally does
+        // not start a line selection.
+        if handleFoldMarkerClick(at: point) {
+            return
+        }
+
         guard let index = characterIndex(for: event) else { return }
         // A press starts a fresh selection anchored at the clicked line.
         dragAnchorCharIndex = index
@@ -176,5 +419,12 @@ final class LineNumberGutter: NSView {
     override func mouseUp(with event: NSEvent) {
         dragAnchorCharIndex = nil
         super.mouseUp(with: event)
+    }
+
+    /// 1-based logical line under a point in this view, resolved through text
+    /// layout.
+    private func logicalLine(atViewPoint point: NSPoint) -> Int? {
+        guard let index = characterIndex(atViewPoint: point), let textView else { return nil }
+        return GutterGeometry.logicalLine(of: index, in: textView.string)
     }
 }
