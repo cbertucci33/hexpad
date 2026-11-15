@@ -11,6 +11,13 @@ public struct EditorCommand {
     /// Transforms a document and selection into a new document and selection.
     public typealias Action = (_ text: String, _ selection: NSRange) -> (text: String, selection: NSRange)
 
+    /// Builds an ``Action`` for a command-specific parameter.
+    ///
+    /// Commands that accept a parameter (for example the comment prefix of
+    /// `toggle-line-comment`) use this to support macro replay, where every
+    /// recorded step carries the parameter it was recorded with.
+    public typealias ParameterizedAction = (_ parameter: String) -> Action
+
     /// Stable, machine-readable identifier (for example `"duplicate-line"`).
     public let identifier: String
 
@@ -20,10 +27,27 @@ public struct EditorCommand {
     /// The pure transformation performed by the command.
     public let execute: Action
 
+    /// Builds the transformation for a parameter, or `nil` when the command
+    /// does not accept one. Callers that pass a parameter use this instead of
+    /// ``execute``; commands without parameter support ignore it.
+    public let parameterizedExecute: ParameterizedAction?
+
     public init(identifier: String, title: String, execute: @escaping Action) {
         self.identifier = identifier
         self.title = title
         self.execute = execute
+        self.parameterizedExecute = nil
+    }
+
+    /// Creates a command that also supports a recorded parameter.
+    public init(identifier: String,
+                title: String,
+                execute: @escaping Action,
+                parameterizedExecute: @escaping ParameterizedAction) {
+        self.identifier = identifier
+        self.title = title
+        self.execute = execute
+        self.parameterizedExecute = parameterizedExecute
     }
 }
 
@@ -86,6 +110,11 @@ public struct CommandRegistry {
                 title: "Toggle Line Comment",
                 execute: { text, selection in
                     LineOps.toggleLineComment(text, selection: selection, prefix: lineCommentPrefix)
+                },
+                parameterizedExecute: { prefix in
+                    { text, selection in
+                        LineOps.toggleLineComment(text, selection: selection, prefix: prefix)
+                    }
                 }
             ),
             EditorCommand(
@@ -113,5 +142,23 @@ public struct CommandRegistry {
                         text: String,
                         selection: NSRange) -> (text: String, selection: NSRange)? {
         command(for: identifier)?.execute(text, selection)
+    }
+
+    /// Runs the command registered under `identifier`, passing `parameter`
+    /// when the command supports one.
+    ///
+    /// A `nil` parameter behaves exactly like ``execute(_:text:selection:)``.
+    /// A command that does not accept parameters ignores a non-`nil` value.
+    ///
+    /// Returns `nil` when no command with that identifier exists.
+    public func execute(_ identifier: String,
+                        parameter: String?,
+                        text: String,
+                        selection: NSRange) -> (text: String, selection: NSRange)? {
+        guard let command = command(for: identifier) else { return nil }
+        if let parameter, let makeAction = command.parameterizedExecute {
+            return makeAction(parameter)(text, selection)
+        }
+        return command.execute(text, selection)
     }
 }
