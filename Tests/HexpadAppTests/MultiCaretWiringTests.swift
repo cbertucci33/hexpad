@@ -387,6 +387,27 @@ final class FoldGutterTests: XCTestCase {
         XCTAssertEqual(editor.foldMarkers[2], .collapsed)
     }
 
+    func testFoldRebuildIsDeferredUntilMarkersOrVisibilityAreNeeded() {
+        let (editor, document) = makeEditor(nestedText)
+        XCTAssertTrue(editor.toggleFold(atLine: 1))
+        let rebuilds = editor.foldModelRebuildCount
+
+        document.replaceCharacters(in: NSRange(location: 0, length: 0),
+                                   with: "// header\n")
+        XCTAssertEqual(editor.foldModelRebuildCount, rebuilds,
+                       "an edit remaps state but does not rediscover folds")
+
+        // The next marker access is the lazy trigger; it refreshes the model
+        // once and the gutter then sees the shifted fold.
+        XCTAssertEqual(editor.foldMarkers[2], .collapsed)
+        XCTAssertEqual(editor.foldModelRebuildCount, rebuilds + 1)
+        XCTAssertEqual(editor.foldHiddenRanges, [NSRange(location: 20, length: 16)])
+        XCTAssertEqual(editor.foldModelRebuildCount, rebuilds + 1,
+                       "a second access reuses the refreshed model")
+        XCTAssertTrue(document.foldState.isCollapsed(NSRange(location: 19, length: 17)),
+                      "the remapped state was persisted during the deferred edit")
+    }
+
     func testMultiCaretEditPreservesAFoldBetweenTheCarets() throws {
         let (editor, document) = makeEditor(nestedText)
         XCTAssertTrue(editor.toggleFold(atLine: 1))

@@ -51,7 +51,20 @@ class EditorContainer: NSView {
 
     /// Fold ranges and state for the bound document. `nil` for plain text and
     /// when no document is bound.
-    private(set) var foldModel: FoldModel?
+    ///
+    /// Reading the model refreshes a stale one first, so a caller that inspects
+    /// the derived ranges after an edit never sees the previous document's
+    /// discovery. The edit path itself reads `cachedFoldModel` directly because
+    /// its whole point is to defer that refresh.
+    private(set) var foldModel: FoldModel? {
+        get {
+            refreshFoldModelIfStale()
+            return cachedFoldModel
+        }
+        set { cachedFoldModel = newValue }
+    }
+
+    private var cachedFoldModel: FoldModel?
 
     /// Layout-only hider for collapsed fold content. It is retained here because
     /// `NSLayoutManager.delegate` does not own its delegate.
@@ -61,13 +74,26 @@ class EditorContainer: NSView {
     /// the foldable ranges need recomputing before markers are next drawn.
     private var foldModelIsStale = false
 
-    /// Markers the fold gutter should draw for the selected document.
+    /// Number of times the fold model has been rebuilt for the bound document.
+    /// Diagnostic/test hook: an edit must mark the model stale without paying
+    /// for a rebuild until markers or visibility actually need it.
+    private(set) var foldModelRebuildCount = 0
+
+    /// Markers the fold gutter should draw for the selected document. Pulling
+    /// a marker refreshes a stale model first, so the gutter never draws one
+    /// edit behind.
     var foldMarkers: [Int: FoldMarkerState] {
-        FoldMargin.markers(for: foldModel)
+        refreshFoldModelIfStale()
+        return FoldMargin.markers(for: foldModel)
     }
 
-    /// Document ranges currently hidden by collapsed folds.
-    var foldHiddenRanges: [NSRange] { foldHider.hiddenRanges }
+    /// Document ranges currently hidden by collapsed folds. Reading visibility
+    /// is the other lazy trigger: the ranges are recomputed from the remapped
+    /// fold state before they are handed to layout or to a caller.
+    var foldHiddenRanges: [NSRange] {
+        refreshFoldModelIfStale()
+        return foldHider.hiddenRanges
+    }
 
     // MARK: - Bookmarks
     //
@@ -82,6 +108,16 @@ class EditorContainer: NSView {
 
     /// Bookmarks for the bound document, kept in step with its text.
     private(set) var bookmarkModel: BookmarkModel?
+
+    /// Number of edit remaps performed for the bound document. Diagnostic/test
+    /// hook: edits with no bookmarks must skip the remap entirely.
+    private(set) var bookmarkRemapCount = 0
+
+    /// Set when an edit changed the text while no bookmarks existed. The model's
+    /// copy of the text is only used for line-validity questions, so it is
+    /// refreshed lazily the next time one is actually asked instead of doing
+    /// per-keystroke line math.
+    private var bookmarkModelTextIsStale = false
 
     /// Bookmarked logical lines the gutter should draw circles on.
     var bookmarkLines: Set<Int> {
@@ -589,6 +625,7 @@ class EditorContainer: NSView {
     }
 
     private func rebuildFoldModel(for document: DocumentModel) {
+        foldModelRebuildCount += 1
         guard let language = Language(rawValue: document.language),
               let definition = LexerDefinitions.definition(for: language) else {
             // Plain text (and any language without a definition) has nothing
@@ -627,6 +664,7 @@ class EditorContainer: NSView {
     /// - Returns: `true` when `line` exists and its bookmark was toggled.
     @discardableResult
     func toggleBookmark(atLine line: Int) -> Bool {
+        syncBookmarkModelTextIfNeeded()
         guard var model = bookmarkModel, model.isValid(line: line) else { return false }
         model.toggle(line: line)
         adoptBookmarkModel(model)
@@ -644,11 +682,24 @@ class EditorContainer: NSView {
     /// the document's persisted bookmark state.
     private func adoptBookmarkModel(_ model: BookmarkModel) {
         bookmarkModel = model
+        bookmarkModelTextIsStale = false
         if let document = boundDocument {
             bookmarkStates[document.id] = model.bookmarkState
             document.bookmarkState = model.bookmarkState
         }
         ruler.needsDisplay = true
+    }
+
+    /// Refreshes the bookmark model's copy of the document text after a run of
+    /// edits that happened while no bookmarks existed. Only consumers that ask
+    /// line-validity questions need this; marker drawing reads the empty state.
+    private func syncBookmarkModelTextIfNeeded() {
+        guard bookmarkModelTextIsStale,
+              let document = boundDocument,
+              var model = bookmarkModel else { return }
+        model.updateText(document.text)
+        bookmarkModel = model
+        bookmarkModelTextIsStale = false
     }
 
     /// Rebuilds the bookmark model for the bound document, preferring the
@@ -657,6 +708,7 @@ class EditorContainer: NSView {
     private func bindBookmarks(for document: DocumentModel?) {
         guard let document else {
             bookmarkModel = nil
+            bookmarkModelTextIsStale = false
             ruler.needsDisplay = true
             return
         }
@@ -665,6 +717,7 @@ class EditorContainer: NSView {
         bookmarkStates[document.id] = model.bookmarkState
         document.bookmarkState = model.bookmarkState
         bookmarkModel = model
+        bookmarkModelTextIsStale = false
         ruler.needsDisplay = true
     }
 
@@ -682,6 +735,7 @@ class EditorContainer: NSView {
     /// existing bookmarks against the new text instead of dropping them all.
     private func remapBookmarks(for edit: FoldTextEdit, oldLength: Int) {
         guard var model = bookmarkModel else { return }
+        bookmarkRemapCount += 1
         if edit.location == 0, edit.replacedLength > 0, edit.replacedLength >= oldLength {
             model.updateText(boundDocument?.text ?? model.text)
         } else {
@@ -721,10 +775,17 @@ class EditorContainer: NSView {
 
         // Bookmarks are independent of folding: they must follow the text even
         // for plain-text documents (where there is no fold model at all).
+        // With no bookmarks there is nothing to move, so skip the O(document)
+        // line math entirely; the model's text is re-synced lazily if a
+        // bookmark is added later.
         let oldLength = storage.length - storage.changeInLength
-        remapBookmarks(for: edit, oldLength: oldLength)
+        if let model = bookmarkModel, !model.isEmpty {
+            remapBookmarks(for: edit, oldLength: oldLength)
+        } else if bookmarkModel != nil {
+            bookmarkModelTextIsStale = true
+        }
 
-        guard let model = foldModel else { return }
+        guard let model = cachedFoldModel else { return }
 
         guard !model.foldState.isEmpty else {
             // No fold is collapsed, so visibility cannot change. Defer the
@@ -733,16 +794,15 @@ class EditorContainer: NSView {
             return
         }
 
-        // Remapping is cheap and keeps surviving folds; rebuilding the model now
-        // keeps the layout hider's hidden ranges aligned with the edited text.
-        let remapped = model.foldState.remapped(for: edit)
-        adoptFoldState(remapped, for: document)
-        foldModel = FoldModel(text: document.text,
-                              definition: model.definition,
-                              configuration: model.configuration,
-                              foldState: remapped)
-        foldModelIsStale = false
-        applyFoldVisibility()
+        // Keep the collapsed set aligned with the edit, but defer the
+        // O(document) fold discovery and the full layout invalidation until
+        // the gutter or a visibility query actually needs them. Reading the
+        // live per-document state (rather than the stale model) is what keeps
+        // back-to-back edits — including multi-caret's per-caret replacements —
+        // composing correctly before the next refresh.
+        let state = foldStates[document.id] ?? document.foldState
+        adoptFoldState(state.remapped(for: edit), for: document)
+        foldModelIsStale = true
     }
 
     /// Hands the model's hidden ranges to the glyph hider and relayouts when

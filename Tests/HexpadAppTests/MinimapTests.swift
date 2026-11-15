@@ -206,6 +206,55 @@ final class MinimapTests: XCTestCase {
         XCTAssertEqual(editor.minimap.lineModel?.lines.count, 3)
     }
 
+    func testSingleLineEditRecomputesOnlyThatRow() throws {
+        let text = "let a = 1\nlet b = 2\nlet c = 3\nlet d = 4\nlet e = 5"
+        let document = DocumentModel(text: text)
+        document.setLanguage(Language.swift.rawValue)
+        let editor = EditorContainer()
+        editor.bind(to: document)
+
+        let before = try XCTUnwrap(editor.minimap.lineModel)
+        // Grow the number literal on the third line: its width changes, while
+        // rows outside the edited band (plus one line of context) are untouched.
+        document.replaceCharacters(in: NSRange(location: 28, length: 1),
+                                   with: "3333")
+        editor.minimap.rebuildModelNow()
+
+        let after = try XCTUnwrap(editor.minimap.lineModel)
+        XCTAssertEqual(after.lines.count, before.lines.count)
+        XCTAssertEqual(after.lines[0], before.lines[0])
+        XCTAssertNotEqual(after.lines[2], before.lines[2],
+                          "the edited row was recomputed")
+        XCTAssertEqual(after.lines[3], before.lines[3])
+        XCTAssertEqual(after.lines[4], before.lines[4],
+                       "rows outside the edited band keep their cached model")
+        XCTAssertEqual(after.lineRanges[0], before.lineRanges[0])
+        XCTAssertEqual(after.lineRanges[4].length, before.lineRanges[4].length,
+                       "only the character offsets of later rows shift with the edit")
+        XCTAssertEqual(after.lineRanges[4].location, before.lineRanges[4].location + 3)
+    }
+
+    func testInsertingALineRenumbersPreservedRowsFromTheCache() throws {
+        let document = DocumentModel(text: "let a = 1\nlet b = 2\nlet c = 3")
+        document.setLanguage(Language.swift.rawValue)
+        let editor = EditorContainer()
+        editor.bind(to: document)
+
+        let before = try XCTUnwrap(editor.minimap.lineModel)
+        // Split the second line with a newline: line 3 keeps its content but
+        // moves down one row.
+        document.replaceCharacters(in: NSRange(location: 18, length: 0), with: "\n")
+        editor.minimap.rebuildModelNow()
+
+        let after = try XCTUnwrap(editor.minimap.lineModel)
+        XCTAssertEqual(after.lines.count, before.lines.count + 1)
+        XCTAssertEqual(after.lines[after.lines.count - 1].line,
+                       before.lines[before.lines.count - 1].line + 1)
+        XCTAssertEqual(after.lines[after.lines.count - 1].type,
+                       before.lines[before.lines.count - 1].type,
+                       "the trailing row was shifted, not re-tokenized away")
+    }
+
     func testRebindUsesTheNewlySelectedLanguage() {
         let document = DocumentModel(text: "// note")
         document.setLanguage(Language.plain.rawValue)

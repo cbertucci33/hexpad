@@ -268,6 +268,29 @@ final class BookmarkMarginTests: XCTestCase {
 
     // MARK: - Live remapping
 
+    func testRemapIsSkippedWhileThereAreNoBookmarks() {
+        let (editor, document) = makeEditor("one\ntwo\nthree")
+        XCTAssertEqual(editor.bookmarkRemapCount, 0)
+
+        document.replaceCharacters(in: NSRange(location: 0, length: 0),
+                                   with: "zero\n")
+        XCTAssertEqual(editor.bookmarkRemapCount, 0,
+                       "an edit with no bookmarks must not run the line-math remap")
+        XCTAssertTrue(editor.bookmarkLines.isEmpty)
+
+        // The skip defers syncing the model's text, not correctness: a bookmark
+        // added afterwards still validates against the edited document.
+        XCTAssertTrue(editor.toggleBookmark(atLine: 4))
+        XCTAssertEqual(editor.bookmarkLines, [4])
+
+        document.replaceCharacters(in: NSRange(location: 0, length: 0),
+                                   with: "first\n")
+        XCTAssertEqual(editor.bookmarkRemapCount, 1,
+                       "once a bookmark exists, edits remap it again")
+        XCTAssertEqual(editor.bookmarkLines, [5])
+        XCTAssertEqual(document.bookmarkState.lines, [5])
+    }
+
     func testInsertingTextAboveABookmarkedLineRemapsIt() {
         let (editor, document) = makeEditor("one\ntwo\nthree")
         XCTAssertTrue(editor.toggleBookmark(atLine: 3))

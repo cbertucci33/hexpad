@@ -32,6 +32,14 @@ struct MinimapLineModel: Equatable {
     let lines: [MinimapLine]
     let language: Language
 
+    /// Content range of each logical line, parallel to `lines` and excluding
+    /// the LF terminator. Cached so an edit can map one character offset to a
+    /// line without rescanning the document from the start.
+    let lineRanges: [NSRange]
+
+    /// UTF-16 length of the text this model describes.
+    let textLength: Int
+
     /// Computes the per-line colour model for `text`.
     ///
     /// Line boundaries use LF only, exactly like ``GutterGeometry``, so the
@@ -40,20 +48,116 @@ struct MinimapLineModel: Equatable {
     static func compute(text: String, language: Language) -> MinimapLineModel {
         let nsText = text as NSString
         let ranges = lineRanges(in: nsText)
+        let lines = rows(text: text,
+                         nsText: nsText,
+                         language: language,
+                         ranges: ranges,
+                         firstLineNumber: 1)
+        return MinimapLineModel(lines: lines,
+                                language: language,
+                                lineRanges: ranges,
+                                textLength: nsText.length)
+    }
+
+    /// Recomputes only the line-aligned `band` touched by an edit and keeps
+    /// the cached rows outside it.
+    ///
+    /// `band` is expressed in the post-edit text and must start/end on line
+    /// boundaries (``MinimapView`` expands every edit with
+    /// `TokenStore.lineRange`). Everything before the band is unchanged, and
+    /// everything after it only shifts by the edit's delta, so the surrounding
+    /// rows and their token types stay valid.
+    static func updated(_ cached: MinimapLineModel,
+                        text newText: String,
+                        language: Language,
+                        band: NSRange) -> MinimapLineModel {
+        guard cached.language == language else {
+            return compute(text: newText, language: language)
+        }
+
+        let nsText = newText as NSString
+        let newLength = nsText.length
+        let oldLineCount = cached.lines.count
+        guard oldLineCount > 0, !cached.lineRanges.isEmpty,
+              cached.lineRanges.count == oldLineCount else {
+            return compute(text: newText, language: language)
+        }
+
+        let bandStart = min(max(0, band.location), newLength)
+        let bandEnd = min(max(bandStart, NSMaxRange(band)), newLength)
+        let oldStartLine = min(lineIndex(startingAtOrAfter: bandStart,
+                                         in: cached.lineRanges),
+                               oldLineCount - 1)
+
+        // The suffix after the band is unchanged; map its start back into the
+        // cached text so the rows to replace are known without keeping a copy
+        // of the old document.
+        let delta = newLength - cached.textLength
+        let oldEndLocation = max(0, bandEnd - delta)
+        let oldEndLine: Int
+        if oldEndLocation >= cached.textLength {
+            oldEndLine = oldLineCount - 1
+        } else {
+            oldEndLine = max(oldStartLine - 1,
+                             lineIndex(startingAtOrAfter: oldEndLocation,
+                                       in: cached.lineRanges) - 1)
+        }
+
+        let freshRanges = lineRanges(in: nsText, from: bandStart, to: bandEnd)
+        let freshLines = rows(text: newText,
+                              nsText: nsText,
+                              language: language,
+                              ranges: freshRanges,
+                              firstLineNumber: oldStartLine + 1)
+
+        let tailStart = min(max(oldStartLine, oldEndLine + 1), oldLineCount)
+        let dropped = tailStart - oldStartLine
+        let lineShift = freshLines.count - dropped
+
+        var lines = Array(cached.lines[0..<oldStartLine])
+        lines.append(contentsOf: freshLines)
+        lines.append(contentsOf: cached.lines[tailStart...].map {
+            MinimapLine(line: $0.line + lineShift,
+                        type: $0.type,
+                        widthFraction: $0.widthFraction)
+        })
+
+        var ranges = Array(cached.lineRanges[0..<oldStartLine])
+        ranges.append(contentsOf: freshRanges)
+        ranges.append(contentsOf: cached.lineRanges[tailStart...].map {
+            NSRange(location: $0.location + delta, length: $0.length)
+        })
+
+        return MinimapLineModel(lines: lines,
+                                language: language,
+                                lineRanges: ranges,
+                                textLength: newLength)
+    }
+
+    /// Per-line rows for `ranges`. Tokenizes only from the first line's start
+    /// to the last line's end, so an incremental band never pays for a whole
+    /// document pass.
+    private static func rows(text: String,
+                             nsText: NSString,
+                             language: Language,
+                             ranges: [NSRange],
+                             firstLineNumber: Int) -> [MinimapLine] {
+        guard let first = ranges.first, let last = ranges.last else { return [] }
 
         // Plain text has no syntax tokens, and huge files deliberately skip
         // tokenization. Both render one foreground-coloured row per line.
         if language == .plain || nsText.length > maxTokenizedLength {
-            let lines = ranges.enumerated().map { index, range -> MinimapLine in
+            return ranges.enumerated().map { index, range -> MinimapLine in
                 let count = nonWhitespaceCount(in: range, text: nsText)
-                return MinimapLine(line: index + 1,
+                return MinimapLine(line: firstLineNumber + index,
                                    type: count > 0 ? .plain : nil,
                                    widthFraction: widthFraction(for: count))
             }
-            return MinimapLineModel(lines: lines, language: language)
         }
 
-        let tokens = SyntaxTokenizer.tokenize(text, language: language)
+        let tokenRange = NSRange(location: first.location,
+                                 length: NSMaxRange(last) - first.location)
+        let tokens = SyntaxTokenizer.tokenize(text, language: language, in: tokenRange)
         var counts = Array(repeating: [TokenType: Int](), count: ranges.count)
 
         // Tokens are sorted and non-overlapping. `tokenIndex` only advances
@@ -82,13 +186,12 @@ struct MinimapLineModel: Equatable {
             }
         }
 
-        let lines = ranges.enumerated().map { index, range -> MinimapLine in
+        return ranges.enumerated().map { index, range -> MinimapLine in
             let count = nonWhitespaceCount(in: range, text: nsText)
-            return MinimapLine(line: index + 1,
+            return MinimapLine(line: firstLineNumber + index,
                                type: dominantType(in: counts[index]),
                                widthFraction: widthFraction(for: count))
         }
-        return MinimapLineModel(lines: lines, language: language)
     }
 
     /// The token type covering the most characters on a line.
@@ -127,6 +230,61 @@ struct MinimapLineModel: Equatable {
         }
         ranges.append(NSRange(location: start, length: length - start))
         return ranges
+    }
+
+    /// Line ranges for a line-aligned `[start, end)` band. Unlike the
+    /// whole-document version this only walks the band's characters; the
+    /// caller guarantees both endpoints sit on line boundaries (end may equal
+    /// the document length).
+    private static func lineRanges(in text: NSString,
+                                   from start: Int,
+                                   to end: Int) -> [NSRange] {
+        guard start >= 0, end >= start,
+              start <= text.length, end <= text.length else { return [] }
+
+        var ranges: [NSRange] = []
+        var lineStart = start
+        var index = start
+        while index < end {
+            if text.character(at: index) == 10 {
+                ranges.append(NSRange(location: lineStart, length: index - lineStart))
+                lineStart = index + 1
+            }
+            index += 1
+        }
+
+        if lineStart < end {
+            ranges.append(NSRange(location: lineStart, length: end - lineStart))
+        } else if lineStart == end, end == text.length,
+                  start == end || text.character(at: end - 1) == 10 {
+            // The band ends with a line break at the end of the document, so
+            // the trailing empty line belongs to it.
+            ranges.append(NSRange(location: end, length: 0))
+        }
+
+        if ranges.isEmpty {
+            // A zero-length band (empty document, or an insert at EOF) still
+            // needs one row.
+            ranges.append(NSRange(location: min(start, text.length), length: 0))
+        }
+        return ranges
+    }
+
+    /// Index of the first cached line whose start is at or after `location`.
+    /// Used to map a line-aligned offset to its line without scanning text.
+    private static func lineIndex(startingAtOrAfter location: Int,
+                                  in ranges: [NSRange]) -> Int {
+        var low = 0
+        var high = ranges.count
+        while low < high {
+            let mid = (low + high) / 2
+            if ranges[mid].location < location {
+                low = mid + 1
+            } else {
+                high = mid
+            }
+        }
+        return low
     }
 
     private static func nonWhitespaceCount(in range: NSRange, text: NSString) -> Int {
@@ -265,6 +423,11 @@ final class MinimapView: NSView {
     /// True between a text-change notification and the coalesced rebuild.
     private(set) var modelNeedsRebuild = false
 
+    /// Line-aligned band in the current text that the next rebuild must
+    /// recompute. `nil` asks for a full rebuild, which is reserved for bind and
+    /// language changes; ordinary edits merge into this band.
+    private var pendingEditBand: NSRange?
+
     /// Current palette. Assigning a different theme asks for a full redraw.
     var theme: Theme {
         didSet { needsDisplay = true }
@@ -328,7 +491,8 @@ final class MinimapView: NSView {
         self.document = document
         guard let document else {
             isHidden = true
-            rebuildModelNow()
+            pendingEditBand = nil
+            rebuildModelNow(full: true)
             return
         }
 
@@ -353,7 +517,8 @@ final class MinimapView: NSView {
 
         // Binding happens on tab switches and language changes; both can alter
         // the dominant token type, so rebuild eagerly for the first paint.
-        rebuildModelNow()
+        pendingEditBand = nil
+        rebuildModelNow(full: true)
     }
 
     /// Applies the editor's current theme. Repeated calls with the same theme
@@ -377,13 +542,18 @@ final class MinimapView: NSView {
 
     /// Rebuilds the cached model immediately. The editor container's initial
     /// bind and tests use this; ordinary text edits go through the coalesced
-    /// ``scheduleModelRebuild()`` path.
+    /// ``scheduleModelRebuild()`` path and update only the edited line band.
     func rebuildModelNow() {
+        rebuildModelNow(full: false)
+    }
+
+    private func rebuildModelNow(full: Bool) {
         pendingRebuild?.cancel()
         pendingRebuild = nil
         modelNeedsRebuild = false
 
         guard let document else {
+            pendingEditBand = nil
             if lineModel != nil {
                 lineModel = nil
                 needsDisplay = true
@@ -392,7 +562,23 @@ final class MinimapView: NSView {
         }
 
         let language = Language(rawValue: document.language) ?? .plain
-        let model = MinimapLineModel.compute(text: document.text, language: language)
+        let text = document.text
+        let band = pendingEditBand
+        pendingEditBand = nil
+
+        let model: MinimapLineModel
+        if !full, let band, let cached = lineModel, cached.language == language {
+            // Only the rows intersecting the edited band are re-tokenized; the
+            // rest of the cached model is preserved (with later rows shifted
+            // when the edit added or removed lines).
+            model = MinimapLineModel.updated(cached,
+                                             text: text,
+                                             language: language,
+                                             band: band)
+        } else {
+            model = MinimapLineModel.compute(text: text, language: language)
+        }
+
         // Equality is the "visible change" test: if the rows are identical the
         // cached model is already correct and no repaint is needed.
         guard model != lineModel else { return }
@@ -416,7 +602,62 @@ final class MinimapView: NSView {
         guard let storage = notification.object as? NSTextStorage,
               storage === document?.textStorage,
               storage.editedMask.contains(.editedCharacters) else { return }
+
+        let editedRange = storage.editedRange
+        let insertedLength = editedRange.length
+        let replacedLength = max(0, insertedLength - storage.changeInLength)
+        recordEdit(location: editedRange.location,
+                   replacedLength: replacedLength,
+                   insertedLength: insertedLength)
         scheduleModelRebuild()
+    }
+
+    /// Merges an edit into the pending band in post-edit coordinates.
+    ///
+    /// The band is kept line-aligned with one line of context on each side so
+    /// a line join/split and a token on the band boundary are recomputed too.
+    /// Earlier edits are shifted when a later one lands before them, which is
+    /// exactly the order multi-caret replacements arrive in.
+    private func recordEdit(location: Int,
+                            replacedLength: Int,
+                            insertedLength: Int) {
+        guard let document else {
+            pendingEditBand = nil
+            return
+        }
+
+        let text = document.text as NSString
+        let editEnd = location + insertedLength
+        let oldEditEnd = location + replacedLength
+        let delta = insertedLength - replacedLength
+
+        let merged: NSRange
+        if let existing = pendingEditBand {
+            var start = existing.location
+            var end = NSMaxRange(existing)
+            if end <= location {
+                // The earlier band is entirely before this edit.
+            } else if start >= oldEditEnd {
+                // The earlier band is entirely after this edit and shifts.
+                start += delta
+                end += delta
+            } else {
+                // Overlap: map the earlier band's endpoints across the edit.
+                let mappedStart = start <= location ? start : location
+                let mappedEnd = end >= oldEditEnd ? end + delta : editEnd
+                start = mappedStart
+                end = mappedEnd
+            }
+            start = min(start, location)
+            end = max(end, editEnd)
+            merged = NSRange(location: start, length: max(0, end - start))
+        } else {
+            merged = NSRange(location: location, length: insertedLength)
+        }
+
+        pendingEditBand = TokenStore.lineRange(containing: merged,
+                                               in: text,
+                                               margin: 1)
     }
 
     // MARK: - Live layout observation
