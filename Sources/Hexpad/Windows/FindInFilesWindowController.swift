@@ -7,14 +7,19 @@ final class FindInFilesWindowController: NSWindowController {
 
     private let folderLabel = NSTextField(labelWithString: "No folder chosen")
     private let patternField = NSSearchField()
+    private let replaceField = NSSearchField()
     private let regexCheckbox = NSButton(checkboxWithTitle: "Regex", target: nil, action: nil)
     private let caseCheckbox = NSButton(checkboxWithTitle: "Case sensitive", target: nil, action: nil)
     private let searchButton = NSButton(title: "Search", target: nil, action: nil)
+    private let replaceAllButton = NSButton(title: "Replace All in Files", target: nil, action: nil)
     private let resultsTable = NSTableView()
     private let statusLabel = NSTextField(labelWithString: "")
 
     private var directory: URL?
     private var results: [(URL, [SearchMatch])] = []
+    /// Replacements performed per file by the last Replace All in Files run.
+    /// Kept alongside the search hits so the table can show both counts.
+    private var replaceCounts: [URL: Int] = [:]
 
     /// Called with the file URL and the match range to jump to in that file.
     var onOpenMatch: ((URL, NSRange) -> Void)?
@@ -64,7 +69,20 @@ final class FindInFilesWindowController: NSWindowController {
         searchButton.autoresizingMask = [.minXMargin]
         content.addSubview(searchButton)
 
-        let scroll = NSScrollView(frame: NSRect(x: 12, y: 34, width: 596, height: 306))
+        replaceField.placeholderString = "Replace with"
+        replaceField.frame = NSRect(x: 12, y: 320, width: 380, height: 24)
+        replaceField.autoresizingMask = [.width]
+        content.addSubview(replaceField)
+
+        replaceAllButton.target = self
+        replaceAllButton.action = #selector(replaceAllInFiles)
+        replaceAllButton.bezelStyle = .rounded
+        replaceAllButton.font = NSFont.systemFont(ofSize: 12)
+        replaceAllButton.frame = NSRect(x: 400, y: 318, width: 170, height: 24)
+        replaceAllButton.autoresizingMask = [.minXMargin]
+        content.addSubview(replaceAllButton)
+
+        let scroll = NSScrollView(frame: NSRect(x: 12, y: 34, width: 596, height: 272))
         scroll.autoresizingMask = [.width, .height]
         scroll.hasVerticalScroller = true
         scroll.borderType = .bezelBorder
@@ -112,8 +130,10 @@ final class FindInFilesWindowController: NSWindowController {
         if caseCheckbox.state == .on { options.insert(.caseSensitive) }
 
         searchButton.isEnabled = false
+        replaceAllButton.isEnabled = false
         statusLabel.stringValue = "Searching…"
         results = []
+        replaceCounts = [:]
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let hits = SearchEngine.searchInFiles(directory: directory, pattern: pattern, options: options)
@@ -122,6 +142,7 @@ final class FindInFilesWindowController: NSWindowController {
                 self.results = hits
                 self.resultsTable.reloadData()
                 self.searchButton.isEnabled = true
+                self.replaceAllButton.isEnabled = true
                 let fileCount = hits.count
                 let matchCount = hits.reduce(0) { $0 + $1.1.count }
                 self.statusLabel.stringValue = fileCount == 0
@@ -131,12 +152,57 @@ final class FindInFilesWindowController: NSWindowController {
         }
     }
 
+    /// Replaces every match under the chosen folder, then reports per-file
+    /// replacement counts in the same table used for search hits.
+    @objc private func replaceAllInFiles() {
+        guard let directory else {
+            statusLabel.stringValue = "Choose a folder first"
+            return
+        }
+        let pattern = patternField.stringValue
+        guard !pattern.isEmpty else { return }
+        let replacement = replaceField.stringValue
+
+        var options: SearchOptions = []
+        if regexCheckbox.state == .on { options.insert(.regex) }
+        if caseCheckbox.state == .on { options.insert(.caseSensitive) }
+
+        searchButton.isEnabled = false
+        replaceAllButton.isEnabled = false
+        statusLabel.stringValue = "Replacing…"
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let replaced = SearchEngine.replaceInFiles(directory: directory, pattern: pattern,
+                                                       replacement: replacement, options: options)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.searchButton.isEnabled = true
+                self.replaceAllButton.isEnabled = true
+
+                self.replaceCounts = Dictionary(replaced, uniquingKeysWith: { first, _ in first })
+                // Keep existing hit rows where possible; add rows for files the
+                // replace touched but a prior search may not have listed.
+                var knownURLs = Set(self.results.map { $0.0 })
+                for (url, _) in replaced where !knownURLs.contains(url) {
+                    self.results.append((url, []))
+                    knownURLs.insert(url)
+                }
+                self.resultsTable.reloadData()
+
+                let total = replaced.reduce(0) { $0 + $1.1 }
+                self.statusLabel.stringValue = replaced.isEmpty
+                    ? "No matches to replace"
+                    : "Replaced \(total) matches in \(replaced.count) files"
+            }
+        }
+    }
+
     @objc private func openSelected() {
         let row = resultsTable.clickedRow
         guard row >= 0, row < results.count else { return }
         let (url, matches) = results[row]
-        let subrow = resultsTable.clickedRow >= 0 ? 0 : 0
-        onOpenMatch?(url, matches[subrow].range)
+        guard let first = matches.first else { return }
+        onOpenMatch?(url, first.range)
     }
 }
 
@@ -149,8 +215,16 @@ extension FindInFilesWindowController: NSTableViewDataSource, NSTableViewDelegat
         let label = NSTextField(labelWithString: "")
         label.lineBreakMode = .byTruncatingMiddle
         label.font = NSFont.systemFont(ofSize: 11)
-        let first = matches.first.map { (url.path, $0.range.location) } ?? (url.path, 0)
-        label.stringValue = "\(first.0)\n\(matches.count) match(es), first at offset \(first.1)"
+        let firstOffset = matches.first?.range.location ?? 0
+        let summary: String
+        if matches.isEmpty {
+            summary = "\(replaceCounts[url] ?? 0) replaced"
+        } else if let replaced = replaceCounts[url] {
+            summary = "\(matches.count) match(es), \(replaced) replaced, first at offset \(firstOffset)"
+        } else {
+            summary = "\(matches.count) match(es), first at offset \(firstOffset)"
+        }
+        label.stringValue = "\(url.path)\n\(summary)"
         label.maximumNumberOfLines = 2
         return label
     }
