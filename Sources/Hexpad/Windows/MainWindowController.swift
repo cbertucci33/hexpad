@@ -136,6 +136,7 @@ class MainWindowController: NSViewController {
     @objc private func handleDocumentModified(_ notification: Notification) {
         refreshTabBar()
         updateStatusBar()
+        updateWindowTitle()
     }
 
     @objc private func handleModelTextChange(_ notification: Notification) {
@@ -591,8 +592,9 @@ class MainWindowController: NSViewController {
             editor.textView.selectedRange = NSRange(location: 0, length: 0)
         }
         updateStatusBar()
+        updateWindowTitle()
     }
-
+    
     // MARK: - Syntax highlighting
 
     /// Highlights only the visible line band (plus a margin). Typing passes the
@@ -748,6 +750,21 @@ class MainWindowController: NSViewController {
         guard let status = statusBar, let editor = editorContainer else { return }
         let doc = tabStore.selectedDocument
         status.update(with: doc, textView: editor.textView)
+    }
+    
+    // MARK: - Window title / edited state
+    
+    /// Keeps the window title and edited flag in sync with the selected
+    /// document using the AppKit document-window convention: the title is the
+    /// document's filename (or "Untitled" when none), and `documentEdited` is
+    /// set while the buffer has unsaved changes so the window shows the native
+    /// edited indicator.
+    func updateWindowTitle() {
+        guard let window = mainWindow else { return }
+        let doc = tabStore.selectedDocument
+        window.representedURL = doc?.filePath
+        window.title = doc?.name ?? "Untitled"
+        window.documentEdited = doc?.unsavedChanges ?? false
     }
     
     // MARK: - Find
