@@ -8,16 +8,70 @@ class StatusBar: NSView {
     private var eolLabel: NSTextField?
     private var encodingLabel: NSTextField?
     private var languageLabel: NSTextField?
+
+    /// A line index plus the identity of the text it was built from.
+    ///
+    /// `generation` is bumped by `NSTextStorage`'s character-edit
+    /// notification; `storageID`/`documentID` prevent a tab switch from reusing
+    /// another buffer's offsets. Together they make the cache valid exactly
+    /// while the (document, text) pair is unchanged.
+    private struct LineIndexCache {
+        let documentID: UUID?
+        let storageID: ObjectIdentifier
+        let generation: Int
+        let index: LineIndex
+    }
+
+    private var lineIndexCache: LineIndexCache?
+
+    /// Counts character edits on the storage currently being indexed. Attribute
+    /// edits are ignored: the highlighter rewrites attributes on every keystroke
+    /// and scroll, and attributes cannot move a line start.
+    private var textGeneration = 0
+
+    /// The storage the edit observer is currently following. Set on every
+    /// `update` so edits to a previously shown tab cannot invalidate the
+    /// current tab's cache.
+    private var observedStorageID: ObjectIdentifier?
+
+    private var editObserver: NSObjectProtocol?
     
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
         setupUI()
+        startEditObservation()
     }
     
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        if let editObserver {
+            NotificationCenter.default.removeObserver(editObserver)
+        }
+    }
+
+    /// Bumps `textGeneration` whenever the observed buffer's characters change.
+    /// Typing, undo, find/replace, line operations and reloads all mutate the
+    /// document's single `NSTextStorage`, so this one notification covers every
+    /// path that can move a line start (the container already relies on the
+    /// same notification for fold/bookmark remapping).
+    private func startEditObservation() {
+        editObserver = NotificationCenter.default.addObserver(
+            forName: NSTextStorage.didProcessEditingNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] notification in
+            guard let self,
+                  let storage = notification.object as? NSTextStorage,
+                  let observed = self.observedStorageID,
+                  ObjectIdentifier(storage) == observed,
+                  storage.editedMask.contains(.editedCharacters) else { return }
+            self.textGeneration &+= 1
+        }
     }
     
     private func setupUI() {
@@ -80,16 +134,30 @@ class StatusBar: NSView {
         separatorView?.frame = NSRect(x: 0, y: h - 1, width: bounds.width, height: 1)
     }
     
-    func update(with doc: DocumentModel?, textView: NSTextView?) {
+    func update(with doc: DocumentModel?, textView: NSTextView?, lineIndex: LineIndex? = nil) {
         guard let textView = textView else { return }
         
         let selRange = textView.selectedRange
-        let text = textView.string
-        // GutterGeometry is the single source of truth for line math (it is
-        // unit-tested and UTF-16 aware); derive the caret's 1-based line and
-        // 1-based column from it.
-        let line = GutterGeometry.logicalLine(of: selRange.location, in: text)
-        let col = selRange.location - GutterGeometry.firstCharIndex(of: line, in: text) + 1
+        // Line math is O(log lines) once an index is available: a caller that
+        // already owns one can pass it, otherwise the status bar reuses its own
+        // cache and only re-indexes when the text has actually changed. This
+        // replaces the two full-document scans (logicalLine + firstCharIndex)
+        // that used to run on every caret move.
+        let index = lineIndex ?? cachedLineIndex(for: doc, textView: textView)
+        let line: Int
+        let firstCharIndex: Int
+        if let index {
+            // One line lookup, then one start lookup for that line's column.
+            line = index.line(of: selRange.location)
+            firstCharIndex = index.firstCharIndex(of: line)
+        } else {
+            // No text storage to index (not a normal NSTextView): keep the
+            // original GutterGeometry full-scan path unchanged.
+            let text = textView.string
+            line = GutterGeometry.logicalLine(of: selRange.location, in: text)
+            firstCharIndex = GutterGeometry.firstCharIndex(of: line, in: text)
+        }
+        let col = selRange.location - firstCharIndex + 1
         positionLabel?.stringValue = "Ln \(line), Col \(col)"
         
         if selRange.length > 0 {
@@ -101,5 +169,33 @@ class StatusBar: NSView {
         eolLabel?.stringValue = doc?.eolType ?? "LF"
         encodingLabel?.stringValue = doc?.encoding ?? "UTF-8"
         languageLabel?.stringValue = doc?.language ?? "Plain Text"
+    }
+
+    /// Returns the cached index when it still describes the text on screen,
+    /// rebuilding it only on the first update and after a character edit or a
+    /// document/tab switch.
+    ///
+    /// The length check is a cheap guard (O(1)) against a missed notification;
+    /// the generation counter is what makes same-length edits (typing over a
+    /// selection, undo) rebuild.
+    private func cachedLineIndex(for doc: DocumentModel?, textView: NSTextView) -> LineIndex? {
+        guard let storage = textView.textStorage else { return nil }
+        let storageID = ObjectIdentifier(storage)
+        observedStorageID = storageID
+
+        if let cache = lineIndexCache,
+           cache.storageID == storageID,
+           cache.documentID == doc?.id,
+           cache.generation == textGeneration,
+           cache.index.textLength == storage.length {
+            return cache.index
+        }
+
+        let index = LineIndex(textView.string)
+        lineIndexCache = LineIndexCache(documentID: doc?.id,
+                                        storageID: storageID,
+                                        generation: textGeneration,
+                                        index: index)
+        return index
     }
 }
