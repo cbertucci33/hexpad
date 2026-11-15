@@ -39,6 +39,23 @@ public enum Language: String, CaseIterable, Identifiable {
     case xml = "XML"
     case shell = "Shell"
     case swift = "Swift"
+    // N++ top-20 breadth (appended in declaration order; earlier cases keep
+    // their raw values and positions).
+    case c = "C"
+    case cpp = "C++"
+    case csharp = "C#"
+    case java = "Java"
+    case kotlin = "Kotlin"
+    case ruby = "Ruby"
+    case go = "Go"
+    case rust = "Rust"
+    case php = "PHP"
+    case sql = "SQL"
+    case yaml = "YAML"
+    case toml = "TOML"
+    case ini = "INI"
+    case lua = "Lua"
+    case r = "R"
     
     public var id: String { rawValue }
     
@@ -55,6 +72,23 @@ public enum Language: String, CaseIterable, Identifiable {
         case let x where x.hasSuffix(".xml"): return .xml
         case let x where x.hasSuffix(".sh") || x.hasSuffix(".bash") || x.hasSuffix(".zsh"): return .shell
         case let x where x.hasSuffix(".swift"): return .swift
+        case let x where x.hasSuffix(".c") || x.hasSuffix(".h"): return .c
+        case let x where x.hasSuffix(".cpp") || x.hasSuffix(".cc")
+            || x.hasSuffix(".hpp") || x.hasSuffix(".cxx"): return .cpp
+        case let x where x.hasSuffix(".cs"): return .csharp
+        case let x where x.hasSuffix(".java"): return .java
+        case let x where x.hasSuffix(".kt") || x.hasSuffix(".kts"): return .kotlin
+        case let x where x.hasSuffix(".rb"): return .ruby
+        case let x where x.hasSuffix(".go"): return .go
+        case let x where x.hasSuffix(".rs"): return .rust
+        case let x where x.hasSuffix(".php"): return .php
+        case let x where x.hasSuffix(".sql"): return .sql
+        case let x where x.hasSuffix(".yaml") || x.hasSuffix(".yml"): return .yaml
+        case let x where x.hasSuffix(".toml"): return .toml
+        case let x where x.hasSuffix(".ini") || x.hasSuffix(".cfg")
+            || x.hasSuffix(".conf"): return .ini
+        case let x where x.hasSuffix(".lua"): return .lua
+        case let x where x.hasSuffix(".r"): return .r
         default: return .plain
         }
     }

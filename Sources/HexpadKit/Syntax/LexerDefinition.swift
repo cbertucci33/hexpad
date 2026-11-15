@@ -155,7 +155,22 @@ public enum LexerDefinitions {
         .markdown,
         .xml,
         .shell,
-        .swift
+        .swift,
+        .c,
+        .cpp,
+        .csharp,
+        .java,
+        .kotlin,
+        .ruby,
+        .go,
+        .rust,
+        .php,
+        .sql,
+        .yaml,
+        .toml,
+        .ini,
+        .lua,
+        .r
     ]
 
     private static let byLanguage: [Language: LexerDefinition] = {

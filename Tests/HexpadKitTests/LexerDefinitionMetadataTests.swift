@@ -21,7 +21,22 @@ final class LexerDefinitionMetadataTests: XCTestCase {
         .markdown: .init(blockStart: "<!--", blockEnd: "-->"),
         .xml: .init(blockStart: "<!--", blockEnd: "-->"),
         .shell: .init(linePrefix: "#"),
-        .swift: .init(linePrefix: "//", blockStart: "/*", blockEnd: "*/")
+        .swift: .init(linePrefix: "//", blockStart: "/*", blockEnd: "*/"),
+        .c: .init(linePrefix: "//", blockStart: "/*", blockEnd: "*/"),
+        .cpp: .init(linePrefix: "//", blockStart: "/*", blockEnd: "*/"),
+        .csharp: .init(linePrefix: "//", blockStart: "/*", blockEnd: "*/"),
+        .java: .init(linePrefix: "//", blockStart: "/*", blockEnd: "*/"),
+        .kotlin: .init(linePrefix: "//", blockStart: "/*", blockEnd: "*/"),
+        .ruby: .init(linePrefix: "#", blockStart: "=begin", blockEnd: "=end"),
+        .go: .init(linePrefix: "//", blockStart: "/*", blockEnd: "*/"),
+        .rust: .init(linePrefix: "//", blockStart: "/*", blockEnd: "*/"),
+        .php: .init(linePrefix: "//", blockStart: "/*", blockEnd: "*/"),
+        .sql: .init(linePrefix: "--", blockStart: "/*", blockEnd: "*/"),
+        .yaml: .init(linePrefix: "#"),
+        .toml: .init(linePrefix: "#"),
+        .ini: .init(linePrefix: ";"),
+        .lua: .init(linePrefix: "--", blockStart: "--[[", blockEnd: "]]"),
+        .r: .init(linePrefix: "#")
     ]
 
     private let curly = LexerDefinition.BracketPair(open: "{", close: "}")
@@ -119,7 +134,22 @@ final class LexerDefinitionMetadataTests: XCTestCase {
             .markdown: [],
             .xml: [],
             .shell: allThree,
-            .swift: allThree
+            .swift: allThree,
+            .c: allThree,
+            .cpp: allThree,
+            .csharp: allThree,
+            .java: allThree,
+            .kotlin: allThree,
+            .ruby: allThree,
+            .go: allThree,
+            .rust: allThree,
+            .php: allThree,
+            .sql: [paren],
+            .yaml: [curly, square],
+            .toml: [curly, square],
+            .ini: [square],
+            .lua: allThree,
+            .r: allThree
         ]
 
         XCTAssertEqual(Set(expected.keys), Set(Language.allCases.filter { $0 != .plain }))
