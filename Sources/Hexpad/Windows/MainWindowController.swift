@@ -305,40 +305,41 @@ class MainWindowController: NSViewController {
     
     func closeSelectedTab() {
         guard tabStore.count > 0 else { return }
-        guard let doc = tabStore.selectedDocument, !doc.unsavedChanges else {
-            closeTabAtIndex(tabStore.selectedIndex)
-            return
-        }
+        guard let doc = tabStore.selectedDocument else { return }
         
-        let alert = NSAlert()
-        alert.messageText = "Save changes to \(doc.name)?"
-        alert.informativeText = "You have unsaved changes to this document."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Save")
-        alert.addButton(withTitle: "Don't Save")
-        alert.addButton(withTitle: "Cancel")
-        
-        alert.beginSheetModal(for: mainWindow ?? NSApplication.shared.windows.first ?? NSWindow()) { response in
-            DispatchQueue.main.async {
-                switch response {
-                case .alertFirstButtonReturn: // Save
-                    // Untitled docs need a save panel; doc.save() throws
-                    // noFilePath for them. Only close once the save succeeded
-                    // (or the user actually picked a destination).
-                    if doc.isUntitled {
-                        self.saveAsAndClose(doc)
-                    } else {
-                        self.saveDocument(doc)
+        if doc.unsavedChanges {
+            let alert = NSAlert()
+            alert.messageText = "Save changes to \(doc.name)?"
+            alert.informativeText = "You have unsaved changes to this document."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Save")
+            alert.addButton(withTitle: "Don't Save")
+            alert.addButton(withTitle: "Cancel")
+            
+            alert.beginSheetModal(for: mainWindow ?? NSApplication.shared.windows.first ?? NSWindow()) { response in
+                DispatchQueue.main.async {
+                    switch response {
+                    case .alertFirstButtonReturn: // Save
+                        // Untitled docs need a save panel; doc.save() throws
+                        // noFilePath for them. Only close once the save succeeded
+                        // (or the user actually picked a destination).
+                        if doc.isUntitled {
+                            self.saveAsAndClose(doc)
+                        } else {
+                            self.saveDocument(doc)
+                            self.closeTabAtIndex(self.tabStore.selectedIndex)
+                        }
+                    case .alertSecondButtonReturn: // Don't Save
                         self.closeTabAtIndex(self.tabStore.selectedIndex)
+                    case .alertThirdButtonReturn: // Cancel
+                        break
+                    default:
+                        break
                     }
-                case .alertSecondButtonReturn: // Don't Save
-                    self.closeTabAtIndex(self.tabStore.selectedIndex)
-                case .alertThirdButtonReturn: // Cancel
-                    break
-                default:
-                    break
                 }
             }
+        } else {
+            closeTabAtIndex(tabStore.selectedIndex)
         }
     }
 
