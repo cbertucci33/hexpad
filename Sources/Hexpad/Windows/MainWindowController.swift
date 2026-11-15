@@ -654,19 +654,13 @@ class MainWindowController: NSViewController {
     
     func updateEditor() {
         guard let editor = editorContainer else { return }
-        // There is nothing to flush: the editor's text view shares the
-        // document's storage, so the model already holds every keystroke.
+        // The editor's text view shares the document's storage, so the model
+        // already holds every keystroke. bind() captures the live per-tab
+        // state on the way out and applies the incoming tab's state on the
+        // way in.
         if let doc = tabStore.selectedDocument {
             editorBoundDoc = doc
-            // Per-document undo stacks: switching tabs must not wipe undo.
-            // NSTextView.undoManager is get-only (delegate-provided); rebind
-            // the layout manager so typing registers on this doc's stack.
-            let selRange = editor.textView.selectedRange
             editor.bind(to: doc)
-            let maxLoc = (doc.text as NSString).length
-            editor.textView.selectedRange = NSRange(location: min(selRange.location, maxLoc),
-                                                    length: min(selRange.length,
-                                                                max(0, maxLoc - min(selRange.location, maxLoc))))
             applySyntaxHighlighting(to: editor, for: doc, forceReset: true)
         } else {
             editorBoundDoc = nil
@@ -674,7 +668,6 @@ class MainWindowController: NSViewController {
             syntaxStore.reset()
             lastHighlightedRange = NSRange(location: 0, length: 0)
             editor.bind(to: nil)
-            editor.textView.selectedRange = NSRange(location: 0, length: 0)
         }
         updateStatusBar()
         updateWindowTitle()
@@ -947,21 +940,20 @@ class MainWindowController: NSViewController {
     // MARK: - View
     
     func toggleWordWrap() {
-        editorContainer?.textView.isHorizontallyResizable.toggle()
+        guard let editor = editorContainer else { return }
+        editor.setWordWrapEnabled(!editor.isWordWrapEnabled)
     }
     
     func zoomIn() {
-        guard let editor = editorContainer else { return }
-        editor.setBodyFont(NSFont.monospacedSystemFont(ofSize: editor.bodyFont.pointSize + 1, weight: .regular))
+        editorContainer?.adjustZoom(byPoints: 1)
     }
     
     func zoomOut() {
-        guard let editor = editorContainer, editor.bodyFont.pointSize > 8 else { return }
-        editor.setBodyFont(NSFont.monospacedSystemFont(ofSize: editor.bodyFont.pointSize - 1, weight: .regular))
+        editorContainer?.adjustZoom(byPoints: -1)
     }
     
     func resetZoom() {
-        editorContainer?.setBodyFont(NSFont.monospacedSystemFont(ofSize: 13, weight: .regular))
+        editorContainer?.resetZoom()
     }
     
     // MARK: - Encoding
@@ -1198,7 +1190,10 @@ class MainWindowController: NSViewController {
     
     func saveSession() {
         // The editor and every document share one buffer, so untitled
-        // (never-saved-to-disk) edits are already in tabStore.
+        // (never-saved-to-disk) edits are already in tabStore. Capture the
+        // selected tab's caret/scroll/wrap/zoom first: tab switches capture on
+        // unbind, but the tab on screen may have moved since it was bound.
+        editorContainer?.captureEditorState()
         try? SessionStore.save(tabStore)
     }
     

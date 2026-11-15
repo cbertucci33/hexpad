@@ -127,10 +127,39 @@ class EditorContainer: NSView {
     /// Used when no tab is selected, so the text view always has a storage.
     private let unboundStorage = NSTextStorage()
 
+    /// Default and minimum body-font point sizes. Zoom is expressed as a
+    /// multiplier over the base (preference) font, so these keep the persisted
+    /// multiplier independent of the user's chosen font size.
+    static let defaultFontSize: CGFloat = 13
+    static let minimumFontSize: CGFloat = 8
+
+    /// The unzoomed font chosen by preferences. `bodyFont` is the rendered font
+    /// after the bound document's zoom multiplier is applied.
+    private var baseFont = NSFont.monospacedSystemFont(ofSize: defaultFontSize, weight: .regular)
+
     /// The editor's body font. A document's NSTextStorage has no font of its
     /// own, and swapping one in makes NSTextView fall back to Helvetica 12, so
     /// bind and highlighting must restore this value explicitly.
-    private(set) var bodyFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+    private(set) var bodyFont = NSFont.monospacedSystemFont(ofSize: defaultFontSize, weight: .regular)
+
+    /// Current zoom as a multiplier of the base font. Persisted per document in
+    /// `DocumentModel.editorState.zoomScale`.
+    var zoomScale: CGFloat {
+        baseFont.pointSize > 0 ? bodyFont.pointSize / baseFont.pointSize : 1
+    }
+
+    /// Whether long lines soft-wrap. This is the inverse of the text view's
+    /// horizontal resizability, exactly as View > Word Wrap and the preference
+    /// have always mapped it.
+    var isWordWrapEnabled: Bool {
+        !textView.isHorizontallyResizable
+    }
+
+    /// A scroll origin to re-apply after the next layout pass. AppKit only
+    /// knows the new document's height once layout has run, so a restore that
+    /// the clip view clamped during bind is retried here.
+    private var pendingScrollOffset: CGPoint?
+    private var pendingScrollDocumentID: UUID?
 
     /// Fired when the visible character range changes (scroll or resize).
     var onViewportChange: (() -> Void)?
@@ -160,6 +189,12 @@ class EditorContainer: NSView {
     /// receives a copy of the text: switching tabs swaps the storage under the
     /// layout manager, so the model and the visible editor are one buffer.
     func bind(to document: DocumentModel?) {
+        // Persist the outgoing document's live caret/scroll/wrap/zoom before
+        // the pointer moves to the new document, so switching tabs neither
+        // discards the old tab's state nor leaks it into the new tab.
+        if let outgoing = boundDocument {
+            captureEditorState(into: outgoing)
+        }
         // Persist the outgoing document's bookmarks before the pointer moves to
         // the new document, so every tab's state survives the switch.
         flushBookmarkState()
@@ -177,7 +212,10 @@ class EditorContainer: NSView {
             layoutManager.replaceTextStorage(storage)
             isSyncingSelection = false
             columnAnchor = nil
-            setMultiCaretState(MultiCaretState(caret: textView.selectedRange))
+            // Reset before adopting the incoming document's caret. NSTextView
+            // keeps its selection across a storage swap, so leaving that value
+            // in place would move the new tab's caret to the old tab's offset.
+            setMultiCaretState(MultiCaretState(caretAt: 0))
             applyBodyFont()
         }
 
@@ -190,6 +228,11 @@ class EditorContainer: NSView {
         // Bookmarks have no language dependency, but rebinding is the moment
         // the container adopts a tab's persisted state.
         bindBookmarks(for: document)
+
+        // Adopt the incoming document's persisted editor state. This runs after
+        // the storage swap and fold/bookmark binding so the caret is clamped
+        // against the buffer that is actually visible.
+        applyEditorState(from: document)
     }
 
     deinit {
@@ -239,11 +282,139 @@ class EditorContainer: NSView {
         onAppearanceChange?()
     }
 
-    /// Changes the global editor font (zoom) and updates the visible buffer.
+    /// Changes the base editor font (the Preferences choice) and re-applies the
+    /// current zoom on top of it. The visible buffer is updated in place.
     func setBodyFont(_ font: NSFont) {
-        bodyFont = font
-        textView.font = font
-        applyBodyFont()
+        let scale = zoomScale
+        baseFont = font
+        applyZoomScale(scale, writingThrough: false)
+    }
+
+    /// Applies a zoom multiplier over the base font and persists it on the
+    /// bound document, so the View > Zoom commands survive a tab switch.
+    func setZoomScale(_ scale: CGFloat) {
+        guard scale.isFinite, scale > 0 else { return }
+        applyZoomScale(scale, writingThrough: true)
+    }
+
+    /// Steps zoom by whole points, matching the one-point View menu commands.
+    func adjustZoom(byPoints delta: CGFloat) {
+        guard delta.isFinite else { return }
+        let target = max(Self.minimumFontSize, bodyFont.pointSize + delta)
+        setZoomScale(target / baseFont.pointSize)
+    }
+
+    /// Restores 100% zoom over the base font.
+    func resetZoom() {
+        setZoomScale(1)
+    }
+
+    /// Enables or disables soft wrap and persists the choice on the bound
+    /// document.
+    @discardableResult
+    func setWordWrapEnabled(_ enabled: Bool) -> Bool {
+        let changed = isWordWrapEnabled != enabled
+        textView.isHorizontallyResizable = !enabled
+        if changed {
+            textView.needsDisplay = true
+        }
+        boundDocument?.wordWrapEnabled = enabled
+        return changed
+    }
+
+    /// Writes the bound document's live caret, scroll origin, wrap and zoom
+    /// back to `DocumentModel.editorState`. Bind calls this for the outgoing
+    /// document; the session save path calls it for the tab that is still open.
+    func captureEditorState() {
+        guard let document = boundDocument else { return }
+        captureEditorState(into: document)
+    }
+
+    private func captureEditorState(into document: DocumentModel) {
+        let length = document.textStorage.length
+        let selection = textView.selectedRange
+        let location = min(max(0, selection.location), length)
+        document.caretRange = NSRange(location: location,
+                                      length: min(max(0, selection.length),
+                                                  length - location))
+        document.scrollOffset = scrollView.contentView.bounds.origin
+        document.wordWrapEnabled = isWordWrapEnabled
+        document.zoomScale = zoomScale
+    }
+
+    /// Adopts a document's persisted editor state, clamping the caret to the
+    /// document so a stale session can never index past the buffer.
+    private func applyEditorState(from document: DocumentModel?) {
+        guard let document else {
+            setWordWrapEnabled(false)
+            applyZoomScale(1, writingThrough: false)
+            setMultiCaretState(MultiCaretState(caretAt: 0))
+            applyScrollOffset(.zero)
+            return
+        }
+
+        let state = document.editorState
+        setWordWrapEnabled(state.wordWrapEnabled)
+        applyZoomScale(state.zoomScale, writingThrough: false)
+
+        let length = document.textStorage.length
+        let location = min(max(0, state.caretRange.location), length)
+        let caret = NSRange(location: location,
+                            length: min(max(0, state.caretRange.length),
+                                        length - location))
+        setMultiCaretState(MultiCaretState(caret: caret))
+        applyScrollOffset(state.scrollOffset)
+    }
+
+    /// Renders `scale` over the current base font. The whole-buffer attribute
+    /// pass only runs when the rendered font actually changes, so rebinding a
+    /// tab does not repaint text that already has the right font.
+    private func applyZoomScale(_ scale: CGFloat, writingThrough: Bool) {
+        let clamped = max(Self.minimumFontSize / baseFont.pointSize, scale)
+        let size = baseFont.pointSize * clamped
+        let font = NSFont(descriptor: baseFont.fontDescriptor, size: size)
+            ?? NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        if abs(bodyFont.pointSize - font.pointSize) > 0.0001
+            || bodyFont.fontName != font.fontName {
+            bodyFont = font
+            textView.font = font
+            applyBodyFont()
+        }
+        if writingThrough {
+            boundDocument?.zoomScale = zoomScale
+        }
+    }
+
+    /// Scrolls to `offset` now, and schedules one retry after layout when the
+    /// clip view clamped it (for example while a restored session is still
+    /// being laid out).
+    private func applyScrollOffset(_ offset: CGPoint) {
+        guard offset.x.isFinite, offset.y.isFinite else { return }
+        let target = CGPoint(x: max(0, offset.x), y: max(0, offset.y))
+        scrollNow(to: target)
+        let actual = scrollView.contentView.bounds.origin
+        if abs(actual.x - target.x) > 0.5 || abs(actual.y - target.y) > 0.5 {
+            pendingScrollOffset = target
+            pendingScrollDocumentID = boundDocument?.id
+        } else {
+            pendingScrollOffset = nil
+            pendingScrollDocumentID = nil
+        }
+    }
+
+    private func scrollNow(to offset: CGPoint) {
+        scrollView.contentView.scroll(to: offset)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
+
+    /// Re-applies a scroll restore that had to wait for the new document's
+    /// height to be laid out.
+    private func applyPendingScrollOffset() {
+        guard let offset = pendingScrollOffset,
+              pendingScrollDocumentID == boundDocument?.id else { return }
+        pendingScrollOffset = nil
+        pendingScrollDocumentID = nil
+        scrollNow(to: offset)
     }
 
     /// Applies the body font to the currently shared buffer without touching
@@ -339,6 +510,7 @@ class EditorContainer: NSView {
     override func layout() {
         super.layout()
         layoutEditorSubviews()
+        applyPendingScrollOffset()
     }
 
     override func resizeSubviews(withOldSize oldSize: NSSize) {
