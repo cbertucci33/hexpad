@@ -34,7 +34,9 @@ public final class DocumentModel: Identifiable, ObservableObject {
     /// `reloadText(_:)` when it replaces a clean buffer.
     public var isModified: Bool { unsavedChanges }
     
-    public var unsavedChanges: Bool { text != _originalText }
+    /// Dirty means the buffer differs from the saved baseline, or a "Convert
+    /// to" changed the save encoding without touching a single character.
+    public var unsavedChanges: Bool { text != _originalText || _encodingConversionPending }
     public var isUntitled: Bool { filePath == nil }
 
     /// Per-document undo stack. The editor swaps its undoManager to this on
@@ -45,10 +47,20 @@ public final class DocumentModel: Identifiable, ObservableObject {
     private var _originalText: String = ""
     private var savedModificationDate: Date?
     private var _encoding: String = "UTF-8"
+    /// The encoding the next save writes. `nil` means "same as `encoding`".
+    /// "Convert to" sets this without changing the encoding the buffer was
+    /// decoded with, so the two menu sections can mark different entries.
+    private var _saveEncoding: String?
+    private var _encodingConversionPending = false
     private var _eolType: String = "LF"
     private var _language: String = "Plain Text"
     
+    /// The encoding the buffer was decoded with (shown in the status bar).
     public var encoding: String { _encoding }
+
+    /// The encoding `save()` will write. Usually equals `encoding`, but
+    /// "Convert to" can retarget the next save without re-decoding the buffer.
+    public var saveEncoding: String { _saveEncoding ?? _encoding }
 
     /// The line-ending style used when this document is saved: `"CRLF"`,
     /// `"LF"` or `"CR"`. Detected from the initial text unless the caller
@@ -57,7 +69,13 @@ public final class DocumentModel: Identifiable, ObservableObject {
 
     public var language: String { _language }
     public func setLanguage(_ language: String) { _language = language }
-    public func setEncoding(_ encoding: String) { _encoding = encoding }
+
+    /// Sets both the decode and save encoding. "Convert to" uses
+    /// `convertEncoding(to:)` instead so the two can diverge.
+    public func setEncoding(_ encoding: String) {
+        _encoding = encoding
+        _saveEncoding = encoding
+    }
     
     public init(text: String = "", filePath: URL? = nil, encoding: String = "UTF-8", eolType: String? = nil) {
         self.id = UUID()
@@ -65,6 +83,7 @@ public final class DocumentModel: Identifiable, ObservableObject {
         self.textStorage = NSTextStorage(string: text)
         self.name = filePath?.lastPathComponent ?? "Untitled"
         self._encoding = encoding
+        self._saveEncoding = encoding
         // Preserve the file's existing line endings on the first save. Callers
         // that know better (session restore, explicit conversion) pass a style.
         self._eolType = eolType ?? EOLDetective.detect(text)
@@ -113,12 +132,14 @@ public final class DocumentModel: Identifiable, ObservableObject {
     /// instead of a transient dirty state.
     public func reloadText(_ newText: String) {
         _originalText = newText
+        _encodingConversionPending = false
         replaceAllText(with: newText)
     }
     
     public func setModified(_ modified: Bool) {
         if !modified {
             self._originalText = self.text
+            self._encodingConversionPending = false
             if let filePath {
                 self.savedModificationDate = try? FileManager.default.attributesOfItem(atPath: filePath.path)[.modificationDate] as? Date
             }
@@ -145,10 +166,10 @@ public final class DocumentModel: Identifiable, ObservableObject {
     /// text is converted back to `eolType` here; otherwise every save would
     /// silently rewrite CRLF/CR files as LF.
     private func encodedData() throws -> Data {
-        let enc = String.Encoding(rawValue: EncodingDetective.nsEncoding(from: self.encoding))
+        let enc = String.Encoding(rawValue: EncodingDetective.nsEncoding(from: self.saveEncoding))
         let serialized = EOLDetective.converting(self.text, to: self.eolType)
         guard let data = serialized.data(using: enc) else {
-            throw DocumentError.saveFailed("cannot encode text as \(self.encoding)")
+            throw DocumentError.saveFailed("cannot encode text as \(self.saveEncoding)")
         }
         return data
     }
@@ -156,6 +177,53 @@ public final class DocumentModel: Identifiable, ObservableObject {
     public func convertEOL(to newType: String) {
         self.text = EOLDetective.converting(self.text, to: newType)
         self._eolType = newType
+    }
+
+    // MARK: - Encoding (Encode in / Convert to)
+
+    /// "Encode in": reinterprets raw `data` with `encoding` and reloads the
+    /// buffer. No transcoding happens and the file on disk is not touched.
+    /// The new text is the clean baseline because it faithfully represents the
+    /// same bytes with a different decoder.
+    ///
+    /// Returns false when the bytes cannot be decoded with `encoding`.
+    @discardableResult
+    public func redecode(from data: Data, as encoding: String) -> Bool {
+        let nsEncoding = String.Encoding(rawValue: EncodingDetective.nsEncoding(from: encoding))
+        guard let text = String(data: data, encoding: nsEncoding) else { return false }
+        _encoding = encoding
+        _saveEncoding = encoding
+        reloadText(text)
+        return true
+    }
+
+    /// "Encode in" against the bytes on disk. File-backed documents only: an
+    /// untitled buffer has no raw bytes to reinterpret.
+    @discardableResult
+    public func redecodeFromDisk(as encoding: String) -> Bool {
+        guard let filePath, let data = try? Data(contentsOf: filePath) else { return false }
+        return redecode(from: data, as: encoding)
+    }
+
+    /// Whether the current buffer can be written with `encoding`. Used to grey
+    /// out "Convert to" entries that would fail on the next save.
+    public func canEncode(as encoding: String) -> Bool {
+        let nsEncoding = String.Encoding(rawValue: EncodingDetective.nsEncoding(from: encoding))
+        let serialized = EOLDetective.converting(self.text, to: self.eolType)
+        return serialized.data(using: nsEncoding) != nil
+    }
+
+    /// "Convert to": retarget the next save at `encoding` without changing the
+    /// decode encoding. The buffer stays Unicode; only the bytes written next
+    /// differ. The document becomes dirty so the conversion is not forgotten.
+    ///
+    /// Throws when the text cannot be represented in `encoding`.
+    public func convertEncoding(to encoding: String) throws {
+        guard canEncode(as: encoding) else {
+            throw DocumentError.saveFailed("cannot encode text as \(encoding)")
+        }
+        _saveEncoding = encoding
+        _encodingConversionPending = true
     }
     
     public func toSessionData() -> [String: Any] {

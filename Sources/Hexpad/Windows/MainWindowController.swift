@@ -935,6 +935,61 @@ class MainWindowController: NSViewController {
     
     // MARK: - Encoding
 
+    /// Encoding entries shared by the "Encode in" and "Convert to" submenus.
+    /// The name resolves through `EncodingDetective.nsEncoding(from:)`, so both
+    /// spellings of the UTF-16 variants stay in one place.
+    static let encodingOptions: [(title: String, name: String)] = [
+        ("UTF-8", "UTF-8"),
+        ("UTF-16 LE", "UTF-16LE"),
+        ("UTF-16 BE", "UTF-16BE"),
+        ("ASCII", "ASCII"),
+        ("ISO-8859-1", "ISO-8859-1"),
+        ("Windows-1252", "Windows-1252")
+    ]
+
+    /// "Encode in": reinterpret the file's raw bytes with `encoding` without
+    /// transcoding. The file on disk is left untouched; the buffer becomes the
+    /// faithful decode of those same bytes, so the document stays clean.
+    @objc func encodeIn(_ encoding: String) {
+        guard let doc = tabStore.selectedDocument, doc.filePath != nil else { return }
+        guard doc.redecodeFromDisk(as: encoding) else {
+            showError("This file's bytes are not valid \(encoding).")
+            return
+        }
+        updateEditor()
+        refreshTabBar()
+        updateStatusBar()
+    }
+
+    /// "Convert to": retarget the next save at `encoding` and mark the document
+    /// dirty. The buffer is not re-decoded, so "Encode in" and "Convert to" can
+    /// mark different entries at the same time.
+    @objc func convertToEncoding(_ encoding: String) {
+        guard let doc = tabStore.selectedDocument else { return }
+        do {
+            try doc.convertEncoding(to: encoding)
+        } catch {
+            showError("Failed to convert to \(encoding): \(error.localizedDescription)")
+            return
+        }
+        NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
+        refreshTabBar()
+        updateStatusBar()
+    }
+
+    /// "Encode in" needs raw bytes on disk; an untitled buffer has none.
+    func canEncodeIn(_ encoding: String) -> Bool {
+        guard let doc = tabStore.selectedDocument, let path = doc.filePath else { return false }
+        return FileManager.default.fileExists(atPath: path.path)
+    }
+
+    /// "Convert to" is available only when the current text can actually be
+    /// written in the target encoding (ASCII cannot hold emoji, for example).
+    func canConvertTo(_ encoding: String) -> Bool {
+        guard let doc = tabStore.selectedDocument else { return false }
+        return doc.canEncode(as: encoding)
+    }
+
     /// Changing encoding must re-decode the bytes on disk, otherwise the status
     /// bar says UTF-16 while the buffer still holds the mis-detected decode and
     /// the next save writes the wrong bytes.
@@ -1135,6 +1190,16 @@ extension MainWindowController: NSMenuItemValidation {
         }
         if menuItem.action == #selector(MainWindowController.selectTabByNumber(_:)) {
             return menuItem.tag >= 1 && menuItem.tag <= tabStore.count
+        }
+        if menuItem.action == #selector(MainWindowController.encodeIn(_:)) {
+            guard let encoding = menuItem.representedObject as? String else { return false }
+            menuItem.state = (tabStore.selectedDocument?.encoding == encoding) ? .on : .off
+            return canEncodeIn(encoding)
+        }
+        if menuItem.action == #selector(MainWindowController.convertToEncoding(_:)) {
+            guard let encoding = menuItem.representedObject as? String else { return false }
+            menuItem.state = (tabStore.selectedDocument?.saveEncoding == encoding) ? .on : .off
+            return canConvertTo(encoding)
         }
         return true
     }

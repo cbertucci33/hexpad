@@ -244,4 +244,99 @@ final class MenuWiringTests: XCTestCase {
         tab2.tag = 3
         XCTAssertFalse(controller.validateMenuItem(tab2))
     }
+
+    // MARK: - Encoding menu (Encode in / Convert to)
+
+    private func encodingItem(_ name: String,
+                              action: Selector) -> NSMenuItem {
+        let item = NSMenuItem(title: name, action: action, keyEquivalent: "")
+        item.representedObject = name
+        return item
+    }
+
+    func testEncodingMenuHasEncodeInAndConvertToSections() throws {
+        let menu = HexpadAppDelegate().buildMainMenu()
+        let encodingMenu = try XCTUnwrap(menu.item(withTitle: "Encoding")?.submenu)
+
+        let sections = encodingMenu.items.filter { !$0.isSeparatorItem }
+        XCTAssertEqual(Array(sections.prefix(2).map(\.title)), ["Encode in", "Convert to"])
+
+        let encodeIn = try XCTUnwrap(sections.first { $0.title == "Encode in" }?.submenu)
+        let convertTo = try XCTUnwrap(sections.first { $0.title == "Convert to" }?.submenu)
+        let expectedNames = MainWindowController.encodingOptions.map(\.name)
+
+        XCTAssertEqual(encodeIn.items.map { $0.representedObject as? String }, expectedNames)
+        XCTAssertEqual(convertTo.items.map { $0.representedObject as? String }, expectedNames)
+
+        for item in encodeIn.items {
+            XCTAssertNil(item.target, "validation reaches the controller through the responder chain")
+            XCTAssertEqual(item.action, #selector(MainWindowController.encodeIn(_:)))
+        }
+        for item in convertTo.items {
+            XCTAssertNil(item.target)
+            XCTAssertEqual(item.action, #selector(MainWindowController.convertToEncoding(_:)))
+        }
+    }
+
+    func testEncodingCheckmarksTrackDecodeAndSaveEncodingsSeparately() throws {
+        let (controller, _) = makeController()
+
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hexpad-menu-encoding-\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        try Data("hello".utf8).write(to: tmp)
+
+        let doc = DocumentModel(text: "hello", filePath: tmp, encoding: "UTF-8")
+        controller.tabStore.documents = [doc]
+        controller.tabStore.selectedIndex = 0
+        controller.updateEditor()
+
+        let encodeUTF8 = encodingItem("UTF-8", action: #selector(MainWindowController.encodeIn(_:)))
+        let encodeUTF16 = encodingItem("UTF-16LE", action: #selector(MainWindowController.encodeIn(_:)))
+        let convertUTF8 = encodingItem("UTF-8", action: #selector(MainWindowController.convertToEncoding(_:)))
+        let convertUTF16 = encodingItem("UTF-16LE", action: #selector(MainWindowController.convertToEncoding(_:)))
+
+        // Both sections initially mark the document's only encoding.
+        XCTAssertTrue(controller.validateMenuItem(encodeUTF8))
+        XCTAssertEqual(encodeUTF8.state, .on)
+        XCTAssertTrue(controller.validateMenuItem(convertUTF8))
+        XCTAssertEqual(convertUTF8.state, .on)
+
+        // "Convert to" retargets the save; the decode checkmark must not move.
+        controller.convertToEncoding("UTF-16LE")
+        XCTAssertEqual(doc.encoding, "UTF-8")
+        XCTAssertEqual(doc.saveEncoding, "UTF-16LE")
+        XCTAssertTrue(doc.isModified)
+
+        XCTAssertTrue(controller.validateMenuItem(encodeUTF8))
+        XCTAssertEqual(encodeUTF8.state, .on, "Encode in still marks the decode encoding")
+        XCTAssertTrue(controller.validateMenuItem(convertUTF8), "a valid target stays selectable")
+        XCTAssertEqual(convertUTF8.state, .off)
+        XCTAssertTrue(controller.validateMenuItem(convertUTF16))
+        XCTAssertEqual(convertUTF16.state, .on, "Convert to marks the next save's encoding")
+        XCTAssertTrue(controller.validateMenuItem(encodeUTF16), "a file-backed doc can reinterpret as any encoding")
+        XCTAssertEqual(encodeUTF16.state, .off)
+    }
+
+    func testEncodingValidationNeedsAnOpenDocumentWithRawBytes() throws {
+        let (controller, _) = makeController()
+
+        let encodeUTF8 = encodingItem("UTF-8", action: #selector(MainWindowController.encodeIn(_:)))
+        let convertUTF8 = encodingItem("UTF-8", action: #selector(MainWindowController.convertToEncoding(_:)))
+
+        // The default tab is untitled: no raw bytes to reinterpret.
+        XCTAssertFalse(controller.validateMenuItem(encodeUTF8))
+        XCTAssertTrue(controller.validateMenuItem(convertUTF8))
+
+        // Unsupported targets are disabled for the current content.
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        doc.replaceAllText(with: "😀")
+        let convertASCII = encodingItem("ASCII", action: #selector(MainWindowController.convertToEncoding(_:)))
+        XCTAssertFalse(controller.validateMenuItem(convertASCII))
+
+        // No document at all: every encoding item is disabled.
+        controller.tabStore.documents.removeAll()
+        XCTAssertFalse(controller.validateMenuItem(encodeUTF8))
+        XCTAssertFalse(controller.validateMenuItem(convertUTF8))
+    }
 }

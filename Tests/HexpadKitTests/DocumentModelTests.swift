@@ -327,4 +327,105 @@ final class DocumentModelTests: XCTestCase {
         wait(for: [expectation], timeout: 1)
         XCTAssertEqual(doc.text, "beta")
     }
+
+    // MARK: - Encode in / Convert to
+
+    /// "Encode in" reinterprets the same bytes with another decoder. Encoding
+    /// the reinterpreted text back with that decoder restores the original
+    /// bytes, and decoding those as UTF-8 yields the original text.
+    func testEncodeInRoundTripReturnsOriginalText() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hexpad-encode-in-\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        // An even byte count so the UTF-8 stream is a whole number of UTF-16
+        // code units; every pair is a BMP character, never a surrogate.
+        let original = "hello\nworld!"
+        let utf8Data = Data(original.utf8)
+        XCTAssertEqual(utf8Data.count % 2, 0)
+        try utf8Data.write(to: tmp)
+
+        let doc = DocumentModel(text: original, filePath: tmp, encoding: "UTF-8")
+        XCTAssertTrue(doc.redecodeFromDisk(as: "UTF-16LE"))
+
+        let reinterpreted = doc.text
+        XCTAssertNotEqual(reinterpreted, original, "the bytes must be re-decoded, not transcoded")
+        XCTAssertEqual(doc.encoding, "UTF-16LE")
+
+        let back = try XCTUnwrap(reinterpreted.data(using: .utf16LittleEndian))
+        XCTAssertEqual(back, utf8Data, "encoding back must reproduce the file's bytes")
+        XCTAssertEqual(String(data: back, encoding: .utf8), original,
+                       "the original UTF-8 text decodes from those bytes")
+
+        // The operation is a reinterpretation, not a conversion: same bytes on
+        // disk and a clean buffer.
+        XCTAssertEqual(try Data(contentsOf: tmp), utf8Data)
+        XCTAssertFalse(doc.isModified)
+    }
+
+    func testEncodeInReadsAUTF16FileWithTheChosenDecoder() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hexpad-encode-in-utf16-\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let original = "héllo\nwörld"
+        let utf16Data = try XCTUnwrap(original.data(using: .utf16LittleEndian))
+        try utf16Data.write(to: tmp)
+
+        // Open with the wrong (default) decoder, then fix it via "Encode in".
+        let doc = DocumentModel(text: "", filePath: tmp, encoding: "UTF-8")
+        XCTAssertTrue(doc.redecodeFromDisk(as: "UTF-16LE"))
+
+        XCTAssertEqual(doc.text, original)
+        XCTAssertEqual(doc.encoding, "UTF-16LE")
+        XCTAssertEqual(doc.saveEncoding, "UTF-16LE")
+        XCTAssertFalse(doc.isModified, "a faithful re-decode is the clean baseline")
+        XCTAssertEqual(try Data(contentsOf: tmp), utf16Data, "Encode in must not rewrite the file")
+
+        // Saving without edits writes the very same bytes back.
+        try doc.save()
+        XCTAssertEqual(try Data(contentsOf: tmp), utf16Data)
+    }
+
+    func testEncodeInNeedsRawBytesOnDisk() {
+        let doc = DocumentModel(text: "untitled")
+        XCTAssertFalse(doc.redecodeFromDisk(as: "UTF-8"),
+                       "no file means there are no raw bytes to reinterpret")
+    }
+
+    func testConvertToThenSaveWritesTargetEncoding() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hexpad-convert-to-\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        try Data("héllo".utf8).write(to: tmp)
+        let doc = DocumentModel(text: "héllo", filePath: tmp, encoding: "UTF-8")
+        XCTAssertFalse(doc.isModified)
+
+        XCTAssertTrue(doc.canEncode(as: "UTF-16LE"))
+        try doc.convertEncoding(to: "UTF-16LE")
+
+        XCTAssertEqual(doc.encoding, "UTF-8", "Convert to does not re-decode the buffer")
+        XCTAssertEqual(doc.saveEncoding, "UTF-16LE", "the next save uses the target encoding")
+        XCTAssertTrue(doc.isModified, "a pending conversion must dirty the document")
+
+        try doc.save()
+
+        let expected = try XCTUnwrap("héllo".data(using: .utf16LittleEndian))
+        let saved = try Data(contentsOf: tmp)
+        XCTAssertEqual(saved, expected)
+        XCTAssertEqual(String(data: saved, encoding: .utf16LittleEndian), "héllo")
+        XCTAssertFalse(doc.isModified)
+    }
+
+    func testConvertToUnsupportedEncodingThrowsAndKeepsTarget() {
+        let doc = DocumentModel(text: "😀", encoding: "UTF-8")
+
+        XCTAssertFalse(doc.canEncode(as: "ASCII"))
+        XCTAssertThrowsError(try doc.convertEncoding(to: "ASCII")) { error in
+            XCTAssert(error is DocumentError)
+        }
+        XCTAssertEqual(doc.saveEncoding, "UTF-8", "a failed conversion must not retarget the save")
+        XCTAssertFalse(doc.isModified)
+    }
 }

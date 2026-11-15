@@ -245,21 +245,27 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         viewMenu.addItem(appearanceItem)
         menu.addItem((NSMenuItem(title: "View", action: nil, keyEquivalent: "").apply { $0.submenu = viewMenu }))
         
-        // Encoding menu
+        // Encoding menu: Notepad++ separates "Encode in" (reinterpret the raw
+        // bytes, no transcoding) from "Convert to" (retarget the bytes the next
+        // save writes). Items are nil-targeted so MainWindowController's
+        // validation supplies enabled state and the current-encoding checkmarks.
         let encodingMenu = NSMenu(title: "Encoding")
-        let utf8Item = NSMenuItem(title: "UTF-8", action: #selector(setEncodingUTF8), keyEquivalent: "")
-        utf8Item.target = self
-        let utf16LEItem = NSMenuItem(title: "UTF-16 LE", action: #selector(setEncodingUTF16LE), keyEquivalent: "")
-        utf16LEItem.target = self
-        let utf16BEItem = NSMenuItem(title: "UTF-16 BE", action: #selector(setEncodingUTF16BE), keyEquivalent: "")
-        utf16BEItem.target = self
-        let asciiItem = NSMenuItem(title: "ASCII", action: #selector(setEncodingASCII), keyEquivalent: "")
-        asciiItem.target = self
-        
-        encodingMenu.addItem(utf8Item)
-        encodingMenu.addItem(utf16LEItem)
-        encodingMenu.addItem(utf16BEItem)
-        encodingMenu.addItem(asciiItem)
+        let encodingSections: [(title: String, action: Selector)] = [
+            ("Encode in", #selector(MainWindowController.encodeIn(_:))),
+            ("Convert to", #selector(MainWindowController.convertToEncoding(_:)))
+        ]
+        for section in encodingSections {
+            let submenu = NSMenu(title: section.title)
+            for option in MainWindowController.encodingOptions {
+                let item = NSMenuItem(title: option.title, action: section.action, keyEquivalent: "")
+                item.target = nil
+                item.representedObject = option.name
+                submenu.addItem(item)
+            }
+            let sectionItem = NSMenuItem(title: section.title, action: nil, keyEquivalent: "")
+            sectionItem.submenu = submenu
+            encodingMenu.addItem(sectionItem)
+        }
 
         // EOL submenu lived in the model (convertEOL) but had no UI at all.
         encodingMenu.addItem(.separator())
@@ -445,22 +451,6 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     
     @objc private func resetZoom() {
         windowController?.resetZoom()
-    }
-    
-    @objc private func setEncodingUTF8() {
-        windowController?.setEncoding("UTF-8")
-    }
-    
-    @objc private func setEncodingUTF16LE() {
-        windowController?.setEncoding("UTF-16LE")
-    }
-    
-    @objc private func setEncodingUTF16BE() {
-        windowController?.setEncoding("UTF-16BE")
-    }
-    
-    @objc private func setEncodingASCII() {
-        windowController?.setEncoding("ASCII")
     }
 
     @objc private func setEOLLF() { windowController?.setEOL("LF") }
