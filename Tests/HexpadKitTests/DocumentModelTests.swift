@@ -723,4 +723,145 @@ final class DocumentModelTests: XCTestCase {
         XCTAssertEqual(restored.documents[0].foldState, firstState)
         XCTAssertEqual(restored.documents[1].foldState, secondState)
     }
+
+    // MARK: - Per-document bookmark state
+
+    func testBookmarkStateDefaultsToEmptyOnFreshDocument() {
+        let doc = DocumentModel(text: "hello")
+
+        XCTAssertTrue(doc.bookmarkState.isEmpty)
+        XCTAssertEqual(doc.bookmarkState, BookmarkState())
+        XCTAssertEqual(doc.bookmarkState.count, 0)
+    }
+
+    func testBookmarkStateRoundTripsThroughSessionDataWithNotes() {
+        let doc = DocumentModel(text: "one\ntwo\nthree\nfour")
+        var state = BookmarkState()
+        state.add(line: 3, note: "look here")
+        state.add(line: 1, note: "start")
+        doc.bookmarkState = state
+
+        let data = doc.toSessionData()
+        let restored = DocumentModel.fromSessionData(data)
+
+        XCTAssertNotNil(restored)
+        XCTAssertEqual(restored?.bookmarkState, state)
+        XCTAssertEqual(restored?.bookmarkState.lines, [1, 3])
+        XCTAssertEqual(restored?.bookmarkState.note(forLine: 1), "start")
+        XCTAssertEqual(restored?.bookmarkState.note(forLine: 3), "look here")
+    }
+
+    func testBookmarkStateRoundTripsThroughSessionDataWithoutNotes() {
+        let doc = DocumentModel(text: "one\ntwo\nthree\nfour")
+        var state = BookmarkState()
+        state.add(line: 4)
+        state.add(line: 2)
+        doc.bookmarkState = state
+
+        let restored = DocumentModel.fromSessionData(doc.toSessionData())
+
+        XCTAssertEqual(restored?.bookmarkState, state)
+        XCTAssertEqual(restored?.bookmarkState.lines, [2, 4])
+        XCTAssertNil(restored?.bookmarkState.note(forLine: 2))
+        XCTAssertNil(restored?.bookmarkState.note(forLine: 4))
+    }
+
+    func testEmptyBookmarkStateRoundTripsThroughSessionData() {
+        let doc = DocumentModel(text: "no bookmarks here")
+        doc.bookmarkState = BookmarkState()
+
+        let data = doc.toSessionData()
+        let restored = DocumentModel.fromSessionData(data)
+
+        let bookmarkStateData = data["bookmarkState"] as? [String: Any]
+        XCTAssertNotNil(bookmarkStateData, "the key is written even when nothing is bookmarked")
+        XCTAssertEqual((bookmarkStateData?["bookmarks"] as? [[String: Any]])?.count, 0)
+        XCTAssertEqual(restored?.bookmarkState, BookmarkState())
+        XCTAssertTrue(restored?.bookmarkState.isEmpty ?? false)
+    }
+
+    func testLegacySessionDataWithoutBookmarkStateRestoresEmptyState() {
+        // Exactly the shape sessions had before bookmark persistence: no
+        // "bookmarkState" key at all.
+        let legacy: [String: Any] = [
+            "id": UUID().uuidString,
+            "text": "legacy text",
+            "name": "legacy.txt",
+            "encoding": "UTF-8",
+            "eolType": "LF",
+            "language": "Plain Text",
+            "isModified": false
+        ]
+
+        let restored = DocumentModel.fromSessionData(legacy)
+
+        XCTAssertNotNil(restored, "old session entries must still restore")
+        XCTAssertEqual(restored?.text, "legacy text")
+        XCTAssertEqual(restored?.bookmarkState, BookmarkState())
+        XCTAssertTrue(restored?.bookmarkState.isEmpty ?? false)
+    }
+
+    func testMalformedBookmarkStateEntriesAreSkippedIndividually() {
+        let valid: [String: Any] = [
+            "line": 2,
+            "note": "kept"
+        ]
+        let missingLine: [String: Any] = [
+            "note": "no line"
+        ]
+        let nonPositiveLine: [String: Any] = [
+            "line": 0
+        ]
+        let stringLine: [String: Any] = [
+            "line": "3"
+        ]
+        let nonStringNote: [String: Any] = [
+            "line": 4,
+            "note": 99
+        ]
+        let partial: [String: Any] = [
+            "id": UUID().uuidString,
+            "text": "bookmarks",
+            "name": "bookmarks.swift",
+            "encoding": "UTF-8",
+            "eolType": "LF",
+            "language": "Swift",
+            "bookmarkState": [
+                "bookmarks": [valid, missingLine, nonPositiveLine, stringLine, nonStringNote]
+            ]
+        ]
+
+        let restored = DocumentModel.fromSessionData(partial)
+
+        XCTAssertEqual(restored?.bookmarkState.count, 1)
+        XCTAssertEqual(restored?.bookmarkState.lines, [2])
+        XCTAssertEqual(restored?.bookmarkState.note(forLine: 2), "kept")
+    }
+
+    func testBookmarkStateIsIndependentPerDocumentAndSurvivesTabStoreRoundTrip() {
+        let first = DocumentModel(text: "first\nsecond\nthird")
+        let second = DocumentModel(text: "alpha\nbeta\ngamma\ndelta")
+        var firstState = BookmarkState()
+        firstState.add(line: 1, note: "first tab")
+        firstState.add(line: 3)
+        var secondState = BookmarkState()
+        secondState.add(line: 4, note: "second tab")
+        first.bookmarkState = firstState
+        second.bookmarkState = secondState
+
+        XCTAssertNotEqual(first.bookmarkState, second.bookmarkState)
+
+        let store = TabStore()
+        store.addDocument(first)
+        store.addDocument(second)
+        let restored = TabStore.fromSessionData(store.toSessionData())
+
+        XCTAssertEqual(restored.documents.count, 2)
+        XCTAssertEqual(restored.documents[0].bookmarkState, firstState)
+        XCTAssertEqual(restored.documents[0].bookmarkState.lines, [1, 3])
+        XCTAssertEqual(restored.documents[0].bookmarkState.note(forLine: 1), "first tab")
+        XCTAssertEqual(restored.documents[1].bookmarkState, secondState)
+        XCTAssertEqual(restored.documents[1].bookmarkState.lines, [4])
+        XCTAssertEqual(restored.documents[1].bookmarkState.note(forLine: 4), "second tab")
+    }
 }

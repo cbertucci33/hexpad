@@ -86,6 +86,17 @@ public final class DocumentModel: Identifiable, ObservableObject {
     /// construct is the app layer's concern, not the model's.
     public var foldState: FoldState
 
+    /// The user's bookmarks for this document. Like `foldState`, the model only
+    /// stores and persists this value; the app's editor container owns reading
+    /// it on unbind and applying it on bind.
+    ///
+    /// The persisted projection is made of 1-based logical line numbers plus
+    /// optional notes, not text, so its shape does not change when the document
+    /// text does. A line restored into a document whose text changed since the
+    /// session was saved is preserved as-is: deciding whether it still refers to
+    /// a sensible line is the app layer's concern, not the model's.
+    public var bookmarkState: BookmarkState
+
     public var caretRange: NSRange {
         get { editorState.caretRange }
         set { editorState.caretRange = newValue }
@@ -126,6 +137,7 @@ public final class DocumentModel: Identifiable, ObservableObject {
         self._originalText = text  // a freshly created doc is clean, saved or not
         self.editorState = DocumentEditorState()
         self.foldState = FoldState()
+        self.bookmarkState = BookmarkState()
         if let filePath {
             do {
                 self.savedModificationDate = try FileManager.default.attributesOfItem(atPath: filePath.path)[.modificationDate] as? Date
@@ -274,7 +286,8 @@ public final class DocumentModel: Identifiable, ObservableObject {
             "language": self.language,
             "isModified": self.isModified,
             "editorState": self.editorState.toSessionData(),
-            "foldState": self.foldState.toSessionData()
+            "foldState": self.foldState.toSessionData(),
+            "bookmarkState": self.bookmarkState.toSessionData()
         ]
         if let path = self.filePath?.path {
             data["filePath"] = path
@@ -305,6 +318,10 @@ public final class DocumentModel: Identifiable, ObservableObject {
         // Sessions written before fold persistence existed have no "foldState"
         // key; absence restores an empty (nothing collapsed) state.
         doc.foldState = FoldState.fromSessionData(data["foldState"] as? [String: Any])
+        // Sessions written before bookmark persistence existed have no
+        // "bookmarkState" key; absence restores an empty (no bookmarked lines)
+        // state.
+        doc.bookmarkState = BookmarkState.fromSessionData(data["bookmarkState"] as? [String: Any])
         // Restore dirty state: if marked modified, diff against the real saved baseline.
         // File-backed docs diff against their on-disk content; untitled buffers have no
         // file, so their baseline is the empty (never-saved) buffer.

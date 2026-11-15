@@ -389,4 +389,74 @@ final class BookmarkModelTests: XCTestCase {
         let decoded = try JSONDecoder().decode(BookmarkState.self, from: Data("{}".utf8))
         XCTAssertTrue(decoded.isEmpty)
     }
+
+    // MARK: - Session projection
+
+    func testSessionProjectionIsSortedAndOmitsMissingNotes() {
+        let state = BookmarkState(bookmarks: [
+            Bookmark(line: 7),
+            Bookmark(line: 2, note: "first"),
+            Bookmark(line: 5, note: "")
+        ])
+
+        let data = state.toSessionData()
+        let entries = data["bookmarks"] as? [[String: Any]] ?? []
+
+        XCTAssertEqual(entries.count, 3)
+        XCTAssertEqual(entries.compactMap { $0["line"] as? Int }, [2, 5, 7])
+        XCTAssertEqual(entries[0]["note"] as? String, "first")
+        XCTAssertEqual(entries[1]["note"] as? String, "", "an empty note is still a note")
+        XCTAssertNil(entries[2]["note"], "a bookmark without a note omits the key")
+    }
+
+    func testSessionProjectionRoundTripsThroughJSONSerialization() throws {
+        let state = BookmarkState(bookmarks: [
+            Bookmark(line: 1, note: "with note"),
+            Bookmark(line: 3)
+        ])
+        let data = state.toSessionData()
+
+        // JSONSerialization turns Ints into NSNumbers; restoring must accept
+        // both, exactly like the live session file does.
+        let encoded = try JSONSerialization.data(withJSONObject: data)
+        let decodedObject = try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        let restored = BookmarkState.fromSessionData(decodedObject)
+
+        XCTAssertEqual(restored, state)
+        XCTAssertEqual(restored.note(forLine: 1), "with note")
+        XCTAssertNil(restored.note(forLine: 3))
+    }
+
+    func testSessionProjectionWithoutBookmarksIsEmpty() {
+        let data = BookmarkState().toSessionData()
+
+        XCTAssertEqual((data["bookmarks"] as? [[String: Any]])?.count, 0)
+        XCTAssertTrue(BookmarkState.fromSessionData(data).isEmpty)
+    }
+
+    func testSessionProjectionSkipsMalformedEntriesIndividually() {
+        let data: [String: Any] = [
+            "bookmarks": [
+                ["line": 2, "note": "kept"],
+                ["note": "missing line"],
+                ["line": 0],
+                ["line": -3],
+                ["line": "4"],
+                ["line": 5, "note": 42],
+                ["line": 6, "note": "also kept"]
+            ]
+        ]
+
+        let restored = BookmarkState.fromSessionData(data)
+
+        XCTAssertEqual(restored.bookmarks.map(\.line), [2, 6])
+        XCTAssertEqual(restored.note(forLine: 2), "kept")
+        XCTAssertEqual(restored.note(forLine: 6), "also kept")
+    }
+
+    func testSessionProjectionWithoutKeyIsEmpty() {
+        XCTAssertTrue(BookmarkState.fromSessionData(nil).isEmpty)
+        XCTAssertTrue(BookmarkState.fromSessionData([:]).isEmpty)
+        XCTAssertTrue(BookmarkState.fromSessionData(["bookmarks": "not an array"]).isEmpty)
+    }
 }

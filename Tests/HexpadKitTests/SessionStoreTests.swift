@@ -163,4 +163,30 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertEqual(restored.tabs.documents[0].foldState.count, 2)
         XCTAssertTrue(restored.tabs.documents[1].foldState.isEmpty)
     }
+
+    func testPerTabBookmarkStateSurvivesSaveAndRestore() throws {
+        let store = TabStore()
+
+        let doc = DocumentModel(text: "one\ntwo\nthree")
+        var state = BookmarkState()
+        state.add(line: 1, note: "start here")
+        state.add(line: 3)
+        doc.bookmarkState = state
+        store.addDocument(doc)
+
+        // A second tab with no bookmarks proves the states stay independent
+        // through the real JSON file.
+        let second = DocumentModel(text: "no bookmarks")
+        store.addDocument(second)
+
+        try SessionStore.save(store)
+        let restored = try XCTUnwrap(SessionStore.restore())
+
+        XCTAssertEqual(restored.tabs.documents.count, 2)
+        XCTAssertEqual(restored.tabs.documents[0].bookmarkState, state)
+        XCTAssertEqual(restored.tabs.documents[0].bookmarkState.lines, [1, 3])
+        XCTAssertEqual(restored.tabs.documents[0].bookmarkState.note(forLine: 1), "start here")
+        XCTAssertNil(restored.tabs.documents[0].bookmarkState.note(forLine: 3))
+        XCTAssertTrue(restored.tabs.documents[1].bookmarkState.isEmpty)
+    }
 }
