@@ -15,7 +15,15 @@ final class LineNumberGutter: NSView {
     private weak var textView: NSTextView?
     private var observers: [NSObjectProtocol] = []
     private var fontObservation: NSKeyValueObservation?
-    private var clickHandler: ((Int) -> Void)?
+    /// Called with the clicked character index (already resolved through the
+    /// layout) plus the anchor index a press started from — equal to the clicked
+    /// index on a plain click — so the caller can select a whole line or extend
+    /// a drag across lines without any pixel math of its own.
+    private var clickHandler: ((Int, Int) -> Void)?
+
+    /// Character index where the current gutter drag started; drives
+    /// click-and-drag line selection.
+    private var dragAnchorCharIndex: Int?
 
     init(textView: NSTextView?) {
         self.textView = textView
@@ -31,8 +39,9 @@ final class LineNumberGutter: NSView {
     }
 
     /// Passes the clicked character index (already resolved through layout)
-    /// so callers don't divide pixel positions by magic numbers.
-    func setClickHandler(_ handler: ((Int) -> Void)?) {
+    /// plus the anchor index a press started from, so callers don't divide pixel
+    /// positions by magic numbers and can extend a drag across lines.
+    func setClickHandler(_ handler: ((Int, Int) -> Void)?) {
         clickHandler = handler
     }
 
@@ -134,19 +143,38 @@ final class LineNumberGutter: NSView {
         tick.stroke()
     }
 
-    // MARK: - Click
+    // MARK: - Mouse
 
-    override func mouseDown(with event: NSEvent) {
+    /// Maps a mouse event into the character index it landed on, resolving it
+    /// through the text layout. Our bounds are the same height as the clip view
+    /// and we sit beside it; map the Y straight into text-view coordinates.
+    private func characterIndex(for event: NSEvent) -> Int? {
         guard let textView, let layoutManager = textView.layoutManager,
-              let container = textView.textContainer else { return }
-        // Our bounds are the same height as the clip view and we sit beside it;
-        // map click Y straight into text-view coordinates.
+              let container = textView.textContainer else { return nil }
         let p = convert(event.locationInWindow, from: nil)
         let textY = bounds.height - p.y // we are non-flipped, text view is flipped
         var fraction: CGFloat = 0
-        let index = layoutManager.characterIndex(for: NSPoint(x: 0, y: textY),
-                                                in: container,
-                                                fractionOfDistanceBetweenInsertionPoints: &fraction)
-        clickHandler?(index)
+        return layoutManager.characterIndex(for: NSPoint(x: 0, y: textY),
+                                            in: container,
+                                            fractionOfDistanceBetweenInsertionPoints: &fraction)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let index = characterIndex(for: event) else { return }
+        // A press starts a fresh selection anchored at the clicked line.
+        dragAnchorCharIndex = index
+        clickHandler?(index, index)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let index = characterIndex(for: event) else { return }
+        guard let dragAnchorCharIndex else { return }
+        // Extend the selection from the anchor through the dragged line.
+        clickHandler?(index, dragAnchorCharIndex)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        dragAnchorCharIndex = nil
+        super.mouseUp(with: event)
     }
 }

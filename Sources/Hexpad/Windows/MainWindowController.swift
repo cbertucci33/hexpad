@@ -222,8 +222,8 @@ class MainWindowController: NSViewController {
         }
         
         if let ruler = editor.ruler as? LineNumberGutter {
-            ruler.setClickHandler { [weak self] charIndex in
-                self?.selectCharacter(charIndex)
+            ruler.setClickHandler { [weak self] charIndex, anchorCharIndex in
+                self?.selectCharacter(charIndex, anchorCharIndex: anchorCharIndex)
             }
         }
         
@@ -1066,10 +1066,41 @@ class MainWindowController: NSViewController {
 
     /// Places the caret at a character index resolved by the gutter's layout
     /// geometry — no pixel ÷ magic-number line math.
-    private func selectCharacter(_ charIndex: Int) {
+    ///
+    /// Clicking a line number selects that entire logical line (content plus
+    /// its line terminator, so the selection ends where the next line begins).
+    /// Dragging from the gutter extends the selection across the lines it
+    /// crossed, covering every full line in between. Line boundaries come from
+    /// GutterGeometry, the unit-tested source of truth for line<->character
+    /// math in this codebase.
+    private func selectCharacter(_ charIndex: Int, anchorCharIndex: Int? = nil) {
         guard let editor = editorContainer else { return }
-        let clamped = min(max(0, charIndex), (editor.textView.string as NSString).length)
-        let selRange = NSRange(location: clamped, length: 0)
+        let text = editor.textView.string
+        let textLength = (text as NSString).length
+        let clamped = min(max(0, charIndex), textLength)
+
+        // A press on line L selects line L; dragging to line M widens the
+        // selection to cover every full line from the earlier to the later one.
+        let anchor = anchorCharIndex.map { min(max(0, $0), textLength) }
+        let anchorLine = anchor.flatMap { GutterGeometry.logicalLine(of: $0, in: text) }
+        let targetLine = GutterGeometry.logicalLine(of: clamped, in: text)
+        let firstLine: Int
+        let lastLine: Int
+        if let anchorLine, anchorLine != targetLine {
+            firstLine = min(anchorLine, targetLine)
+            lastLine = max(anchorLine, targetLine)
+        } else {
+            firstLine = targetLine
+            lastLine = targetLine
+        }
+
+        // Full logical lines: start of the first line through the start of the
+        // line after the last one, which lands just past the final newline.
+        let selectionStart = GutterGeometry.firstCharIndex(of: firstLine, in: text)
+        let nextLineStart = GutterGeometry.firstCharIndex(of: lastLine + 1, in: text)
+        let selectionEnd = min(nextLineStart, textLength)
+        let selRange = NSRange(location: selectionStart, length: max(0, selectionEnd - selectionStart))
+
         editor.textView.setSelectedRange(selRange)
         editor.textView.scrollRangeToVisible(selRange)
     }
