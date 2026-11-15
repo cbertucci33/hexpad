@@ -429,11 +429,65 @@ class MainWindowController: NSViewController {
     }
     
     func closeAllTabs() {
-        tabStore.closeAll()
-        refreshTabBar()
-        updateEditor()
-        updateStatusBar()
-        addNewTab()
+        guard tabStore.count > 0 else {
+            addNewTab()
+            return
+        }
+        
+        // Walk tabs back-to-front so removing a higher index never shifts a
+        // lower one into an already-processed slot. Dirty docs get the same
+        // save prompt as a single close; Cancel stops the sweep and leaves the
+        // remaining tabs open.
+        var index = tabStore.count - 1
+        var shouldContinueClosing = true
+        
+        func closeNextTab() {
+            guard shouldContinueClosing, index >= 0, index < tabStore.count else { return }
+            let doc = tabStore.documents[index]
+            
+            if doc.unsavedChanges {
+                let alert = NSAlert()
+                alert.messageText = "Save changes to \(doc.name)?"
+                alert.informativeText = "You have unsaved changes to this document."
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "Save")
+                alert.addButton(withTitle: "Don't Save")
+                alert.addButton(withTitle: "Cancel")
+                
+                alert.beginSheetModal(for: mainWindow ?? NSApplication.shared.windows.first ?? NSWindow()) { response in
+                    DispatchQueue.main.async {
+                        switch response {
+                        case .alertFirstButtonReturn: // Save
+                            // Untitled docs need a save panel; doc.save() throws
+                            // noFilePath for them. Only close once the save succeeded
+                            // (or the user actually picked a destination).
+                            if doc.isUntitled {
+                                self.saveAsAndClose(doc)
+                            } else {
+                                self.saveDocument(doc)
+                                self.closeTabAtIndex(index)
+                            }
+                            index -= 1
+                            closeNextTab()
+                        case .alertSecondButtonReturn: // Don't Save
+                            self.closeTabAtIndex(index)
+                            index -= 1
+                            closeNextTab()
+                        case .alertThirdButtonReturn: // Cancel
+                            shouldContinueClosing = false
+                        default:
+                            shouldContinueClosing = false
+                        }
+                    }
+                }
+            } else {
+                closeTabAtIndex(index)
+                index -= 1
+                closeNextTab()
+            }
+        }
+        
+        closeNextTab()
     }
     
     func refreshTabBar() {
