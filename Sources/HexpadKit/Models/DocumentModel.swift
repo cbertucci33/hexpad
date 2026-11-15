@@ -70,6 +70,31 @@ public final class DocumentModel: Identifiable, ObservableObject {
     public var language: String { _language }
     public func setLanguage(_ language: String) { _language = language }
 
+    /// Per-document editor state (caret, scroll, word wrap, zoom). The model
+    /// only stores and persists these values: the app reads and writes them,
+    /// and the editor container owns applying them to its TextKit views.
+    public var editorState: DocumentEditorState
+
+    public var caretRange: NSRange {
+        get { editorState.caretRange }
+        set { editorState.caretRange = newValue }
+    }
+
+    public var scrollOffset: CGPoint {
+        get { editorState.scrollOffset }
+        set { editorState.scrollOffset = newValue }
+    }
+
+    public var wordWrapEnabled: Bool {
+        get { editorState.wordWrapEnabled }
+        set { editorState.wordWrapEnabled = newValue }
+    }
+
+    public var zoomScale: CGFloat {
+        get { editorState.zoomScale }
+        set { editorState.zoomScale = newValue }
+    }
+
     /// Sets both the decode and save encoding. "Convert to" uses
     /// `convertEncoding(to:)` instead so the two can diverge.
     public func setEncoding(_ encoding: String) {
@@ -88,6 +113,7 @@ public final class DocumentModel: Identifiable, ObservableObject {
         // that know better (session restore, explicit conversion) pass a style.
         self._eolType = eolType ?? EOLDetective.detect(text)
         self._originalText = text  // a freshly created doc is clean, saved or not
+        self.editorState = DocumentEditorState()
         if let filePath {
             do {
                 self.savedModificationDate = try FileManager.default.attributesOfItem(atPath: filePath.path)[.modificationDate] as? Date
@@ -234,7 +260,8 @@ public final class DocumentModel: Identifiable, ObservableObject {
             "encoding": self.encoding,
             "eolType": self.eolType,
             "language": self.language,
-            "isModified": self.isModified
+            "isModified": self.isModified,
+            "editorState": self.editorState.toSessionData()
         ]
         if let path = self.filePath?.path {
             data["filePath"] = path
@@ -259,6 +286,9 @@ public final class DocumentModel: Identifiable, ObservableObject {
         let doc = DocumentModel(text: text, filePath: filePath, encoding: encoding, eolType: eolType)
         doc.name = name
         doc._language = language
+        // Sessions written before per-document editor state existed have no
+        // "editorState" key; absence restores the startup defaults.
+        doc.editorState = DocumentEditorState.fromSessionData(data["editorState"] as? [String: Any])
         // Restore dirty state: if marked modified, diff against the real saved baseline.
         // File-backed docs diff against their on-disk content; untitled buffers have no
         // file, so their baseline is the empty (never-saved) buffer.

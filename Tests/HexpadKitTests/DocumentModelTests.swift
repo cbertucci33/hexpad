@@ -428,4 +428,132 @@ final class DocumentModelTests: XCTestCase {
         XCTAssertEqual(doc.saveEncoding, "UTF-8", "a failed conversion must not retarget the save")
         XCTAssertFalse(doc.isModified)
     }
+
+    // MARK: - Per-document editor state (caret, scroll, wrap, zoom)
+
+    func testEditorStateDefaultsOnFreshDocument() {
+        let doc = DocumentModel(text: "hello")
+
+        XCTAssertEqual(doc.caretRange, NSRange(location: 0, length: 0))
+        XCTAssertEqual(doc.scrollOffset, .zero)
+        XCTAssertFalse(doc.wordWrapEnabled)
+        XCTAssertEqual(doc.zoomScale, 1.0)
+        XCTAssertEqual(doc.editorState, DocumentEditorState())
+    }
+
+    func testEditorStateRoundTripsThroughSessionData() {
+        let doc = DocumentModel(text: "one\ntwo\nthree")
+        doc.caretRange = NSRange(location: 4, length: 3)
+        doc.scrollOffset = CGPoint(x: 12.5, y: 240.75)
+        doc.wordWrapEnabled = true
+        doc.zoomScale = 1.4
+
+        let data = doc.toSessionData()
+        let restored = DocumentModel.fromSessionData(data)
+
+        XCTAssertNotNil(restored)
+        XCTAssertEqual(restored?.caretRange, NSRange(location: 4, length: 3))
+        XCTAssertEqual(restored?.scrollOffset.x ?? -1, 12.5, accuracy: 0.0001)
+        XCTAssertEqual(restored?.scrollOffset.y ?? -1, 240.75, accuracy: 0.0001)
+        XCTAssertTrue(restored?.wordWrapEnabled ?? false)
+        XCTAssertEqual(restored?.zoomScale ?? 0, 1.4, accuracy: 0.0001)
+    }
+
+    func testEditorStateRoundTripsForUntitledDocument() {
+        let doc = DocumentModel()
+        doc.text = "untitled draft"
+        doc.caretRange = NSRange(location: 2, length: 0)
+        doc.scrollOffset = CGPoint(x: 0, y: 33)
+        doc.wordWrapEnabled = true
+        doc.zoomScale = 0.8
+
+        let restored = DocumentModel.fromSessionData(doc.toSessionData())
+
+        XCTAssertNotNil(restored)
+        XCTAssertTrue(restored?.isUntitled ?? false)
+        XCTAssertEqual(restored?.text, "untitled draft")
+        XCTAssertEqual(restored?.caretRange, NSRange(location: 2, length: 0))
+        XCTAssertEqual(restored?.scrollOffset.y ?? -1, 33, accuracy: 0.0001)
+        XCTAssertTrue(restored?.wordWrapEnabled ?? false)
+        XCTAssertEqual(restored?.zoomScale ?? 0, 0.8, accuracy: 0.0001)
+    }
+
+    func testLegacySessionDataWithoutEditorStateUsesDefaults() {
+        // Exactly the shape sessions had before this slice: no editorState key.
+        let legacy: [String: Any] = [
+            "id": UUID().uuidString,
+            "text": "legacy text",
+            "name": "legacy.txt",
+            "encoding": "UTF-8",
+            "eolType": "LF",
+            "language": "Plain Text",
+            "isModified": false
+        ]
+
+        let restored = DocumentModel.fromSessionData(legacy)
+
+        XCTAssertNotNil(restored, "old session entries must still restore")
+        XCTAssertEqual(restored?.text, "legacy text")
+        XCTAssertEqual(restored?.editorState, DocumentEditorState.default)
+        XCTAssertEqual(restored?.caretRange, NSRange(location: 0, length: 0))
+        XCTAssertEqual(restored?.scrollOffset, CGPoint.zero)
+        XCTAssertFalse(restored?.wordWrapEnabled ?? true)
+        XCTAssertEqual(restored?.zoomScale ?? 0, 1.0)
+    }
+
+    func testPartialEditorStateUsesDefaultsForMissingKeys() {
+        // Future/partial writers may supply only some fields; each missing key
+        // falls back independently instead of discarding the whole state.
+        let partial: [String: Any] = [
+            "id": UUID().uuidString,
+            "text": "partial",
+            "name": "partial.txt",
+            "encoding": "UTF-8",
+            "eolType": "LF",
+            "language": "Plain Text",
+            "editorState": [
+                "caretLocation": 3,
+                "wordWrap": true
+            ]
+        ]
+
+        let restored = DocumentModel.fromSessionData(partial)
+
+        XCTAssertEqual(restored?.caretRange, NSRange(location: 3, length: 0))
+        XCTAssertEqual(restored?.scrollOffset, CGPoint.zero)
+        XCTAssertTrue(restored?.wordWrapEnabled ?? false)
+        XCTAssertEqual(restored?.zoomScale ?? 0, 1.0)
+    }
+
+    func testEditorStateIsIndependentPerDocument() {
+        let first = DocumentModel(text: "first document")
+        let second = DocumentModel(text: "second document")
+        first.caretRange = NSRange(location: 5, length: 1)
+        first.scrollOffset = CGPoint(x: 0, y: 100)
+        first.wordWrapEnabled = true
+        first.zoomScale = 1.5
+
+        second.caretRange = NSRange(location: 2, length: 0)
+        second.scrollOffset = CGPoint(x: 10, y: 20)
+        second.wordWrapEnabled = false
+        second.zoomScale = 0.9
+
+        XCTAssertNotEqual(first.editorState, second.editorState)
+
+        let store = TabStore()
+        store.addDocument(first)
+        store.addDocument(second)
+        let restored = TabStore.fromSessionData(store.toSessionData())
+
+        XCTAssertEqual(restored.documents.count, 2)
+        XCTAssertEqual(restored.documents[0].caretRange, NSRange(location: 5, length: 1))
+        XCTAssertEqual(restored.documents[0].scrollOffset.y, 100, accuracy: 0.0001)
+        XCTAssertTrue(restored.documents[0].wordWrapEnabled)
+        XCTAssertEqual(restored.documents[0].zoomScale, 1.5, accuracy: 0.0001)
+
+        XCTAssertEqual(restored.documents[1].caretRange, NSRange(location: 2, length: 0))
+        XCTAssertEqual(restored.documents[1].scrollOffset, CGPoint(x: 10, y: 20))
+        XCTAssertFalse(restored.documents[1].wordWrapEnabled)
+        XCTAssertEqual(restored.documents[1].zoomScale, 0.9, accuracy: 0.0001)
+    }
 }

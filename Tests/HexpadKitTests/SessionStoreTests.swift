@@ -65,4 +65,74 @@ final class SessionStoreTests: XCTestCase {
         try SessionStore.clear()
         XCTAssertNil(SessionStore.restore())
     }
+
+    // MARK: - Per-tab editor state
+
+    func testPerTabEditorStateSurvivesSaveAndRestore() throws {
+        let store = TabStore()
+
+        // Untitled doc: no file path, so its editor state must be carried
+        // entirely by the session JSON.
+        let draft = DocumentModel()
+        draft.text = "draft buffer"
+        draft.caretRange = NSRange(location: 6, length: 2)
+        draft.scrollOffset = CGPoint(x: 0, y: 120)
+        draft.wordWrapEnabled = true
+        draft.zoomScale = 1.25
+        store.addDocument(draft)
+
+        // Second tab with a deliberately different state; adding it also
+        // selects it, so the selected index must round-trip too.
+        let second = DocumentModel(text: "second buffer")
+        second.caretRange = NSRange(location: 1, length: 0)
+        second.scrollOffset = CGPoint(x: 8, y: 15)
+        second.wordWrapEnabled = false
+        second.zoomScale = 0.75
+        store.addDocument(second)
+
+        try SessionStore.save(store)
+        let restored = try XCTUnwrap(SessionStore.restore())
+
+        XCTAssertEqual(restored.selectedIndex, 1)
+        XCTAssertEqual(restored.tabs.documents.count, 2)
+
+        let restoredDraft = restored.tabs.documents[0]
+        XCTAssertTrue(restoredDraft.isUntitled)
+        XCTAssertEqual(restoredDraft.text, "draft buffer")
+        XCTAssertEqual(restoredDraft.caretRange, NSRange(location: 6, length: 2))
+        XCTAssertEqual(restoredDraft.scrollOffset.y, 120, accuracy: 0.0001)
+        XCTAssertTrue(restoredDraft.wordWrapEnabled)
+        XCTAssertEqual(restoredDraft.zoomScale, 1.25, accuracy: 0.0001)
+
+        let restoredSecond = restored.tabs.documents[1]
+        XCTAssertEqual(restoredSecond.caretRange, NSRange(location: 1, length: 0))
+        XCTAssertEqual(restoredSecond.scrollOffset, CGPoint(x: 8, y: 15))
+        XCTAssertFalse(restoredSecond.wordWrapEnabled)
+        XCTAssertEqual(restoredSecond.zoomScale, 0.75, accuracy: 0.0001)
+    }
+
+    func testLegacySessionFileWithoutEditorStateRestoresDefaults() throws {
+        // A session.json written by an older build: the document dictionaries
+        // have no "editorState" key at all.
+        let legacy: [String: Any] = [
+            "tabs": [[
+                "id": UUID().uuidString,
+                "text": "from an old build",
+                "name": "Untitled",
+                "encoding": "UTF-8",
+                "eolType": "LF",
+                "language": "Plain Text",
+                "isModified": false
+            ]],
+            "selectedIndex": 0
+        ]
+        let data = try JSONSerialization.data(withJSONObject: legacy)
+        try data.write(to: testDir.appendingPathComponent("session.json"))
+
+        let restored = try XCTUnwrap(SessionStore.restore())
+
+        XCTAssertEqual(restored.tabs.documents.count, 1)
+        XCTAssertEqual(restored.tabs.documents[0].text, "from an old build")
+        XCTAssertEqual(restored.tabs.documents[0].editorState, .default)
+    }
 }
