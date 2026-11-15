@@ -10,6 +10,9 @@ extension LexerDefinition {
     /// unhandled resource and would not be present in the built module unless
     /// the manifest were changed. Keeping the JSON as an embedded string
     /// preserves the data-driven format while staying inside the Syntax scope.
+    ///
+    /// JSON has no comment syntax, so `comments` is intentionally absent; the
+    /// object and array delimiters are declared as bracket pairs.
     public static let jsonSource = #"""
     {
       "language": "JSON",

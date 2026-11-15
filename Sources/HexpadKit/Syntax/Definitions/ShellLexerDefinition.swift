@@ -57,6 +57,14 @@ extension LexerDefinition {
             "[|&;<>`=\\]"
           ]
         }
+      ],
+      "comments": {
+        "linePrefix": "#"
+      },
+      "brackets": [
+        { "open": "{", "close": "}" },
+        { "open": "(", "close": ")" },
+        { "open": "[", "close": "]" }
       ]
     }
     """#

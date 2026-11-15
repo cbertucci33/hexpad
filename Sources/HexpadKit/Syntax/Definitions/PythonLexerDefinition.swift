@@ -51,6 +51,14 @@ extension LexerDefinition {
             "\\b(bool|int|float|str|list|dict|tuple|set|None|object|Any|Optional|Union|Type)\\b"
           ]
         }
+      ],
+      "comments": {
+        "linePrefix": "#"
+      },
+      "brackets": [
+        { "open": "{", "close": "}" },
+        { "open": "(", "close": ")" },
+        { "open": "[", "close": "]" }
       ]
     }
     """#

@@ -7,9 +7,10 @@ import Foundation
 /// that order; the tokenizer's merge step still resolves overlapping matches by
 /// location and length.
 ///
-/// The comment and bracket metadata is intentionally not consumed by the
-/// tokenizer yet. It is the groundwork for comment-aware editing and code
-/// folding in later slices.
+/// The comment and bracket metadata is not consumed by the tokenizer: it
+/// describes editing structure (comment toggling, folding) rather than
+/// highlighting. `FoldModel` reads `comments` and `brackets`; the
+/// `foldableRangeRules` extension covers constructs neither can express.
 public struct LexerDefinition: Codable, Equatable {
 
     /// One named rule. `name` is resolved through
@@ -52,21 +53,62 @@ public struct LexerDefinition: Codable, Equatable {
         }
     }
 
+    /// A foldable construct that comment and bracket metadata cannot express.
+    ///
+    /// Most languages fold by bracket pairs and block comments alone. Markdown
+    /// does not: its foldable unit is a heading section, which starts on a
+    /// heading line and runs to just before the next heading of the same or a
+    /// shallower level. A bracket pair cannot describe that because the closing
+    /// delimiter depends on the heading level, so the definition names the
+    /// construct instead of trying to force it into `BracketPair`.
+    ///
+    /// `FoldModel` does not consume this field yet; it is the definition-side
+    /// extension point that a heading-aware fold pass can read without changing
+    /// the comment/bracket metadata format.
+    public struct FoldableRangeRule: Codable, Equatable {
+
+        /// The kind of line-oriented construct the rule opens.
+        public enum Kind: String, Codable {
+            /// A Markdown ATX heading section (`#` through `######`). The fold
+            /// starts at the heading line and ends at the last line before the
+            /// next heading of the same or a shallower level, or at the end of
+            /// the document.
+            case headingSection
+        }
+
+        public let kind: Kind
+
+        /// Regex matching the line that opens the construct. It is the same
+        /// expression the definition's highlighting rule uses, so the fold and
+        /// highlight notions of a heading cannot drift apart.
+        public let startPattern: String
+
+        public init(kind: Kind, startPattern: String) {
+            self.kind = kind
+            self.startPattern = startPattern
+        }
+    }
+
     /// Language name. Matches `Language.rawValue` for languages that have a
     /// tokenizer entry (for example `"JSON"`).
     public let language: String
     public let rules: [Rule]
     public let comments: CommentSyntax?
     public let brackets: [BracketPair]
+    /// Line-oriented fold constructs that brackets and comments cannot describe.
+    /// Empty for every language except Markdown.
+    public let foldableRangeRules: [FoldableRangeRule]
 
     public init(language: String,
                 rules: [Rule],
                 comments: CommentSyntax? = nil,
-                brackets: [BracketPair] = []) {
+                brackets: [BracketPair] = [],
+                foldableRangeRules: [FoldableRangeRule] = []) {
         self.language = language
         self.rules = rules
         self.comments = comments
         self.brackets = brackets
+        self.foldableRangeRules = foldableRangeRules
     }
 
     /// Decodes a definition from its JSON representation.
@@ -79,16 +121,19 @@ public struct LexerDefinition: Codable, Equatable {
         case rules
         case comments
         case brackets
+        case foldableRangeRules
     }
 
-    /// `comments` and `brackets` are optional in the file format so a compact
-    /// definition can omit metadata it does not need.
+    /// `comments`, `brackets`, and `foldableRangeRules` are optional in the
+    /// file format so a compact definition can omit metadata it does not need.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         language = try container.decode(String.self, forKey: .language)
         rules = try container.decodeIfPresent([Rule].self, forKey: .rules) ?? []
         comments = try container.decodeIfPresent(CommentSyntax.self, forKey: .comments)
         brackets = try container.decodeIfPresent([BracketPair].self, forKey: .brackets) ?? []
+        foldableRangeRules = try container.decodeIfPresent([FoldableRangeRule].self,
+                                                           forKey: .foldableRangeRules) ?? []
     }
 }
 

@@ -57,6 +57,16 @@ extension LexerDefinition {
             "/[^/\\n]*[/igmu]*"
           ]
         }
+      ],
+      "comments": {
+        "linePrefix": "//",
+        "blockStart": "/*",
+        "blockEnd": "*/"
+      },
+      "brackets": [
+        { "open": "{", "close": "}" },
+        { "open": "(", "close": ")" },
+        { "open": "[", "close": "]" }
       ]
     }
     """#

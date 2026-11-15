@@ -11,6 +11,12 @@ extension LexerDefinition {
     /// resource and would not ship in the built module. Keeping the grammar as
     /// an embedded string preserves the data-driven format while staying inside
     /// the Syntax scope.
+    ///
+    /// Markdown has no line-comment form; inline HTML comments are valid and
+    /// are the only comment syntax, so they populate the block-comment
+    /// metadata. The foldable unit is a heading section rather than a bracket
+    /// pair, so it is declared in `foldableRangeRules` (kind
+    /// `headingSection`) and `brackets` stays empty.
     public static let markdownSource = #"""
     {
       "language": "Markdown",
@@ -68,6 +74,16 @@ extension LexerDefinition {
           "patterns": [
             "(?m)^\\s*[-*_]{3,}\\s*"
           ]
+        }
+      ],
+      "comments": {
+        "blockStart": "<!--",
+        "blockEnd": "-->"
+      },
+      "foldableRangeRules": [
+        {
+          "kind": "headingSection",
+          "startPattern": "(?m)^#{1,6}\\s.*"
         }
       ]
     }

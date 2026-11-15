@@ -11,6 +11,13 @@ extension LexerDefinition {
     /// resource and would not ship in the built module. Keeping the grammar as
     /// an embedded string preserves the data-driven format while staying inside
     /// the Syntax scope.
+    ///
+    /// Comments are `<!-- ... -->`; HTML has no line-comment form. Tag pairs
+    /// are the natural fold construct, but `LexerDefinition.BracketPair` only
+    /// matches literal delimiters, and a tag pair's delimiter includes the tag
+    /// name (`<div>` ... `</div>`). The definition therefore leaves `brackets`
+    /// empty instead of declaring `<`/`>`, which would fold text and
+    /// comparison-like runs that are not elements.
     public static let htmlSource = #"""
     {
       "language": "HTML",
@@ -51,7 +58,11 @@ extension LexerDefinition {
             "&[a-zA-Z0-9#];"
           ]
         }
-      ]
+      ],
+      "comments": {
+        "blockStart": "<!--",
+        "blockEnd": "-->"
+      }
     }
     """#
 

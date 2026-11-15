@@ -11,6 +11,12 @@ extension LexerDefinition {
     /// resource and would not ship in the built module. Keeping the grammar as
     /// an embedded string preserves the data-driven format while staying inside
     /// the Syntax scope.
+    ///
+    /// Comments are `<!-- ... -->`; XML has no line-comment form. Tag pairs
+    /// cannot be expressed as `LexerDefinition.BracketPair` because the closing
+    /// delimiter carries the tag name (`<item>` ... `</item>`), so `brackets`
+    /// is empty rather than declaring `<`/`>`, which would pair unrelated text
+    /// and comparison spans.
     public static let xmlSource = #"""
     {
       "language": "XML",
@@ -51,7 +57,11 @@ extension LexerDefinition {
             "&[a-zA-Z0-9#];"
           ]
         }
-      ]
+      ],
+      "comments": {
+        "blockStart": "<!--",
+        "blockEnd": "-->"
+      }
     }
     """#
 

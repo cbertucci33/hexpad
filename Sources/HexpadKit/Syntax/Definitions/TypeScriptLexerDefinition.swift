@@ -51,6 +51,16 @@ extension LexerDefinition {
             "\\b(String|Number|Boolean|Object|Array|Function|Symbol|undefined|null|void|never|any|unknown|true|false|Promise|Map|Set|Partial|Required|Record|Pick|Omit|Exclude|Extract|NonNullable|ReturnType|Parameters|InstanceType)\\b"
           ]
         }
+      ],
+      "comments": {
+        "linePrefix": "//",
+        "blockStart": "/*",
+        "blockEnd": "*/"
+      },
+      "brackets": [
+        { "open": "{", "close": "}" },
+        { "open": "(", "close": ")" },
+        { "open": "[", "close": "]" }
       ]
     }
     """#

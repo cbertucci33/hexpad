@@ -57,6 +57,15 @@ extension LexerDefinition {
             "\\b[a-zA-Z-]+(?=\\()"
           ]
         }
+      ],
+      "comments": {
+        "blockStart": "/*",
+        "blockEnd": "*/"
+      },
+      "brackets": [
+        { "open": "{", "close": "}" },
+        { "open": "(", "close": ")" },
+        { "open": "[", "close": "]" }
       ]
     }
     """#
