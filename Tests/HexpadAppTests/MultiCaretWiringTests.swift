@@ -457,3 +457,154 @@ final class FoldGutterTests: XCTestCase {
                        "unchanged ranges report no change")
     }
 }
+
+// MARK: - Fold persistence
+
+/// Persistence wiring for collapsed folds. `FoldGutterTests` covers the live
+/// in-memory state; these tests cover the round trip through
+/// `DocumentModel.foldState` and the real session file, which is what decides
+/// whether collapsed folds survive an app restart.
+final class FoldPersistenceTests: XCTestCase {
+
+    /// `{` on line 1, close on line 3, trailing line 4. Collapsing line 1 hides
+    /// the range 10..<26 and leaves lines 1 and 4 visible.
+    private let nestedText = "func f() {\n    let x = 1\n}\nlet y = 2\n"
+
+    private var sessionDirectory: URL!
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        // Keep the round-trip test away from the developer's real session file.
+        sessionDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hexpad-fold-tests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: sessionDirectory,
+                                                withIntermediateDirectories: true)
+        SessionStore.overrideDirectory = sessionDirectory
+    }
+
+    override func tearDownWithError() throws {
+        SessionStore.overrideDirectory = nil
+        if let sessionDirectory {
+            try? FileManager.default.removeItem(at: sessionDirectory)
+        }
+        try super.tearDownWithError()
+    }
+
+    private func makeEditor(_ text: String,
+                            language: Language = .swift) -> (editor: EditorContainer,
+                                                              document: DocumentModel) {
+        let document = DocumentModel(text: text)
+        document.setLanguage(language.rawValue)
+        let editor = EditorContainer()
+        editor.bind(to: document)
+        return (editor, document)
+    }
+
+    // MARK: - Write-through
+
+    func testTogglingAFoldWritesThroughToTheDocument() throws {
+        let (editor, document) = makeEditor(nestedText)
+        XCTAssertTrue(document.foldState.isEmpty)
+        let foldRange = try XCTUnwrap(editor.foldModel?.foldableRanges.first?.range)
+
+        XCTAssertTrue(editor.toggleFold(atLine: 1))
+
+        XCTAssertFalse(document.foldState.isEmpty,
+                       "the collapsed state must reach the persisted projection")
+        XCTAssertEqual(document.foldState, editor.foldModel?.foldState)
+        XCTAssertTrue(document.foldState.isCollapsed(foldRange))
+
+        XCTAssertTrue(editor.toggleFold(atLine: 1))
+        XCTAssertTrue(document.foldState.isEmpty,
+                      "expanding writes the empty state back too")
+    }
+
+    func testRemappingAnEditWritesThroughToTheDocument() throws {
+        let (editor, document) = makeEditor(nestedText)
+        XCTAssertTrue(editor.toggleFold(atLine: 1))
+        let before = document.foldState
+        let foldedRange = try XCTUnwrap(before.collapsedRanges.first?.range)
+
+        // Edit the shared buffer; the container's storage observer remaps the
+        // fold to follow the insertion.
+        document.replaceCharacters(in: NSRange(location: 0, length: 0),
+                                   with: "// header\n")
+
+        XCTAssertNotEqual(document.foldState, before)
+        let shifted = NSRange(location: foldedRange.location + 10,
+                              length: foldedRange.length)
+        XCTAssertTrue(document.foldState.isCollapsed(shifted),
+                      "the remapped range is persisted, not just held in memory")
+        XCTAssertEqual(document.foldState, editor.foldModel?.foldState)
+    }
+
+    // MARK: - Tab switches
+
+    func testFoldSurvivesBindingAnotherDocumentAndBack() {
+        let (editor, docA) = makeEditor(nestedText)
+        let docB = DocumentModel(text: "other {\n    body\n}\n")
+        docB.setLanguage(Language.swift.rawValue)
+
+        XCTAssertTrue(editor.toggleFold(atLine: 1))
+        let persistedA = docA.foldState
+        XCTAssertFalse(persistedA.isEmpty)
+
+        editor.bind(to: docB)
+        XCTAssertEqual(editor.foldMarkers[1], .expanded,
+                       "a different document starts unfolded")
+        XCTAssertTrue(editor.foldHiddenRanges.isEmpty)
+        XCTAssertTrue(docB.foldState.isEmpty,
+                      "binding doc B must not inherit doc A's folds")
+
+        editor.bind(to: docA)
+        XCTAssertEqual(editor.foldMarkers[1], .collapsed,
+                       "returning to a tab restores its collapsed folds")
+        XCTAssertFalse(editor.foldHiddenRanges.isEmpty)
+        XCTAssertEqual(docA.foldState, persistedA)
+    }
+
+    func testFreshContainerSeedsFromTheDocumentsPersistedFoldState() {
+        let (firstEditor, document) = makeEditor(nestedText)
+        XCTAssertTrue(firstEditor.toggleFold(atLine: 1))
+        let persisted = document.foldState
+        XCTAssertFalse(persisted.isEmpty)
+
+        // A container that has never seen this document (as after a restart)
+        // must adopt the document's persisted projection on bind.
+        let freshEditor = EditorContainer()
+        freshEditor.bind(to: document)
+
+        XCTAssertEqual(freshEditor.foldModel?.foldState, persisted)
+        XCTAssertEqual(freshEditor.foldMarkers[1], .collapsed)
+        XCTAssertFalse(freshEditor.foldHiddenRanges.isEmpty)
+    }
+
+    // MARK: - Session round-trip
+
+    func testFoldStateSurvivesSessionSaveAndRestoreIntoAFreshContainer() throws {
+        let (editor, document) = makeEditor(nestedText)
+        XCTAssertTrue(editor.toggleFold(atLine: 1))
+        let collapsed = document.foldState
+        XCTAssertFalse(collapsed.isEmpty)
+
+        let store = TabStore()
+        store.addDocument(document)
+        try SessionStore.save(store)
+
+        let restored = try XCTUnwrap(SessionStore.restore())
+        let restoredDocument = try XCTUnwrap(restored.tabs.documents.first)
+        XCTAssertEqual(restoredDocument.foldState, collapsed,
+                       "session.json carries the collapsed range")
+        XCTAssertEqual(restoredDocument.language, Language.swift.rawValue)
+
+        // Bind a brand-new container to the restored document: this is the
+        // app-restart path, with no in-memory fold state to fall back on.
+        let freshEditor = EditorContainer()
+        freshEditor.bind(to: restoredDocument)
+
+        XCTAssertEqual(freshEditor.foldMarkers[1], .collapsed)
+        XCTAssertFalse(freshEditor.foldHiddenRanges.isEmpty,
+                       "the fold is still collapsed after a restart")
+        XCTAssertEqual(freshEditor.foldModel?.foldState, collapsed)
+    }
+}

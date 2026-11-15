@@ -34,15 +34,17 @@ class EditorContainer: NSView {
 
     // MARK: - Folding
     //
-    // Fold state is per document and owned by the editor container, keyed by
-    // document id. It cannot live on DocumentModel: that type is Kit-side and
-    // deliberately carries no UI/editor state, and it is also outside this
-    // slice's scope. It cannot live only on FoldModel either, because the
-    // container is reused across tabs and swapping the model for a different
-    // document would discard the previous tab's collapsed folds.
+    // Fold state is per document, keyed by document id here and mirrored into
+    // `DocumentModel.foldState`. It cannot live only on FoldModel: the
+    // container is reused across tabs, and swapping the model for a different
+    // document would discard the previous tab's collapsed folds. It cannot live
+    // only on DocumentModel either, because every mutation would have to round
+    // trip through the model before the fold model could use it.
     //
-    // `foldStates` holds the authoritative collapsed sets; `foldModel` is the
-    // derived fold ranges + state pair for the currently bound document.
+    // `foldStates` holds the live collapsed sets; `foldModel` is the derived
+    // fold ranges + state pair for the currently bound document. Every fold
+    // mutation updates both the dictionary and the model's persisted
+    // `foldState`, so the session save path always sees the current state.
 
     /// Collapsed fold state per document id, retained across tab switches.
     private var foldStates: [UUID: FoldState] = [:]
@@ -70,9 +72,10 @@ class EditorContainer: NSView {
     // MARK: - Bookmarks
     //
     // Like folds, bookmarks are per document and owned here, keyed by document
-    // id so switching tabs restores the previous tab's markers. Unlike folds,
-    // `DocumentModel.bookmarkState` also persists them to the session, so the
-    // state round-trips through the model on bind/unbind and on every edit.
+    // id so switching tabs restores the previous tab's markers. Like fold
+    // state, `DocumentModel.bookmarkState` also persists them to the session,
+    // so the state round-trips through the model on bind/unbind and on every
+    // edit.
 
     /// Bookmark state per document id, retained across tab switches.
     private var bookmarkStates: [UUID: BookmarkState] = [:]
@@ -496,12 +499,21 @@ class EditorContainer: NSView {
         refreshFoldModelIfStale()
         guard var model = foldModel, model.toggleFold(atLine: line) else { return false }
         foldModel = model
-        if let id = boundDocument?.id {
-            foldStates[id] = model.foldState
+        if let document = boundDocument {
+            adoptFoldState(model.foldState, for: document)
         }
         applyFoldVisibility()
         ruler.needsDisplay = true
         return true
+    }
+
+    /// Records `state` as the live collapsed set for `document` and writes it
+    /// through to `DocumentModel.foldState`, which is what the session save
+    /// path stores. Keeping both in step here means tab switches and app
+    /// restarts see the same folds.
+    private func adoptFoldState(_ state: FoldState, for document: DocumentModel) {
+        foldStates[document.id] = state
+        document.foldState = state
     }
 
     /// Rebuilds the fold model for the bound document's current text and
@@ -512,6 +524,12 @@ class EditorContainer: NSView {
             foldModelIsStale = false
             applyFoldVisibility()
             return
+        }
+        // The first bind for this tab adopts the persisted projection. Later
+        // binds keep the in-memory state: it is the newer of the two, because
+        // toggles and edits write through to it immediately.
+        if foldStates[document.id] == nil {
+            foldStates[document.id] = document.foldState
         }
         rebuildFoldModel(for: document)
     }
@@ -527,7 +545,7 @@ class EditorContainer: NSView {
             return
         }
 
-        let state = foldStates[document.id] ?? FoldState()
+        let state = foldStates[document.id] ?? document.foldState
         foldModel = FoldModel(text: document.text,
                               definition: definition,
                               foldState: state)
@@ -664,7 +682,7 @@ class EditorContainer: NSView {
         // Remapping is cheap and keeps surviving folds; rebuilding the model now
         // keeps the layout hider's hidden ranges aligned with the edited text.
         let remapped = model.foldState.remapped(for: edit)
-        foldStates[document.id] = remapped
+        adoptFoldState(remapped, for: document)
         foldModel = FoldModel(text: document.text,
                               definition: model.definition,
                               configuration: model.configuration,
