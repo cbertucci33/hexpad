@@ -365,14 +365,25 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
                                              keyEquivalent: "")
         moveToOtherViewItem.target = nil
         viewMenu.addItem(moveToOtherViewItem)
-        // Notepad++-style document switcher. Cmd+Tab is a macOS system chord;
-        // the menu item still advertises it here per the product spec.
+        // Notepad++-style document switcher. Ctrl+Tab is the native in-app
+        // chord (Cmd+Tab belongs to the system app switcher).
         let documentSwitcherItem = NSMenuItem(title: "Document Switcher…",
                                               action: #selector(MainWindowController.showDocumentSwitcher(_:)),
                                               keyEquivalent: "\t")
-        documentSwitcherItem.keyEquivalentModifierMask = [.command]
+        documentSwitcherItem.keyEquivalentModifierMask = [.control]
         documentSwitcherItem.target = nil
         viewMenu.addItem(documentSwitcherItem)
+        // AppKit allows one chord per menu item, so Ctrl+Shift+Tab is a second,
+        // hidden item with the same action. `allowsKeyEquivalentWhenHidden`
+        // keeps it live without cluttering the menu.
+        let documentSwitcherBackItem = NSMenuItem(title: "Document Switcher",
+                                                  action: #selector(MainWindowController.showDocumentSwitcher(_:)),
+                                                  keyEquivalent: "\t")
+        documentSwitcherBackItem.keyEquivalentModifierMask = [.control, .shift]
+        documentSwitcherBackItem.target = nil
+        documentSwitcherBackItem.isHidden = true
+        documentSwitcherBackItem.allowsKeyEquivalentWhenHidden = true
+        viewMenu.addItem(documentSwitcherBackItem)
         viewMenu.addItem(.separator())
         viewMenu.addItem(appearanceItem)
         menu.addItem((NSMenuItem(title: "View", action: nil, keyEquivalent: "").apply { $0.submenu = viewMenu }))
