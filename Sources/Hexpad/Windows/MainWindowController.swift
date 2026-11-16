@@ -30,7 +30,7 @@ class MainWindowController: NSViewController {
         focusedGroup == .secondary ? (secondaryPane ?? primaryPane) : primaryPane
     }
 
-    private var allPanes: [TabGroupPane] {
+    var allPanes: [TabGroupPane] {  // harness-visible (was private)
         secondaryPane.map { [primaryPane, $0] } ?? [primaryPane]
     }
 
