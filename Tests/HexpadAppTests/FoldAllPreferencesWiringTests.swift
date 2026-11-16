@@ -233,4 +233,70 @@ final class PreferencesStartupApplyTests: XCTestCase {
         XCTAssertTrue(PreferencesApplier.colorsMatch(try XCTUnwrap(textView.backgroundColor),
                                                       HexpadTheme.monokai.theme.background))
     }
+
+    func testSystemThemeRepaintsWhenEffectiveAppearanceChanges() throws {
+        // A fresh install keeps the default System preference. The palette must
+        // come from the editor's effective appearance, and an appearance change
+        // must repaint both chrome and token colors.
+        try PreferencesStore.save(.defaults)
+
+        let (controller, _) = makeController()
+        let editor = try XCTUnwrap(PreferencesApplier.editorContainer(in: controller.view))
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        doc.setLanguage(Language.swift.rawValue)
+        doc.replaceAllText(with: "func f() {\n    let x = 1\n}\n")
+        controller.updateEditor()
+
+        let textView = try XCTUnwrap(controller.editorTextView)
+        let keywordRange = (textView.string as NSString).range(of: "func")
+        let light = HexpadTheme.light.theme
+        let dark = HexpadTheme.dark.theme
+        let lightKeyword = try XCTUnwrap(light.colors[.keyword])
+        let darkKeyword = try XCTUnwrap(dark.colors[.keyword])
+        XCTAssertFalse(PreferencesApplier.colorsMatch(lightKeyword, darkKeyword),
+                       "test needs visibly different keyword colors")
+
+        editor.appearance = try XCTUnwrap(NSAppearance(named: .aqua))
+        editor.viewDidChangeEffectiveAppearance()
+
+        XCTAssertTrue(PreferencesApplier.colorsMatch(
+            try XCTUnwrap(foregroundColor(of: textView, at: keywordRange.location)),
+            lightKeyword), "System in light appearance paints Light tokens")
+        XCTAssertTrue(PreferencesApplier.colorsMatch(try XCTUnwrap(textView.backgroundColor),
+                                                      light.background))
+
+        editor.appearance = try XCTUnwrap(NSAppearance(named: .darkAqua))
+        editor.viewDidChangeEffectiveAppearance()
+
+        XCTAssertTrue(PreferencesApplier.colorsMatch(
+            try XCTUnwrap(foregroundColor(of: textView, at: keywordRange.location)),
+            darkKeyword), "handleAppearanceChange re-resolves System to the dark palette")
+        XCTAssertTrue(PreferencesApplier.colorsMatch(try XCTUnwrap(textView.backgroundColor),
+                                                      dark.background),
+                      "the editor background follows the appearance, not a white default")
+    }
+
+    func testExplicitThemeWinsOverAppearanceOnController() throws {
+        var preferences = Preferences.defaults
+        preferences.theme = ThemePreference.monokai.rawValue
+        try PreferencesStore.save(preferences)
+
+        let (controller, _) = makeController()
+        let editor = try XCTUnwrap(PreferencesApplier.editorContainer(in: controller.view))
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        doc.setLanguage(Language.swift.rawValue)
+        doc.replaceAllText(with: "func f() {\n    let x = 1\n}\n")
+        editor.appearance = try XCTUnwrap(NSAppearance(named: .darkAqua))
+        controller.updateEditor()
+
+        let textView = try XCTUnwrap(controller.editorTextView)
+        let keywordRange = (textView.string as NSString).range(of: "func")
+        let monokai = HexpadTheme.monokai.theme
+        XCTAssertTrue(PreferencesApplier.colorsMatch(
+            try XCTUnwrap(foregroundColor(of: textView, at: keywordRange.location)),
+            try XCTUnwrap(monokai.colors[.keyword])),
+            "an explicit theme ignores the dark appearance")
+        XCTAssertTrue(PreferencesApplier.colorsMatch(try XCTUnwrap(textView.backgroundColor),
+                                                      monokai.background))
+    }
 }

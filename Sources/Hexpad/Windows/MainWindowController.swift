@@ -861,14 +861,20 @@ class MainWindowController: NSViewController {
 
     /// The theme used for token colors.
     ///
-    /// Preferences are the persisted source of truth. Before this slice the
-    /// palette came only from `effectiveAppearance`; the appearance still
-    /// themes the window chrome, but an explicit theme choice now survives a
-    /// relaunch and tab switch instead of snapping back to Light/Dark.
+    /// Preferences are the persisted source of truth. System (the default)
+    /// resolves through ``HexpadTheme/forAppearance(_:)`` against the editor's
+    /// effective appearance at apply time, so a fresh install in dark mode
+    /// paints the dark palette instead of white-on-white. An explicit
+    /// Light/Dark/Classic/Monokai choice wins over the appearance. Re-resolution
+    /// happens on every bind and appearance change; the saved preference is not
+    /// rewritten.
     private func theme(for editor: EditorContainer) -> Theme {
-        preferences.selectedTheme.theme
+        preferences.themePreference.resolvedTheme(for: editor.effectiveAppearance).theme
     }
 
+    /// Re-resolves the palette after macOS light/dark switches. System follows
+    /// the new appearance; explicit themes repaint identically (and are cheap
+    /// to reapply because the cached theme record was invalidated).
     private func handleAppearanceChange() {
         guard let editor = editorContainer, let doc = tabStore.selectedDocument else { return }
         rehighlightAll(in: editor, document: doc)

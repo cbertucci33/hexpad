@@ -52,7 +52,7 @@ final class PreferencesTests: XCTestCase {
         XCTAssertFalse(loaded.autoCloseBrackets)
         XCTAssertEqual(loaded.tabSize, 4)
         XCTAssertFalse(loaded.useTabs)
-        XCTAssertEqual(loaded.theme, HexpadTheme.light.rawValue)
+        XCTAssertEqual(loaded.theme, ThemePreference.system.rawValue)
     }
 
     // MARK: - Round trip
@@ -87,6 +87,62 @@ final class PreferencesTests: XCTestCase {
         XCTAssertEqual(saved.fontSize, Preferences.fontSizeRange.upperBound)
         XCTAssertEqual(saved.tabSize, Preferences.tabSizeRange.lowerBound)
         XCTAssertEqual(PreferencesStore.load(), saved)
+    }
+
+    // MARK: - System theme and migration
+
+    func testDefaultThemeIsSystem() {
+        XCTAssertEqual(Preferences.defaults.themePreference, .system)
+        XCTAssertNil(Preferences.defaults.selectedTheme,
+                     "System has no explicit palette; it resolves from appearance")
+    }
+
+    func testExplicitLightSurvivesSaveAndReload() throws {
+        var preferences = Preferences.defaults
+        preferences.theme = ThemePreference.light.rawValue
+        try PreferencesStore.save(preferences)
+
+        let loaded = PreferencesStore.load()
+        XCTAssertEqual(loaded.themePreference, .light,
+                       "a versioned save keeps an explicit Light choice")
+        XCTAssertEqual(loaded.selectedTheme, .light)
+    }
+
+    func testLegacyFileWithoutThemeKeyMigratesToSystem() throws {
+        try writePreferences(#"{ "wordWrap": true, "fontSize": 15 }"#)
+
+        let loaded = PreferencesStore.load()
+        XCTAssertEqual(loaded.themePreference, .system)
+        XCTAssertTrue(loaded.wordWrap, "other legacy keys survive the migration")
+    }
+
+    func testLegacyLightDefaultMigratesToSystem() throws {
+        // The previous build always wrote "Light" because that was its default
+        // and had no version marker, so Light cannot be distinguished from an
+        // implicit default. It upgrades to System, which paints identically in
+        // light appearance and correctly follows dark appearance.
+        try writePreferences(#"{ "theme": "Light", "fontSize": 15 }"#)
+
+        let loaded = PreferencesStore.load()
+        XCTAssertEqual(loaded.themePreference, .system)
+        XCTAssertEqual(loaded.fontSize, 15)
+    }
+
+    func testLegacyNamedThemesArePreserved() throws {
+        for legacy in [HexpadTheme.dark, .classic, .monokai] {
+            try writePreferences(#"{ "theme": "\#(legacy.rawValue)" }"#)
+
+            XCTAssertEqual(PreferencesStore.load().themePreference,
+                           ThemePreference(rawValue: legacy.rawValue),
+                           "an existing \(legacy.rawValue) choice is not reset to System")
+        }
+    }
+
+    func testLegacyUnknownThemeMigratesToSystem() throws {
+        try writePreferences(#"{ "theme": "Solarized" }"#)
+
+        XCTAssertEqual(PreferencesStore.load().themePreference, .system,
+                       "contract change: unknown themes now fall back to System, not Light")
     }
 
     // MARK: - Malformed files
@@ -171,6 +227,52 @@ final class PreferencesTests: XCTestCase {
 
     // MARK: - Live application
 
+    func testSystemPreferenceResolvesThroughEffectiveAppearance() throws {
+        let dark = try XCTUnwrap(NSAppearance(named: .darkAqua))
+        let light = try XCTUnwrap(NSAppearance(named: .aqua))
+
+        XCTAssertEqual(ThemePreference.system.resolvedTheme(for: dark), .dark,
+                       "System under a dark appearance selects the dark palette")
+        XCTAssertEqual(ThemePreference.system.resolvedTheme(for: light), .light)
+    }
+
+    func testExplicitPreferenceWinsOverAppearance() throws {
+        let dark = try XCTUnwrap(NSAppearance(named: .darkAqua))
+        let light = try XCTUnwrap(NSAppearance(named: .aqua))
+
+        XCTAssertEqual(ThemePreference.monokai.resolvedTheme(for: dark), .monokai)
+        XCTAssertEqual(ThemePreference.light.resolvedTheme(for: dark), .light,
+                       "an explicit Light choice ignores a dark appearance")
+        XCTAssertEqual(ThemePreference.classic.resolvedTheme(for: light), .classic)
+    }
+
+    func testApplyingSystemThemeUsesTextViewAppearance() throws {
+        let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 320, height: 120))
+        textView.string = "let answer = 1"
+        textView.appearance = try XCTUnwrap(NSAppearance(named: .darkAqua))
+
+        // Start from an explicitly Light-painted view so the pass has to
+        // resolve the appearance and remap the token color, not just flip a
+        // background property.
+        let light = HexpadTheme.light.theme
+        textView.backgroundColor = light.background
+        let keywordRange = (textView.string as NSString).range(of: "let")
+        textView.textStorage?.addAttribute(.foregroundColor,
+                                           value: try XCTUnwrap(light.colors[.keyword]),
+                                           range: keywordRange)
+
+        PreferencesApplier.applyTheme(.system, to: textView)
+
+        let dark = HexpadTheme.dark.theme
+        XCTAssertTrue(PreferencesApplier.colorsMatch(try XCTUnwrap(textView.backgroundColor),
+                                                      dark.background),
+                      "System paints the appearance-derived background")
+        let keyword = try XCTUnwrap(foregroundColor(of: textView, at: keywordRange.location))
+        XCTAssertTrue(PreferencesApplier.colorsMatch(keyword,
+                                                      try XCTUnwrap(dark.colors[.keyword])),
+                      "System paints the dark token palette")
+    }
+
     func testThemeChangeUpdatesEditorColors() throws {
         let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 320, height: 120))
         textView.string = "let answer = 1 // note"
@@ -191,7 +293,7 @@ final class PreferencesTests: XCTestCase {
                                            value: try XCTUnwrap(light.colors[.comment]),
                                            range: commentRange)
 
-        PreferencesApplier.applyTheme(.monokai, to: textView)
+        PreferencesApplier.applyTheme(HexpadTheme.monokai, to: textView)
 
         let updatedKeyword = try XCTUnwrap(foregroundColor(of: textView, at: keywordRange.location))
         XCTAssertTrue(PreferencesApplier.colorsMatch(updatedKeyword, monokaiKeyword),

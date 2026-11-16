@@ -10,6 +10,36 @@ extension Notification.Name {
 
 // MARK: - Model
 
+/// The user's syntax theme choice.
+///
+/// ``system`` follows the editor's effective light/dark appearance at apply
+/// time, so switching macOS appearance repaints without rewriting the saved
+/// preference. The other cases are explicit palettes and always win over the
+/// appearance.
+enum ThemePreference: String, CaseIterable {
+    case system = "System"
+    case light = "Light"
+    case dark = "Dark"
+    case classic = "Classic"
+    case monokai = "Monokai"
+
+    /// The explicit built-in theme, or `nil` when this preference follows the
+    /// system appearance.
+    var explicitTheme: HexpadTheme? {
+        guard self != .system else { return nil }
+        return HexpadTheme(rawValue: rawValue)
+    }
+
+    /// Resolves the palette to paint for `appearance`. System is evaluated
+    /// against the appearance captured at apply time; explicit choices ignore
+    /// it.
+    func resolvedTheme(for appearance: NSAppearance) -> HexpadTheme {
+        explicitTheme
+            ?? HexpadTheme(rawValue: HexpadTheme.forAppearance(appearance).name)
+            ?? .light
+    }
+}
+
 /// User-facing editor preferences persisted in
 /// `Application Support/Hexpad/preferences.json`.
 ///
@@ -23,6 +53,11 @@ struct Preferences: Codable, Equatable {
     static let fontSizeRange: ClosedRange<CGFloat> = 8...72
     static let tabSizeRange: ClosedRange<Int> = 1...16
 
+    /// Version 2 introduced the System theme and made explicit Light
+    /// distinguishable from the old implicit Light default. Files written by
+    /// the previous build have no version key and are migrated on read.
+    static let currentVersion = 2
+
     var fontFamily: String
     var fontSize: CGFloat
     var wordWrap: Bool
@@ -30,8 +65,12 @@ struct Preferences: Codable, Equatable {
     var autoCloseBrackets: Bool
     var tabSize: Int
     var useTabs: Bool
-    /// A ``HexpadTheme`` raw value ("Light", "Dark", "Classic", "Monokai").
+    /// A ``ThemePreference`` raw value ("System", "Light", "Dark", "Classic",
+    /// "Monokai").
     var theme: String
+    /// Schema marker written with every save. It lets the decoder tell an
+    /// explicit Light choice (version 2+) from the legacy Light default.
+    var version: Int
 
     init(fontFamily: String = "Menlo",
          fontSize: CGFloat = 13,
@@ -40,7 +79,8 @@ struct Preferences: Codable, Equatable {
          autoCloseBrackets: Bool = false,
          tabSize: Int = 4,
          useTabs: Bool = false,
-         theme: String = HexpadTheme.light.rawValue) {
+         theme: String = ThemePreference.system.rawValue,
+         version: Int = Preferences.currentVersion) {
         self.fontFamily = fontFamily
         self.fontSize = fontSize
         self.wordWrap = wordWrap
@@ -49,15 +89,23 @@ struct Preferences: Codable, Equatable {
         self.tabSize = tabSize
         self.useTabs = useTabs
         self.theme = theme
+        self.version = version
     }
 
     /// The values a fresh install starts with. Tests compare against this, so
     /// it is the single source of truth for every key.
     static let defaults = Preferences()
 
-    /// The selected theme, falling back to Light for an unknown raw value.
-    var selectedTheme: HexpadTheme {
-        HexpadTheme(rawValue: theme) ?? .light
+    /// The theme preference, falling back to System for an unknown raw value.
+    var themePreference: ThemePreference {
+        ThemePreference(rawValue: theme) ?? .system
+    }
+
+    /// The explicitly selected built-in theme, or `nil` when the preference is
+    /// System. Painting should resolve `themePreference` against the editor's
+    /// effective appearance instead of calling this directly.
+    var selectedTheme: HexpadTheme? {
+        themePreference.explicitTheme
     }
 
     /// Clamps ranges and replaces unrepresentable values, so the store never
@@ -75,9 +123,10 @@ struct Preferences: Codable, Equatable {
         result.tabSize = min(max(result.tabSize, Preferences.tabSizeRange.lowerBound),
                              Preferences.tabSizeRange.upperBound)
 
-        if HexpadTheme(rawValue: result.theme) == nil {
-            result.theme = Preferences.defaults.theme
+        if ThemePreference(rawValue: result.theme) == nil {
+            result.theme = ThemePreference.system.rawValue
         }
+        result.version = Preferences.currentVersion
 
         return result
     }
@@ -87,7 +136,7 @@ struct Preferences: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case fontFamily, fontSize, wordWrap, autoIndent, autoCloseBrackets
-        case tabSize, useTabs, theme
+        case tabSize, useTabs, theme, version
     }
 
     init(from decoder: Decoder) throws {
@@ -102,7 +151,24 @@ struct Preferences: Codable, Equatable {
             ?? fallback.autoCloseBrackets
         tabSize = (try? container.decode(Int.self, forKey: .tabSize)) ?? fallback.tabSize
         useTabs = (try? container.decode(Bool.self, forKey: .useTabs)) ?? fallback.useTabs
-        theme = (try? container.decode(String.self, forKey: .theme)) ?? fallback.theme
+
+        // Files from before the System theme had no version key and defaulted
+        // the theme to Light. Without that marker an explicit Light and the
+        // implicit default are indistinguishable, so legacy Light resolves to
+        // System (which paints identically in light mode) while every legacy
+        // named theme other than Light is preserved exactly. New saves carry
+        // version 2, so choosing Light explicitly from here on survives.
+        let savedVersion = (try? container.decode(Int.self, forKey: .version)) ?? 1
+        if savedVersion >= Preferences.currentVersion {
+            theme = (try? container.decode(String.self, forKey: .theme)) ?? fallback.theme
+        } else if let legacy = try? container.decode(String.self, forKey: .theme),
+                  let named = HexpadTheme(rawValue: legacy),
+                  named != .light {
+            theme = named.rawValue
+        } else {
+            theme = ThemePreference.system.rawValue
+        }
+        version = Preferences.currentVersion
 
         self = normalized()
     }
@@ -219,7 +285,7 @@ enum PreferencesApplier {
             applyWordWrap(preferences.wordWrap, to: textView)
         }
         if options.contains(.theme) {
-            applyTheme(preferences.selectedTheme, to: textView)
+            applyTheme(preferences.themePreference, to: textView)
         }
     }
 
@@ -256,6 +322,14 @@ enum PreferencesApplier {
     }
 
     // MARK: Theme
+
+    /// Applies the preference, resolving System against the text view's
+    /// effective appearance at this moment. An appearance change re-enters
+    /// this path, so the saved preference itself never has to change.
+    static func applyTheme(_ preference: ThemePreference, to textView: NSTextView?) {
+        guard let textView else { return }
+        applyTheme(preference.resolvedTheme(for: textView.effectiveAppearance), to: textView)
+    }
 
     static func applyTheme(_ theme: HexpadTheme, to textView: NSTextView?) {
         guard let textView else { return }
@@ -581,14 +655,16 @@ final class PreferencesWindowController: NSWindowController {
         let pane = makePane()
         pane.addArrangedSubview(sectionLabel("Syntax Theme"))
 
-        themePopup.addItems(withTitles: HexpadTheme.allCases.map(\.rawValue))
+        themePopup.addItems(withTitles: ThemePreference.allCases.map(\.rawValue))
         themePopup.target = self
         themePopup.action = #selector(themeChanged)
         themePopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 180).isActive = true
         pane.addArrangedSubview(row("Theme:", themePopup))
 
-        pane.addArrangedSubview(hintLabel("The chosen theme repaints the active editor's token "
-            + "colors immediately and is reused for every tab, including after a relaunch."))
+        pane.addArrangedSubview(hintLabel("System follows the macOS light or dark appearance and "
+            + "repaints when it changes. An explicit theme overrides the appearance. The choice "
+            + "repaints the active editor immediately and is reused for every tab, including "
+            + "after a relaunch."))
         return pane
     }
 
@@ -641,7 +717,7 @@ final class PreferencesWindowController: NSWindowController {
         tabSizeStepper.integerValue = preferences.tabSize
         useTabsPopup.selectItem(at: preferences.useTabs ? 1 : 0)
 
-        themePopup.selectItem(withTitle: preferences.selectedTheme.rawValue)
+        themePopup.selectItem(withTitle: preferences.themePreference.rawValue)
         preferencesPathLabel.stringValue = PreferencesStore.preferencesFileURL.path
     }
 
