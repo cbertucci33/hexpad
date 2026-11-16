@@ -45,6 +45,10 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         
         controller.recentFilesManager = recentFilesManager
         restoreSession()
+        // Persisted font/wrap/theme preferences are the startup defaults. The
+        // restore path binds a tab and would otherwise leave a fresh install on
+        // the built-in defaults until the first tab switch.
+        controller.applyPreferences()
     }
     
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -329,6 +333,19 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
                                           keyEquivalent: "\u{F70F}")
         functionListItem.keyEquivalentModifierMask = [.command]
         functionListItem.target = nil
+        // Notepad++ folding convention (Alt+0 / Alt+Shift+0) expressed with
+        // Option. Both are nil-targeted so MainWindowController disables them
+        // when the selected document has no foldable ranges.
+        let foldAllItem = NSMenuItem(title: "Fold All",
+                                     action: #selector(MainWindowController.foldAll(_:)),
+                                     keyEquivalent: "0")
+        foldAllItem.keyEquivalentModifierMask = [.option]
+        foldAllItem.target = nil
+        let unfoldAllItem = NSMenuItem(title: "Unfold All",
+                                       action: #selector(MainWindowController.unfoldAll(_:)),
+                                       keyEquivalent: "0")
+        unfoldAllItem.keyEquivalentModifierMask = [.option, .shift]
+        unfoldAllItem.target = nil
         let zoomInItem = NSMenuItem(title: "Zoom In", action: #selector(zoomIn), keyEquivalent: "+")
         zoomInItem.target = self
         let zoomOutItem = NSMenuItem(title: "Zoom Out", action: #selector(zoomOut), keyEquivalent: "-")
@@ -357,6 +374,9 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         
         viewMenu.addItem(wordWrapItem)
         viewMenu.addItem(functionListItem)
+        viewMenu.addItem(.separator())
+        viewMenu.addItem(foldAllItem)
+        viewMenu.addItem(unfoldAllItem)
         viewMenu.addItem(.separator())
         viewMenu.addItem(zoomInItem)
         viewMenu.addItem(zoomOutItem)

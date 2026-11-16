@@ -760,13 +760,61 @@ class EditorContainer: NSView {
     func toggleFold(atLine line: Int) -> Bool {
         refreshFoldModelIfStale()
         guard var model = foldModel, model.toggleFold(atLine: line) else { return false }
+        adoptFoldStateAndRedraw(model)
+        return true
+    }
+
+    /// Whether the bound document has any foldable range at all.
+    ///
+    /// Menu validation reads this so Fold All / Unfold All disable for plain
+    /// text (or a language with no fold metadata) instead of silently doing
+    /// nothing. Like every other fold read it refreshes a stale model first.
+    var hasFoldableRanges: Bool {
+        refreshFoldModelIfStale()
+        guard let model = foldModel else { return false }
+        return !model.foldableRanges.isEmpty
+    }
+
+    /// Collapses every foldable range in the bound document.
+    ///
+    /// Routes through ``FoldModel/foldAll()`` and writes the resulting state
+    /// back through ``DocumentModel/foldState`` exactly like a single fold
+    /// toggle, so a session save sees the same collapsed set.
+    ///
+    /// - Returns: The number of ranges newly collapsed.
+    @discardableResult
+    func foldAll() -> Int {
+        refreshFoldModelIfStale()
+        guard var model = foldModel else { return 0 }
+        let changed = model.foldAll()
+        guard changed > 0 else { return 0 }
+        adoptFoldStateAndRedraw(model)
+        return changed
+    }
+
+    /// Expands every collapsed range in the bound document.
+    ///
+    /// - Returns: The number of ranges newly expanded.
+    @discardableResult
+    func unfoldAll() -> Int {
+        refreshFoldModelIfStale()
+        guard var model = foldModel else { return 0 }
+        let changed = model.unfoldAll()
+        guard changed > 0 else { return 0 }
+        adoptFoldStateAndRedraw(model)
+        return changed
+    }
+
+    /// Adopts a folded model, persists its state on the document, and repaints
+    /// the fold margin and hidden content. Shared by every fold mutation so
+    /// they cannot drift in what they write through or invalidate.
+    private func adoptFoldStateAndRedraw(_ model: FoldModel) {
         foldModel = model
         if let document = boundDocument {
             adoptFoldState(model.foldState, for: document)
         }
         applyFoldVisibility()
         ruler.needsDisplay = true
-        return true
     }
 
     /// Records `state` as the live collapsed set for `document` and writes it

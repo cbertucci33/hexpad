@@ -570,7 +570,8 @@ final class PreferencesWindowController: NSWindowController {
         useTabsPopup.action = #selector(useTabsChanged)
         pane.addArrangedSubview(row("Indent with:", useTabsPopup))
 
-        pane.addArrangedSubview(hintLabel("Word wrap applies to the active editor immediately. "
+        pane.addArrangedSubview(hintLabel("Word wrap applies to the active editor immediately and "
+            + "becomes the default for new documents. Each open document keeps its own setting. "
             + "Auto-indent, auto-close, tab width, and the spaces/tabs choice are saved now and "
             + "will be wired into the editor in the follow-up slice."))
         return pane
@@ -587,8 +588,7 @@ final class PreferencesWindowController: NSWindowController {
         pane.addArrangedSubview(row("Theme:", themePopup))
 
         pane.addArrangedSubview(hintLabel("The chosen theme repaints the active editor's token "
-            + "colors immediately. Re-highlighting after a tab switch still follows the system "
-            + "appearance until the window controller learns a persisted theme override."))
+            + "colors immediately and is reused for every tab, including after a relaunch."))
         return pane
     }
 

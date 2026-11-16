@@ -59,6 +59,11 @@ class MainWindowController: NSViewController {
     private weak var highlightedDoc: DocumentModel?
     private var docThemeNames: [UUID: String] = [:]
     private var pendingEditRange: NSRange?
+
+    /// Persisted user preferences. Loaded once at controller creation and kept
+    /// current by the `.preferencesDidChange` observer, so every bind and
+    /// re-highlight reads one value instead of the file.
+    private(set) var preferences = PreferencesStore.load()
     
     // MARK: - Init
     
@@ -105,6 +110,10 @@ class MainWindowController: NSViewController {
         // Any close path (menu toggle, Escape, × button) must restore the
         // editor to full height. Previously nothing observed this notice.
         NotificationCenter.default.addObserver(self, selector: #selector(handleFindBarClosed(_:)), name: NSNotification.Name("FindBarClosed"), object: nil)
+        // Preferences are saved from their own window; the controller applies
+        // them to whichever editor is on screen, so a change made there is not
+        // lost on the next tab switch.
+        NotificationCenter.default.addObserver(self, selector: #selector(handlePreferencesDidChange(_:)), name: .preferencesDidChange, object: nil)
         // Live Ln/Col: caret moves (arrows, clicks, typing, find navigation,
         // programmatic selection) all post this notification from the text view.
         textSelectionObserver = NotificationCenter.default.addObserver(
@@ -120,6 +129,35 @@ class MainWindowController: NSViewController {
         updateLayout()
         if let editor = editorContainer {
             view.window?.makeFirstResponder(editor.textView)
+        }
+    }
+
+    /// Applies a live preference change to the selected editor.
+    ///
+    /// Font and theme are global editor settings. Word wrap is still owned by
+    /// each document (`DocumentModel.editorState`), so changing the preference
+    /// writes it through to the selected tab, making it that tab's explicit
+    /// value; other tabs keep their own state and new tabs use the preference
+    /// as their default.
+    @objc private func handlePreferencesDidChange(_ notification: Notification) {
+        guard let updated = notification.object as? Preferences else { return }
+        let previous = preferences
+        preferences = updated.normalized()
+        guard previous != preferences, let editor = editorContainer else { return }
+
+        editor.setBodyFont(PreferencesApplier.resolvedFont(family: preferences.fontFamily,
+                                                           size: preferences.fontSize))
+
+        if previous.wordWrap != preferences.wordWrap {
+            if let doc = tabStore.selectedDocument {
+                doc.wordWrapEnabled = preferences.wordWrap
+            }
+            editor.setWordWrapEnabled(preferences.wordWrap)
+        }
+
+        if previous.theme != preferences.theme,
+           let doc = tabStore.selectedDocument {
+            rehighlightAll(in: editor, document: doc)
         }
     }
     
@@ -310,6 +348,10 @@ class MainWindowController: NSViewController {
     
     func addNewTab() {
         let doc = DocumentModel(text: "")
+        // The preference is the default for a document that has no persisted
+        // editor state of its own. Restored tabs keep the state the session
+        // stored; this only seeds newly created buffers.
+        doc.wordWrapEnabled = preferences.wordWrap
         tabStore.addDocument(doc)
         refreshTabBar()
         updateEditor()
@@ -390,6 +432,9 @@ class MainWindowController: NSViewController {
             let doc = DocumentModel(text: text, filePath: url, encoding: encoding)
             doc.keepsBOM = EncodingDetective.detectBOM(of: data) != nil
             doc.setLanguage(finalLang.rawValue)
+            // A file opened now is a new tab: the word-wrap preference is its
+            // default. A restored session keeps the per-document value.
+            doc.wordWrapEnabled = preferences.wordWrap
             tabStore.addDocument(doc)
             refreshTabBar()
             updateEditor()
@@ -655,6 +700,11 @@ class MainWindowController: NSViewController {
         if let doc = tabStore.selectedDocument {
             editorBoundDoc = doc
             editor.bind(to: doc)
+            // Preferences are the global defaults (font) and the fallback for
+            // a tab with no state of its own (wrap). bind() has already
+            // restored the document's caret/scroll/zoom, so nothing here can
+            // clobber a restored selection.
+            applyPreferences(to: editor, for: doc)
             applySyntaxHighlighting(to: editor, for: doc, forceReset: true)
         } else {
             editorBoundDoc = nil
@@ -662,12 +712,36 @@ class MainWindowController: NSViewController {
             syntaxStore.reset()
             lastHighlightedRange = NSRange(location: 0, length: 0)
             editor.bind(to: nil)
+            applyPreferences(to: editor, for: nil)
         }
         updateStatusBar()
         updateWindowTitle()
         // Tab/language changes replace the outline rather than editing it, so
         // this path is not debounced. A no-op when the panel is closed.
         refreshFunctionListImmediately()
+    }
+
+    /// Applies the persisted font and word-wrap defaults to the bound editor.
+    ///
+    /// Font is a global preference and always wins. Word wrap is per document:
+    /// `bind()` has already applied `editorState.wordWrapEnabled`, which is
+    /// authoritative once the tab exists. Only an unbound editor uses the
+    /// preference directly (and new documents are seeded from it at creation).
+    private func applyPreferences(to editor: EditorContainer, for document: DocumentModel?) {
+        editor.setBodyFont(PreferencesApplier.resolvedFont(family: preferences.fontFamily,
+                                                            size: preferences.fontSize))
+        editor.setWordWrapEnabled(document?.wordWrapEnabled ?? preferences.wordWrap)
+    }
+
+    /// Re-applies persisted preferences to the selected editor. The app
+    /// delegate calls this once at launch, after session restore; tab binds
+    /// use the same helper so startup and switching cannot disagree.
+    func applyPreferences() {
+        guard let editor = editorContainer else { return }
+        applyPreferences(to: editor, for: tabStore.selectedDocument)
+        if let doc = tabStore.selectedDocument {
+            rehighlightAll(in: editor, document: doc)
+        }
     }
     
     // MARK: - Syntax highlighting
@@ -785,21 +859,29 @@ class MainWindowController: NSViewController {
         applySyntaxHighlighting(to: editor, for: doc)
     }
 
-    /// Resolves the theme from the text view's effective appearance, so System
-    /// mode and the explicit Light/Dark menu both agree with what is rendered.
+    /// The theme used for token colors.
+    ///
+    /// Preferences are the persisted source of truth. Before this slice the
+    /// palette came only from `effectiveAppearance`; the appearance still
+    /// themes the window chrome, but an explicit theme choice now survives a
+    /// relaunch and tab switch instead of snapping back to Light/Dark.
     private func theme(for editor: EditorContainer) -> Theme {
-        HexpadTheme.forAppearance(editor.textView.effectiveAppearance)
+        preferences.selectedTheme.theme
     }
 
     private func handleAppearanceChange() {
-        guard let editor = editorContainer else { return }
-        // Every document may have been painted with the old theme; invalidate
-        // their records so the next display performs one corrective reset.
+        guard let editor = editorContainer, let doc = tabStore.selectedDocument else { return }
+        rehighlightAll(in: editor, document: doc)
+    }
+
+    /// Repaints every token in the bound document with the current theme.
+    /// Theme is global, not per document, so all cached theme records are
+    /// invalidated and the visible band is re-tokenized once.
+    private func rehighlightAll(in editor: EditorContainer, document: DocumentModel) {
         docThemeNames.removeAll()
         lastHighlightedRange = NSRange(location: 0, length: 0)
         syntaxStore.reset()
-        guard let doc = tabStore.selectedDocument else { return }
-        applySyntaxHighlighting(to: editor, for: doc, forceReset: true)
+        applySyntaxHighlighting(to: editor, for: document, forceReset: true)
     }
 
     private func clearHighlighting(in textStorage: NSTextStorage,
@@ -1072,7 +1154,28 @@ class MainWindowController: NSViewController {
     }
 
     // MARK: - View
-    
+
+    /// View > Fold All. Nil-targeted so menu validation can disable it when
+    /// there is no document or nothing foldable.
+    @objc func foldAll(_ sender: Any?) {
+        editorContainer?.foldAll()
+    }
+
+    /// View > Unfold All.
+    @objc func unfoldAll(_ sender: Any?) {
+        editorContainer?.unfoldAll()
+    }
+
+    /// Both fold-all commands require an open document with at least one
+    /// foldable range; plain text has nothing to collapse or expand.
+    func canFoldAll() -> Bool {
+        tabStore.selectedDocument != nil && (editorContainer?.hasFoldableRanges ?? false)
+    }
+
+    func canUnfoldAll() -> Bool {
+        canFoldAll()
+    }
+
     func toggleWordWrap() {
         guard let editor = editorContainer else { return }
         editor.setWordWrapEnabled(!editor.isWordWrapEnabled)
@@ -1760,6 +1863,12 @@ extension MainWindowController: NSMenuItemValidation {
         }
         if menuItem.action == #selector(MainWindowController.showRunCommandDialog(_:)) {
             return canRunCommand()
+        }
+        if menuItem.action == #selector(MainWindowController.foldAll(_:)) {
+            return canFoldAll()
+        }
+        if menuItem.action == #selector(MainWindowController.unfoldAll(_:)) {
+            return canUnfoldAll()
         }
         return true
     }
