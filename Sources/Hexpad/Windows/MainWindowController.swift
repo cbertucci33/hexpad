@@ -81,6 +81,10 @@ class MainWindowController: NSViewController {
     /// Routes clicks in either group's editor/tab bar to ``focusGroup(_:)``.
     private var mouseDownMonitor: Any?
 
+    /// Reused document switcher overlay (N++ style). Created on first use so a
+    /// window with no documents never pays for it.
+    private var docSwitcherController: DocSwitcherWindowController?
+
     /// View > Synchronize Scrolling. Defaults to on and is remembered in
     /// UserDefaults, alongside the other view-only state that is not part of
     /// the document/session model.
@@ -916,6 +920,63 @@ class MainWindowController: NSViewController {
     /// view in either group resolves against its own bound document.
     private func pane(containing textView: NSTextView) -> TabGroupPane? {
         allPanes.first { $0.editor.textView === textView }
+    }
+
+    // MARK: - Document switcher
+
+    /// View > Document Switcher… (Cmd+Tab). Lists every tab in both groups.
+    @objc func showDocumentSwitcher(_ sender: Any?) {
+        guard canShowDocumentSwitcher(), let parent = view.window else { return }
+
+        let switcher = docSwitcherController ?? DocSwitcherWindowController()
+        docSwitcherController = switcher
+        switcher.onChoose = { [weak self] item in
+            self?.switchToDocument(item)
+        }
+        switcher.onCancel = { [weak self] in
+            self?.returnFocusAfterSwitcher()
+        }
+        switcher.show(over: parent,
+                      items: documentSwitcherItems(),
+                      selectedDocumentID: activePane.tabStore.selectedDocument?.id)
+    }
+
+    /// The switcher needs at least one document in either group.
+    func canShowDocumentSwitcher() -> Bool {
+        allPanes.contains { !$0.tabStore.isEmpty }
+    }
+
+    /// Every open tab in tab order, group 1 first. The overlay only renders
+    /// this list; selection and focus stay in this controller.
+    private func documentSwitcherItems() -> [DocSwitcherItem] {
+        allPanes.flatMap { pane in
+            pane.tabStore.documents.map { doc in
+                DocSwitcherItem(documentID: doc.id,
+                                 name: doc.name,
+                                 directory: doc.filePath?.deletingLastPathComponent().path ?? "Unsaved",
+                                 group: pane.group)
+            }
+        }
+    }
+
+    /// Resolves the chosen identity against its group's store, selects it there
+    /// through the normal tab path, and leaves focus in that group.
+    private func switchToDocument(_ item: DocSwitcherItem) {
+        guard let pane = pane(for: item.group),
+              let index = pane.tabStore.documents.firstIndex(where: { $0.id == item.documentID }) else {
+            returnFocusAfterSwitcher()
+            return
+        }
+        focusGroup(item.group)
+        selectTab(at: index)
+        returnFocusAfterSwitcher()
+    }
+
+    /// Closes the overlay's key status and hands the keyboard back to the
+    /// focused group's editor. Called for both Enter and Escape paths.
+    private func returnFocusAfterSwitcher() {
+        view.window?.makeKey()
+        view.window?.makeFirstResponder(activePane.editor.textView)
     }
 
     // MARK: - Split view
@@ -2292,6 +2353,9 @@ extension MainWindowController: NSMenuItemValidation {
         }
         if menuItem.action == #selector(MainWindowController.moveToOtherView(_:)) {
             return canMoveToOtherView()
+        }
+        if menuItem.action == #selector(MainWindowController.showDocumentSwitcher(_:)) {
+            return canShowDocumentSwitcher()
         }
         return true
     }

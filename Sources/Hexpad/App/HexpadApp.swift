@@ -358,6 +358,14 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
                                              keyEquivalent: "")
         moveToOtherViewItem.target = nil
         viewMenu.addItem(moveToOtherViewItem)
+        // Notepad++-style document switcher. Cmd+Tab is a macOS system chord;
+        // the menu item still advertises it here per the product spec.
+        let documentSwitcherItem = NSMenuItem(title: "Document Switcher…",
+                                              action: #selector(MainWindowController.showDocumentSwitcher(_:)),
+                                              keyEquivalent: "\t")
+        documentSwitcherItem.keyEquivalentModifierMask = [.command]
+        documentSwitcherItem.target = nil
+        viewMenu.addItem(documentSwitcherItem)
         viewMenu.addItem(.separator())
         viewMenu.addItem(appearanceItem)
         menu.addItem((NSMenuItem(title: "View", action: nil, keyEquivalent: "").apply { $0.submenu = viewMenu }))
