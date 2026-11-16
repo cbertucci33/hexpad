@@ -138,10 +138,23 @@ enum KeybindingStore {
 
     /// Rejects chords that would intercept ordinary typing or navigation: an
     /// empty key, or one with only Shift held (Shift alone is not a menu
-    /// modifier on macOS).
+    /// modifier on macOS). Bare function keys (F1–F12 and friends, which live
+    /// in the private-use unicode area) are exempt: they never produce printable
+    /// characters, so they can be captured and bound without a modifier.
     static func isUsable(keyEquivalent: String, modifierMask: NSEvent.ModifierFlags) -> Bool {
         guard !keyEquivalent.isEmpty else { return false }
+        if modifierMask.isEmpty, isFunctionKey(keyEquivalent) {
+            return true
+        }
         return !modifierMask.intersection([.command, .option, .control]).isEmpty
+    }
+
+    /// Function keys F1–F12 arrive as private-use unicode scalars (F2 is
+    /// "\u{F705}", F5 is "\u{F708}"), so they never collide with ordinary text.
+    static func isFunctionKey(_ keyEquivalent: String) -> Bool {
+        guard keyEquivalent.unicodeScalars.count == 1,
+              let scalar = keyEquivalent.unicodeScalars.first else { return false }
+        return scalar.value >= 0xF704 && scalar.value <= 0xF70F
     }
 
     /// Turns a key-down event into the `(keyEquivalent, modifierMask)` pair a

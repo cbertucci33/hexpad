@@ -206,6 +206,30 @@ final class KeybindingStoreTests: XCTestCase {
 
     // MARK: - Validation
 
+    func testBareFunctionKeyIsUsableWithoutModifier() throws {
+        let f2 = EditorCommandBinding.f2
+        XCTAssertTrue(KeybindingStore.isUsable(keyEquivalent: f2.keyEquivalent,
+                                               modifierMask: []))
+
+        let f5 = EditorCommandBinding(identifier: "run",
+                                      keyEquivalent: "\u{F708}",
+                                      modifierMask: [])
+        XCTAssertTrue(KeybindingStore.isUsable(keyEquivalent: f5.keyEquivalent,
+                                               modifierMask: []))
+    }
+
+    func testPlainKeyStillRequiresModifier() throws {
+        XCTAssertFalse(KeybindingStore.isUsable(keyEquivalent: "a",
+                                               modifierMask: []))
+        XCTAssertFalse(KeybindingStore.isUsable(keyEquivalent: "j",
+                                               modifierMask: []))
+    }
+
+    func testCommandModifierBareKeyIsUsable() throws {
+        XCTAssertTrue(KeybindingStore.isUsable(keyEquivalent: "a",
+                                               modifierMask: [.command]))
+    }
+
     func testValidationStillWorksForOverriddenCommands() throws {
         try KeybindingStore.setOverride(EditorCommandBinding(identifier: "duplicate-line",
                                                              keyEquivalent: "j",
