@@ -638,6 +638,74 @@ class MainWindowController: NSViewController {
         }
     }
     
+    // MARK: - Print
+
+    /// File > Print… (Cmd+P). Prints the focused group's current document
+    /// using a custom paginated view so headers, footers and line numbers line
+    /// up with the printed text.
+    ///
+    /// Notepad++ behaviour: if the editor has a non-empty selection, printing
+    /// is selection-only. There is deliberately no prompt; the selection's
+    /// presence is the choice.
+    @objc func printDocument(_ sender: Any?) {
+        guard let doc = tabStore.selectedDocument,
+              let editor = editorContainer else { return }
+
+        let nsText = doc.text as NSString
+        let selection = editor.textView.selectedRange
+        let safeSelection = NSIntersectionRange(selection,
+                                                NSRange(location: 0, length: nsText.length))
+
+        let text: String
+        let firstLine: Int
+        if safeSelection.length > 0 {
+            text = nsText.substring(with: safeSelection)
+            // Keep printed line numbers aligned with the editor for a
+            // selection: the prefix's newline count is the preceding line
+            // count, so the selection starts on line count.
+            let prefix = nsText.substring(to: safeSelection.location)
+            firstLine = prefix.components(separatedBy: "\n").count
+        } else {
+            text = doc.text
+            firstLine = 1
+        }
+
+        let printView = PrintDocumentView(text: text,
+                                          font: editor.bodyFont,
+                                          fileName: doc.name,
+                                          filePath: doc.filePath?.path,
+                                          showsLineNumbers: true,
+                                          firstLineNumber: firstLine)
+
+        let info = NSPrintInfo()
+        info.paperSize = PrintDocumentView.pageSize
+        info.orientation = .portrait
+        info.topMargin = 0
+        info.bottomMargin = 0
+        info.leftMargin = 0
+        info.rightMargin = 0
+        info.scalingFactor = 1
+        info.horizontalPagination = .fit
+        info.verticalPagination = .automatic
+        info.isHorizontallyCentered = false
+        info.isVerticallyCentered = false
+
+        let operation = NSPrintOperation(view: printView, printInfo: info)
+        operation.showsPrintPanel = true
+        operation.showsProgressPanel = true
+
+        if let window = view.window ?? mainWindow {
+            operation.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
+        } else {
+            operation.run()
+        }
+    }
+
+    /// Print… needs a selected document.
+    func canPrintDocument() -> Bool {
+        tabStore.selectedDocument != nil
+    }
+    
     func closeSelectedTab() {
         guard tabStore.count > 0 else { return }
         guard let doc = tabStore.selectedDocument else { return }
@@ -2356,6 +2424,9 @@ extension MainWindowController: NSMenuItemValidation {
         }
         if menuItem.action == #selector(MainWindowController.showDocumentSwitcher(_:)) {
             return canShowDocumentSwitcher()
+        }
+        if menuItem.action == #selector(MainWindowController.printDocument(_:)) {
+            return canPrintDocument()
         }
         return true
     }

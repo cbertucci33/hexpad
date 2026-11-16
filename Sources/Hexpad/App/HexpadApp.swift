@@ -149,6 +149,12 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         saveItem.target = self
         let saveAsItem = NSMenuItem(title: "Save As...", action: #selector(saveAsFile), keyEquivalent: "S")
         saveAsItem.target = self
+        // Nil-targeted so MainWindowController validates against the focused
+        // group's selected document.
+        let printItem = NSMenuItem(title: "Print…",
+                                   action: #selector(MainWindowController.printDocument(_:)),
+                                   keyEquivalent: "p")
+        printItem.target = nil
         let closeTabItem = NSMenuItem(title: "Close Tab", action: #selector(closeTab), keyEquivalent: "w")
         closeTabItem.target = self
         let closeAllItem = NSMenuItem(title: "Close All Tabs", action: #selector(closeAllTabs), keyEquivalent: "W")
@@ -167,6 +173,7 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         fileMenu.addItem(openRecentItem)
         fileMenu.addItem(saveItem)
         fileMenu.addItem(saveAsItem)
+        fileMenu.addItem(printItem)
         fileMenu.addItem(.separator())
         fileMenu.addItem(closeTabItem)
         fileMenu.addItem(closeAllItem)
