@@ -158,8 +158,10 @@ enum KeybindingStore {
     }
 
     /// Turns a key-down event into the `(keyEquivalent, modifierMask)` pair a
-    /// menu item expects. Returns `nil` for modifier-less keys, which the
-    /// capture UI treats as an invalid chord.
+    /// menu item expects. Returns `nil` for modifier-less printable keys, which
+    /// the capture UI treats as an invalid chord; bare function keys are exempt
+    /// via ``isUsable(keyEquivalent:modifierMask:)`` and capture to a valid,
+    /// modifier-less chord.
     static func keyChord(from event: NSEvent) -> (keyEquivalent: String, modifierMask: NSEvent.ModifierFlags)? {
         let mask = event.modifierFlags.intersection(allowedModifiers)
         guard let characters = event.charactersIgnoringModifiers, !characters.isEmpty else {

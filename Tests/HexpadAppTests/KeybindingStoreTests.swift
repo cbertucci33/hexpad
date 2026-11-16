@@ -208,13 +208,13 @@ final class KeybindingStoreTests: XCTestCase {
 
     func testBareFunctionKeyIsUsableWithoutModifier() throws {
         let f2 = EditorCommandBinding.f2
-        XCTAssertTrue(KeybindingStore.isUsable(keyEquivalent: f2.keyEquivalent,
+        XCTAssertTrue(KeybindingStore.isUsable(keyEquivalent: f2,
                                                modifierMask: []))
 
         let f5 = EditorCommandBinding(identifier: "run",
                                       keyEquivalent: "\u{F708}",
                                       modifierMask: [])
-        XCTAssertTrue(KeybindingStore.isUsable(keyEquivalent: f5.keyEquivalent,
+        XCTAssertTrue(KeybindingStore.isUsable(keyEquivalent: "\u{F708}",
                                                modifierMask: []))
     }
 
@@ -228,6 +228,39 @@ final class KeybindingStoreTests: XCTestCase {
     func testCommandModifierBareKeyIsUsable() throws {
         XCTAssertTrue(KeybindingStore.isUsable(keyEquivalent: "a",
                                                modifierMask: [.command]))
+    }
+
+    func testBareFunctionKeyCapturesViaKeyChordWithoutModifier() throws {
+        // The F5 Run chord arrives as the private-use scalar with no modifiers;
+        // the exemption must let it through `keyChord(from:)` as a valid,
+        // modifier-less chord instead of rejecting it as a typing hazard.
+        let f5Event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown,
+                                                      location: .zero,
+                                                      modifierFlags: [],
+                                                      timestamp: 0,
+                                                      windowNumber: 0,
+                                                      context: nil,
+                                                      characters: "\u{F708}",
+                                                      charactersIgnoringModifiers: "\u{F708}",
+                                                      isARepeat: false,
+                                                      keyCode: 100))
+        let chord = try XCTUnwrap(KeybindingStore.keyChord(from: f5Event))
+        XCTAssertEqual(chord.keyEquivalent, "\u{F708}")
+        XCTAssertEqual(chord.modifierMask, [])
+
+        // A plain letter with no modifiers is still rejected: it would hijack
+        // ordinary typing if installed as a menu equivalent.
+        let plain = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown,
+                                                   location: .zero,
+                                                   modifierFlags: [],
+                                                   timestamp: 0,
+                                                   windowNumber: 0,
+                                                   context: nil,
+                                                   characters: "j",
+                                                   charactersIgnoringModifiers: "j",
+                                                   isARepeat: false,
+                                                   keyCode: 38))
+        XCTAssertNil(KeybindingStore.keyChord(from: plain))
     }
 
     func testValidationStillWorksForOverriddenCommands() throws {
