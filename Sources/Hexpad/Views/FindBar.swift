@@ -429,7 +429,32 @@ class FindBar: NSView, NSSearchFieldDelegate {
         hide()
     }
     
+    /// True when regex mode is on and the current pattern does not compile.
+    /// The engine silently degrades an invalid regex to a literal pass, so the
+    /// bar flags the regex button until the pattern is fixed or regex mode is
+    /// turned off.
+    private var isRegexPatternInvalid: Bool {
+        regexButton.state == .on
+            && !searchField.stringValue.isEmpty
+            && !SearchEngine.isValidRegex(searchField.stringValue)
+    }
+
+    /// Pushes the regex button's visual state from the current pattern:
+    /// invalid -> red tint + "matching literally" tooltip, otherwise normal.
+    private func updateRegexButtonValidity() {
+        if isRegexPatternInvalid {
+            regexButton.contentTintColor = .systemRed
+            regexButton.toolTip = "Invalid regular expression — matching literally"
+        } else {
+            regexButton.contentTintColor = .controlColor
+            regexButton.toolTip = nil
+        }
+    }
+
     func performFind(select: Bool = true) {
+        // The regex button state must track the live query: typing an invalid
+        // pattern flags it, fixing the pattern or toggling regex off clears it.
+        updateRegexButtonValidity()
         guard let doc = tabStore?.selectedDocument, let textView = editorContainer?.textView else { return }
 
         let pattern = searchField.stringValue
