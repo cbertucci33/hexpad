@@ -256,69 +256,6 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         searchMenu.addItem(findInFilesItem)
         menu.addItem((NSMenuItem(title: "Search", action: nil, keyEquivalent: "").apply { $0.submenu = searchMenu }))
 
-        // Macro menu: recording, replay, and saved-macro management. Every
-        // action is nil-targeted so MainWindowController (the owner of the
-        // recorder state) handles both the action and its enabled state. The
-        // two name-list submenus are rebuilt by this delegate on open, like
-        // Open Recent, so they always mirror macros.json.
-        let macroMenu = NSMenu(title: "Macro")
-        let recordItem = NSMenuItem(title: "Record Macro",
-                                    action: #selector(MainWindowController.toggleMacroRecording(_:)),
-                                    keyEquivalent: "")
-        recordItem.target = nil
-        let stopRecordingItem = NSMenuItem(title: "Stop Recording",
-                                           action: #selector(MainWindowController.stopRecordingMacro(_:)),
-                                           keyEquivalent: "")
-        stopRecordingItem.target = nil
-        let playLastItem = NSMenuItem(title: "Play Last Macro",
-                                      action: #selector(MainWindowController.playLastMacro(_:)),
-                                      keyEquivalent: "")
-        playLastItem.target = nil
-
-        let playMacroMenu = macroListMenu(title: "Play Macro",
-                                          action: #selector(MainWindowController.playSavedMacro(_:)))
-        let playMacroItem = NSMenuItem(title: "Play Macro", action: nil, keyEquivalent: "")
-        playMacroItem.submenu = playMacroMenu
-        playMacroMenu.delegate = self
-        self.playMacroMenu = playMacroMenu
-
-        let saveRecordingItem = NSMenuItem(title: "Save Recording As…",
-                                           action: #selector(MainWindowController.saveRecordingAs(_:)),
-                                           keyEquivalent: "")
-        saveRecordingItem.target = nil
-
-        let deleteMacroMenu = macroListMenu(title: "Delete Macro",
-                                            action: #selector(MainWindowController.deleteMacro(_:)))
-        let deleteMacroItem = NSMenuItem(title: "Delete Macro", action: nil, keyEquivalent: "")
-        deleteMacroItem.submenu = deleteMacroMenu
-        deleteMacroMenu.delegate = self
-        self.deleteMacroMenu = deleteMacroMenu
-
-        macroMenu.addItem(recordItem)
-        macroMenu.addItem(stopRecordingItem)
-        macroMenu.addItem(.separator())
-        macroMenu.addItem(playLastItem)
-        macroMenu.addItem(playMacroItem)
-        macroMenu.addItem(.separator())
-        macroMenu.addItem(saveRecordingItem)
-        macroMenu.addItem(deleteMacroItem)
-        menu.addItem((NSMenuItem(title: "Macro", action: nil, keyEquivalent: "").apply { $0.submenu = macroMenu }))
-
-        // Run menu: Notepad++ gives Run… its own top-level Run menu with F5,
-        // rather than nesting it under Tools, so Hexpad mirrors that layout.
-        // The item is nil-targeted so MainWindowController supplies both the
-        // action and the no-document validation. A bare function key means an
-        // empty modifier mask: the default would be Command.
-        let runMenu = NSMenu(title: "Run")
-        let runItem = NSMenuItem(title: "Run…",
-                                 action: #selector(MainWindowController.showRunCommandDialog(_:)),
-                                 keyEquivalent: "\u{F708}")
-        runItem.keyEquivalentModifierMask = []
-        runItem.target = nil
-        runMenu.addItem(runItem)
-        menu.addItem((NSMenuItem(title: "Run", action: nil, keyEquivalent: "").apply { $0.submenu = runMenu }))
-
-        
         // View menu
         let viewMenu = NSMenu(title: "View")
         let wordWrapItem = NSMenuItem(title: "Word Wrap", action: #selector(toggleWordWrap), keyEquivalent: "y")
@@ -467,6 +404,68 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
             languageMenu.addItem(item)
         }
         menu.addItem((NSMenuItem(title: "Language", action: nil, keyEquivalent: "").apply { $0.submenu = languageMenu }))
+
+        // Macro menu: recording, replay, and saved-macro management. Every
+        // action is nil-targeted so MainWindowController (the owner of the
+        // recorder state) handles both the action and its enabled state. The
+        // two name-list submenus are rebuilt by this delegate on open, like
+        // Open Recent, so they always mirror macros.json.
+        let macroMenu = NSMenu(title: "Macro")
+        let recordItem = NSMenuItem(title: "Record Macro",
+                                    action: #selector(MainWindowController.toggleMacroRecording(_:)),
+                                    keyEquivalent: "")
+        recordItem.target = nil
+        let stopRecordingItem = NSMenuItem(title: "Stop Recording",
+                                           action: #selector(MainWindowController.stopRecordingMacro(_:)),
+                                           keyEquivalent: "")
+        stopRecordingItem.target = nil
+        let playLastItem = NSMenuItem(title: "Play Last Macro",
+                                      action: #selector(MainWindowController.playLastMacro(_:)),
+                                      keyEquivalent: "")
+        playLastItem.target = nil
+
+        let playMacroMenu = macroListMenu(title: "Play Macro",
+                                          action: #selector(MainWindowController.playSavedMacro(_:)))
+        let playMacroItem = NSMenuItem(title: "Play Macro", action: nil, keyEquivalent: "")
+        playMacroItem.submenu = playMacroMenu
+        playMacroMenu.delegate = self
+        self.playMacroMenu = playMacroMenu
+
+        let saveRecordingItem = NSMenuItem(title: "Save Recording As…",
+                                           action: #selector(MainWindowController.saveRecordingAs(_:)),
+                                           keyEquivalent: "")
+        saveRecordingItem.target = nil
+
+        let deleteMacroMenu = macroListMenu(title: "Delete Macro",
+                                            action: #selector(MainWindowController.deleteMacro(_:)))
+        let deleteMacroItem = NSMenuItem(title: "Delete Macro", action: nil, keyEquivalent: "")
+        deleteMacroItem.submenu = deleteMacroMenu
+        deleteMacroMenu.delegate = self
+        self.deleteMacroMenu = deleteMacroMenu
+
+        macroMenu.addItem(recordItem)
+        macroMenu.addItem(stopRecordingItem)
+        macroMenu.addItem(.separator())
+        macroMenu.addItem(playLastItem)
+        macroMenu.addItem(playMacroItem)
+        macroMenu.addItem(.separator())
+        macroMenu.addItem(saveRecordingItem)
+        macroMenu.addItem(deleteMacroItem)
+        menu.addItem((NSMenuItem(title: "Macro", action: nil, keyEquivalent: "").apply { $0.submenu = macroMenu }))
+
+        // Run menu: Notepad++ gives Run… its own top-level Run menu with F5,
+        // rather than nesting it under Tools, so Hexpad mirrors that layout.
+        // The item is nil-targeted so MainWindowController supplies both the
+        // action and the no-document validation. A bare function key means an
+        // empty modifier mask: the default would be Command.
+        let runMenu = NSMenu(title: "Run")
+        let runItem = NSMenuItem(title: "Run…",
+                                 action: #selector(MainWindowController.showRunCommandDialog(_:)),
+                                 keyEquivalent: "\u{F708}")
+        runItem.keyEquivalentModifierMask = []
+        runItem.target = nil
+        runMenu.addItem(runItem)
+        menu.addItem((NSMenuItem(title: "Run", action: nil, keyEquivalent: "").apply { $0.submenu = runMenu }))
 
         // Tools menu: hashing and date/time insertion. Both groups are registry
         // commands, so the items use the shared performCommand action and the
