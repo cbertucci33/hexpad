@@ -3,7 +3,35 @@ import HexpadKit
 
 class MainWindowController: NSViewController {
     
-    let tabStore = TabStore()
+    /// The two tab groups. Two independent TabStore instances (rather than one
+    /// store with group membership) keep every existing command path working
+    /// against "the focused store"; a tab move between groups is a document
+    /// move between the two stores. Group 1 always exists; group 2 is created by
+    /// View > Toggle Split View and starts empty.
+    private let primaryPane = TabGroupPane(group: .primary)
+    private var secondaryPane: TabGroupPane?
+    private(set) var focusedGroup: TabGroup = .primary
+
+    /// The focused group's store. With the split closed this is group 1, which
+    /// is exactly the old single-store behaviour.
+    var tabStore: TabStore { activePane.tabStore }
+
+    private var activePane: TabGroupPane {
+        focusedGroup == .secondary ? (secondaryPane ?? primaryPane) : primaryPane
+    }
+
+    private var allPanes: [TabGroupPane] {
+        secondaryPane.map { [primaryPane, $0] } ?? [primaryPane]
+    }
+
+    /// Panes with the focused one last, for passes whose shared end state must
+    /// belong to the editor that can receive keystrokes (highlighting).
+    private var panesFocusedLast: [TabGroupPane] {
+        focusedGroup == .primary ? Array(allPanes.reversed()) : allPanes
+    }
+
+    var isSplitViewOpen: Bool { secondaryPane != nil }
+
     private var mainWindow: MainWindow?
     var recentFilesManager: RecentFilesManager?
 
@@ -33,21 +61,25 @@ class MainWindowController: NSViewController {
     /// Pending timer that clears a transient window-subtitle status flash.
     private var statusFlashWorkItem: DispatchWorkItem?
 
-    /// The text view backing the selected document. Exposed for menu
+    /// The text view backing the focused document. Exposed for menu
     /// validation/action tests in the app test bundle.
     var editorTextView: NSTextView? { editorContainer?.textView }
 
     /// Whether the macro recorder is currently appending commands.
     var isRecordingMacro: Bool { macroRecorder.isRecording }
     
-    // Subviews
-    private var tabBarView: TabBarView?
-    private var tabScrollView: NSScrollView?
-    private var editorContainer: EditorContainer?
-    /// Document whose buffer/undo stack is currently loaded in the editor.
-    private weak var editorBoundDoc: DocumentModel?
+    // Subviews. The focused group's views are reached through these computed
+    // names, so the existing command paths follow focus without a second copy
+    // of each action.
+    private var editorContainer: EditorContainer? { activePane.editor }
+    /// Document whose buffer/undo stack is currently loaded in the focused
+    /// editor.
+    private var editorBoundDoc: DocumentModel? { activePane.boundDocument }
     private var statusBar: StatusBar?
     private var findBar: FindBar?
+    private var dividerView: NSView?
+    /// Routes clicks in either group's editor/tab bar to ``focusGroup(_:)``.
+    private var mouseDownMonitor: Any?
 
     /// Single reusable Function List panel. The View item is nil-targeted, so
     /// this controller owns both the toggle and the no-document validation.
@@ -105,6 +137,9 @@ class MainWindowController: NSViewController {
         stopFileWatching()
         statusFlashWorkItem?.cancel()
         statusFlashWorkItem = nil
+        if let monitor = mouseDownMonitor {
+            NSEvent.removeMonitor(monitor)
+        }
         NotificationCenter.default.removeObserver(self)
         if let observer = textSelectionObserver {
             NotificationCenter.default.removeObserver(observer)
@@ -133,6 +168,27 @@ class MainWindowController: NSViewController {
             queue: .main
         ) { [weak self] _ in
             self?.updateStatusBar()
+        }
+        // Clicking in either group focuses it. A local monitor is enough here
+        // because the groups are siblings in this window; the event still runs
+        // its normal dispatch afterwards, so caret placement is unaffected.
+        mouseDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            self?.noteMouseDownForFocus(event)
+            return event
+        }
+    }
+
+    /// Focuses the group whose tab bar or editor contains the click. Clicks on
+    /// the shared chrome (find bar, status bar, divider) leave focus alone, so
+    /// the find bar keeps acting on the group the user last edited.
+    private func noteMouseDownForFocus(_ event: NSEvent) {
+        guard isSplitViewOpen, let window = view.window, event.window === window else { return }
+        let point = view.convert(event.locationInWindow, from: nil)
+        if primaryPane.editor.frame.contains(point) || primaryPane.tabScrollView.frame.contains(point) {
+            focusGroup(.primary)
+        } else if let secondary = secondaryPane,
+                  secondary.editor.frame.contains(point) || secondary.tabScrollView.frame.contains(point) {
+            focusGroup(.secondary)
         }
     }
 
@@ -163,25 +219,42 @@ class MainWindowController: NSViewController {
         // The notification object is the value the store normalized before
         // writing, so this is the applied truth; do not re-read from disk.
         preferences = updated.normalized()
-        guard previous != preferences, let editor = editorContainer else { return }
+        guard previous != preferences else { return }
 
-        editor.setBodyFont(PreferencesApplier.resolvedFont(family: preferences.fontFamily,
-                                                           size: preferences.fontSize))
+        // Font and wrap are per editor container; theme is applied through the
+        // highlighting pass. Every open group is updated so switching groups
+        // never shows a stale font or palette.
+        for pane in allPanes {
+            pane.editor.setBodyFont(PreferencesApplier.resolvedFont(family: preferences.fontFamily,
+                                                                    size: preferences.fontSize))
 
-        if previous.wordWrap != preferences.wordWrap {
-            // Write-through: the container persists the new value on its bound
-            // document. A direct text view or model write here would be a
-            // second, order-dependent path.
-            editor.setWordWrapEnabled(preferences.wordWrap)
+            if previous.wordWrap != preferences.wordWrap {
+                // Write-through: the container persists the new value on its
+                // bound document. A direct text view or model write here would
+                // be a second, order-dependent path.
+                pane.editor.setWordWrapEnabled(preferences.wordWrap)
+            }
         }
 
-        if previous.theme != preferences.theme,
-           let doc = tabStore.selectedDocument {
-            rehighlightAll(in: editor, document: doc)
+        if previous.theme != preferences.theme {
+            for pane in panesFocusedLast {
+                if let doc = pane.tabStore.selectedDocument {
+                    rehighlightAll(in: pane.editor, document: doc)
+                }
+            }
         }
     }
     
     @objc private func handleTabCloseRequested(_ notification: Notification) {
+        // The close button can live in either group's bar. Focus that group
+        // first so the index and the save prompt act on its store.
+        if let sourceBar = notification.userInfo?["tabBar"] as? TabBarView {
+            if let secondaryPane, sourceBar === secondaryPane.tabBar {
+                focusGroup(.secondary)
+            } else if sourceBar === primaryPane.tabBar {
+                focusGroup(.primary)
+            }
+        }
         guard let userInfo = notification.userInfo,
               let index = userInfo["index"] as? Int else { return }
         guard tabStore.count > 0, index >= 0, index < tabStore.count else { return }
@@ -227,7 +300,7 @@ class MainWindowController: NSViewController {
         // Persist the session on the same notice that refreshes the tab dots.
         // SessionStore coalesces bursts into one write, so this is not a
         // write per change.
-        SessionStore.scheduleSave(tabStore)
+        scheduleSessionSave()
         refreshTabBar()
         updateStatusBar()
         updateWindowTitle()
@@ -239,7 +312,7 @@ class MainWindowController: NSViewController {
         // Typing reaches this path too (NSTextViewDelegate republishes the
         // model notice), so this is the keystroke-driven session save. The
         // store's debounce collapses a typing burst into one write.
-        SessionStore.scheduleSave(tabStore)
+        scheduleSessionSave()
 
         // The Function List is a view of the same buffer: coalesce outline
         // rebuilds here, before the typing-specific early return below, so both
@@ -271,64 +344,55 @@ class MainWindowController: NSViewController {
     private func setupUI() {
         view.wantsLayer = true
         view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-        
-        let tabBar = TabBarView(tabStore: tabStore)
-        // Tabs scroll horizontally instead of clipping once they exceed the
-        // window; the bar itself grows to its content width.
-        let tabScroll = NSScrollView()
-        tabScroll.hasHorizontalScroller = true
-        tabScroll.autohidesScrollers = true
-        tabScroll.hasVerticalScroller = false
-        tabScroll.drawsBackground = false
-        tabScroll.borderType = .noBorder
-        tabScroll.documentView = tabBar
-        view.addSubview(tabScroll)
-        tabScrollView = tabScroll
-        tabBarView = tabBar
-        
-        let editor = EditorContainer()
-        view.addSubview(editor)
-        editorContainer = editor
+
+        // Group 1. A pane owns its tab bar, scroll view and editor, so opening
+        // group 2 later is the same construction plus a divider.
+        view.addSubview(primaryPane.tabScrollView)
+        view.addSubview(primaryPane.editor)
+        wire(primaryPane)
         
         let status = StatusBar()
         view.addSubview(status)
         statusBar = status
-
-        // Width-following masks so interim resizes stay sane even before
-        // viewDidLayout runs the authoritative pass.
-        tabBar.autoresizingMask = [.width, .height]
-        tabScroll.autoresizingMask = [.width, .minYMargin]
-        editor.autoresizingMask = [.width, .height]
         status.autoresizingMask = [.width, .maxYMargin]
         
         let find = FindBar()
         view.addSubview(find)
         findBar = find
-        find.tabStoreRef = tabStore
-        find.editorRef = editor
+        find.tabStoreRef = primaryPane.tabStore
+        find.editorRef = primaryPane.editor
         find.setupObservers()
-        
-        editor.textView.delegate = self
-        editor.onViewportChange = { [weak self] in
-            self?.refreshVisibleHighlighting()
-        }
-        editor.onAppearanceChange = { [weak self] in
-            self?.handleAppearanceChange()
-        }
-        
-        if let ruler = editor.ruler as? LineNumberGutter {
-            ruler.setClickHandler { [weak self] charIndex, anchorCharIndex in
-                self?.selectCharacter(charIndex, anchorCharIndex: anchorCharIndex)
-            }
-        }
         
         updateLayout()
     }
+
+    /// Connects a pane's editor and tab bar to the controller. Shared by both
+    /// groups so they cannot drift in what they wire.
+    private func wire(_ pane: TabGroupPane) {
+        pane.editor.textView.delegate = self
+        pane.editor.onViewportChange = { [weak self] in
+            self?.refreshVisibleHighlighting()
+        }
+        pane.editor.onAppearanceChange = { [weak self] in
+            self?.handleAppearanceChange()
+        }
+
+        let ruler = pane.editor.ruler as? LineNumberGutter
+        ruler?.setClickHandler { [weak self] charIndex, anchorCharIndex in
+            self?.selectCharacter(charIndex, anchorCharIndex: anchorCharIndex)
+        }
+
+        let group = pane.group
+        pane.tabBar.onFocus = { [weak self] in
+            self?.focusGroup(group)
+        }
+        pane.tabBar.onChange = { [weak self] in
+            self?.handlePaneTabChange()
+        }
+    }
     
     private func updateLayout() {
-        guard let tabBar = tabBarView,
-              let editor = editorContainer,
-              let status = statusBar else { return }
+        guard let status = statusBar else { return }
 
         let tabBarHeight: CGFloat = 32
         let statusHeight: CGFloat = 22
@@ -340,20 +404,74 @@ class MainWindowController: NSViewController {
         let findHeight = findBar?.preferredHeight(for: view.bounds.width) ?? 36
         let topInset = tabBarHeight + (findVisible ? findHeight : 0)
         let height = view.bounds.height
+        let width = view.bounds.width
 
-        tabScrollView?.frame = NSRect(x: 0, y: max(0, height - tabBarHeight), width: view.bounds.width, height: tabBarHeight)
-        tabBar.frame.size.height = tabBarHeight
-        tabBar.fitWidthToClip()
-        findBar?.frame = NSRect(x: 0,
-                                y: max(statusHeight, height - topInset),
-                                width: view.bounds.width,
-                                height: findHeight)
+        // The divider is one point of chrome between the two groups. Keeping
+        // the single-group widths untouched when the split is closed preserves
+        // the original layout math exactly.
+        let dividerWidth: CGFloat = isSplitViewOpen ? 1 : 0
+        let primaryWidth = isSplitViewOpen
+            ? max(0, floor((width - dividerWidth) / 2))
+            : width
+
+        layoutPane(primaryPane,
+                   x: 0,
+                   width: primaryWidth,
+                   height: height,
+                   topInset: topInset,
+                   statusHeight: statusHeight,
+                   tabBarHeight: tabBarHeight)
 
         let editorTop = height - topInset
         let editorHeight = max(editorTop - statusHeight, 100)
-        editor.frame = NSRect(x: 0, y: statusHeight, width: view.bounds.width, height: editorHeight)
 
-        status.frame = NSRect(x: 0, y: 0, width: view.bounds.width, height: statusHeight)
+        if let secondary = secondaryPane {
+            let x = primaryWidth + dividerWidth
+            layoutPane(secondary,
+                       x: x,
+                       width: max(0, width - x),
+                       height: height,
+                       topInset: topInset,
+                       statusHeight: statusHeight,
+                       tabBarHeight: tabBarHeight)
+            dividerView?.isHidden = false
+            dividerView?.frame = NSRect(x: primaryWidth,
+                                        y: statusHeight,
+                                        width: dividerWidth,
+                                        height: editorHeight)
+        } else {
+            dividerView?.isHidden = true
+        }
+
+        findBar?.frame = NSRect(x: 0,
+                                y: max(statusHeight, height - topInset),
+                                width: width,
+                                height: findHeight)
+
+        status.frame = NSRect(x: 0, y: 0, width: width, height: statusHeight)
+    }
+
+    /// Lays out one group's tab bar and editor inside its horizontal slice.
+    private func layoutPane(_ pane: TabGroupPane,
+                            x: CGFloat,
+                            width: CGFloat,
+                            height: CGFloat,
+                            topInset: CGFloat,
+                            statusHeight: CGFloat,
+                            tabBarHeight: CGFloat) {
+        pane.tabScrollView.frame = NSRect(x: x,
+                                          y: max(0, height - tabBarHeight),
+                                          width: width,
+                                          height: tabBarHeight)
+        pane.tabBar.frame.size.height = tabBarHeight
+        pane.tabBar.fitWidthToClip()
+
+        let editorTop = height - topInset
+        let editorHeight = max(editorTop - statusHeight, 100)
+        pane.editor.frame = NSRect(x: x,
+                                   y: statusHeight,
+                                   width: width,
+                                   height: editorHeight)
     }
 
     /// Resizing the window used to leave every subview at its launch frame
@@ -708,37 +826,149 @@ class MainWindowController: NSViewController {
     }
     
     func refreshTabBar() {
-        tabBarView?.reloadTabs()
+        allPanes.forEach { $0.tabBar.reloadTabs() }
     }
     
     func updateEditor() {
-        guard let editor = editorContainer else { return }
-        // The editor's text view shares the document's storage, so the model
-        // already holds every keystroke. bind() captures the live per-tab
-        // state on the way out and applies the incoming tab's state on the
-        // way in.
-        if let doc = tabStore.selectedDocument {
-            editorBoundDoc = doc
-            editor.bind(to: doc)
-            // Preferences are the global defaults (font) and the fallback for
-            // a tab with no state of its own (wrap). bind() has already
-            // restored the document's caret/scroll/zoom, so nothing here can
-            // clobber a restored selection.
-            applyPreferences(to: editor, for: doc)
-            applySyntaxHighlighting(to: editor, for: doc, forceReset: true)
-        } else {
-            editorBoundDoc = nil
-            highlightedDoc = nil
-            syntaxStore.reset()
-            lastHighlightedRange = NSRange(location: 0, length: 0)
-            editor.bind(to: nil)
-            applyPreferences(to: editor, for: nil)
+        // Bind both groups. The focused editor is highlighted last so the
+        // shared incremental-highlighting state (token cache + last painted
+        // range) belongs to the editor that can actually receive keystrokes.
+        // The other group keeps the colours already in its document storage
+        // until it is clicked.
+        for pane in allPanes {
+            bind(pane, highlight: pane.group == focusedGroup)
         }
         updateStatusBar()
         updateWindowTitle()
         // Tab/language changes replace the outline rather than editing it, so
         // this path is not debounced. A no-op when the panel is closed.
         refreshFunctionListImmediately()
+    }
+
+    /// Binds one group's editor to its store's selected document. The document
+    /// owns the storage, undo stack and editor state, so two panes never share
+    /// selection, scroll, dirty state or text.
+    private func bind(_ pane: TabGroupPane, highlight: Bool) {
+        if let doc = pane.tabStore.selectedDocument {
+            pane.boundDocument = doc
+            // bind() captures the outgoing document's caret/scroll/wrap/zoom
+            // and applies the incoming document's state.
+            pane.editor.bind(to: doc)
+            // Font is a global preference; wrap comes from the document once
+            // it exists. bind() has already restored the caret, so nothing
+            // here can clobber a restored selection.
+            applyPreferences(to: pane.editor, for: doc)
+            pane.editor.apply(theme: theme(for: pane.editor))
+            if highlight {
+                applySyntaxHighlighting(to: pane.editor, for: doc, forceReset: true)
+            }
+        } else {
+            pane.boundDocument = nil
+            pane.editor.bind(to: nil)
+            applyPreferences(to: pane.editor, for: nil)
+            pane.editor.apply(theme: theme(for: pane.editor))
+            if highlight {
+                highlightedDoc = nil
+                syntaxStore.reset()
+                lastHighlightedRange = NSRange(location: 0, length: 0)
+            }
+        }
+    }
+
+    /// Refreshes after a tab bar mutates its own store (click, reorder, or a
+    /// cross-group drag).
+    private func handlePaneTabChange() {
+        refreshTabBar()
+        updateEditor()
+    }
+
+    /// Makes `group` the focused group. Find and every Tools/Text command act
+    /// on the focused group's selected document, so that is the only state a
+    /// focus change needs to move.
+    func focusGroup(_ group: TabGroup) {
+        if group == .secondary && secondaryPane == nil { return }
+        guard group != focusedGroup else { return }
+        focusedGroup = group
+        let pane = activePane
+        findBar?.tabStoreRef = pane.tabStore
+        findBar?.editorRef = pane.editor
+        updateEditor()
+        if findBar?.isVisible == true {
+            findBar?.performFind()
+        }
+    }
+
+    /// The pane whose editor owns `textView`. Used by undo routing so a text
+    /// view in either group resolves against its own bound document.
+    private func pane(containing textView: NSTextView) -> TabGroupPane? {
+        allPanes.first { $0.editor.textView === textView }
+    }
+
+    // MARK: - Split view
+
+    /// View > Toggle Split View. Opens or closes the second group.
+    @objc func toggleSplitView(_ sender: Any?) {
+        if isSplitViewOpen {
+            closeSplitView()
+        } else {
+            openSplitView()
+        }
+    }
+
+    /// Opens group 2. It starts empty by design: the user drags tabs into it.
+    func openSplitView() {
+        guard secondaryPane == nil else { return }
+        let pane = TabGroupPane(group: .secondary)
+        secondaryPane = pane
+
+        view.addSubview(pane.tabScrollView)
+        view.addSubview(pane.editor)
+        wire(pane)
+
+        let divider = NSView()
+        divider.wantsLayer = true
+        divider.layer?.backgroundColor = NSColor.separatorColor.cgColor
+        view.addSubview(divider)
+        dividerView = divider
+
+        pane.tabBar.siblingTabBar = primaryPane.tabBar
+        primaryPane.tabBar.siblingTabBar = pane.tabBar
+
+        updateLayout()
+        updateEditor()
+    }
+
+    /// Closes group 2 and returns its tabs to group 1. Documents are never
+    /// discarded: a group close is a layout change, not a close-all.
+    func closeSplitView() {
+        guard let pane = secondaryPane else { return }
+
+        pane.editor.bind(to: nil)
+        pane.boundDocument = nil
+
+        let docs = pane.tabStore.documents
+        let previousSelection = primaryPane.tabStore.selectedIndex
+        pane.tabStore.closeAll()
+        primaryPane.tabStore.documents.append(contentsOf: docs)
+        if !primaryPane.tabStore.documents.isEmpty {
+            primaryPane.tabStore.selectedIndex = min(previousSelection,
+                                                     primaryPane.tabStore.documents.count - 1)
+        }
+
+        pane.tabBar.siblingTabBar = nil
+        primaryPane.tabBar.siblingTabBar = nil
+        pane.tabScrollView.removeFromSuperview()
+        pane.editor.removeFromSuperview()
+        dividerView?.removeFromSuperview()
+        dividerView = nil
+        secondaryPane = nil
+        focusedGroup = .primary
+        findBar?.tabStoreRef = primaryPane.tabStore
+        findBar?.editorRef = primaryPane.editor
+
+        updateLayout()
+        refreshTabBar()
+        updateEditor()
     }
 
     /// Applies the persisted font and word-wrap defaults to the bound editor.
@@ -753,14 +983,15 @@ class MainWindowController: NSViewController {
         editor.setWordWrapEnabled(document?.wordWrapEnabled ?? preferences.wordWrap)
     }
 
-    /// Re-applies persisted preferences to the selected editor. The app
-    /// delegate calls this once at launch, after session restore; tab binds
-    /// use the same helper so startup and switching cannot disagree.
+    /// Re-applies persisted preferences to the editors. The app delegate calls
+    /// this once at launch, after session restore; tab binds use the same
+    /// helper so startup and switching cannot disagree.
     func applyPreferences() {
-        guard let editor = editorContainer else { return }
-        applyPreferences(to: editor, for: tabStore.selectedDocument)
+        for pane in allPanes {
+            applyPreferences(to: pane.editor, for: pane.tabStore.selectedDocument)
+        }
         if let doc = tabStore.selectedDocument {
-            rehighlightAll(in: editor, document: doc)
+            rehighlightAll(in: activePane.editor, document: doc)
         }
     }
     
@@ -896,8 +1127,10 @@ class MainWindowController: NSViewController {
     /// the new appearance; explicit themes repaint identically (and are cheap
     /// to reapply because the cached theme record was invalidated).
     private func handleAppearanceChange() {
-        guard let editor = editorContainer, let doc = tabStore.selectedDocument else { return }
-        rehighlightAll(in: editor, document: doc)
+        for pane in panesFocusedLast {
+            guard let doc = pane.tabStore.selectedDocument else { continue }
+            rehighlightAll(in: pane.editor, document: doc)
+        }
     }
 
     /// Repaints every token in the bound document with the current theme.
@@ -1153,7 +1386,7 @@ class MainWindowController: NSViewController {
 
     /// Internal for app tests: exercises the same watcher path the timer runs.
     func checkExternalChanges() {
-        for doc in tabStore.documents {
+        for doc in allPanes.flatMap({ $0.tabStore.documents }) {
             guard let path = doc.filePath?.path else { continue }
             let attrs = try? FileManager.default.attributesOfItem(atPath: path)
             guard let modDate = attrs?[.modificationDate] as? Date else { continue }
@@ -1177,7 +1410,7 @@ class MainWindowController: NSViewController {
             }
             guard FileManager.default.fileExists(atPath: path) else { continue }
             guard reloadDocument(doc, from: doc.filePath!) else { continue }
-            if doc === tabStore.selectedDocument {
+            if allPanes.contains(where: { $0.tabStore.selectedDocument === doc }) {
                 updateEditor()
             }
         }
@@ -1791,12 +2024,35 @@ class MainWindowController: NSViewController {
     // MARK: - Session
     
     func saveSession() {
-        // The editor and every document share one buffer, so untitled
-        // (never-saved-to-disk) edits are already in tabStore. Capture the
-        // selected tab's caret/scroll/wrap/zoom first: tab switches capture on
-        // unbind, but the tab on screen may have moved since it was bound.
-        editorContainer?.captureEditorState()
-        try? SessionStore.save(tabStore)
+        // The editors and every document share their buffers, so untitled
+        // (never-saved-to-disk) edits are already in the tab stores. Capture
+        // each visible tab's caret/scroll/wrap/zoom first: tab switches
+        // capture on unbind, but the tab on screen may have moved since.
+        for pane in allPanes {
+            pane.editor.captureEditorState()
+        }
+        try? SessionStore.save(sessionSnapshot())
+    }
+
+    /// Coalesced write used by the edit notifications.
+    private func scheduleSessionSave() {
+        SessionStore.scheduleSave(sessionSnapshot())
+    }
+
+    /// One snapshot for the existing session schema, which stores a single tab
+    /// array and selected index.
+    ///
+    /// TODO: persist the split state itself (whether group 2 is open and which
+    /// documents belong to which group). That needs a schema addition in
+    /// SessionStore; until then both groups' documents are merged so closing
+    /// the app cannot drop a buffer from either group. On relaunch every tab
+    /// reopens in group 1.
+    private func sessionSnapshot() -> TabStore {
+        guard let secondaryPane else { return primaryPane.tabStore }
+        let merged = TabStore()
+        merged.documents = primaryPane.tabStore.documents + secondaryPane.tabStore.documents
+        merged.selectedIndex = primaryPane.tabStore.selectedIndex
+        return merged
     }
     
     // MARK: - Error
@@ -1919,6 +2175,13 @@ extension MainWindowController: NSMenuItemValidation {
         if menuItem.action == #selector(MainWindowController.unfoldAll(_:)) {
             return canUnfoldAll()
         }
+        if menuItem.action == #selector(MainWindowController.toggleSplitView(_:)) {
+            menuItem.state = isSplitViewOpen ? .on : .off
+            // Open/closed is a window capability, not a document command; keep
+            // it enabled while open even if both groups happen to be empty so
+            // the user can always close the split.
+            return view.window != nil && (isSplitViewOpen || primaryPane.tabStore.selectedDocument != nil)
+        }
         return true
     }
 }
@@ -1927,7 +2190,12 @@ extension MainWindowController: NSMenuItemValidation {
 
 extension MainWindowController: NSTextViewDelegate {
     func undoManager(for textView: NSTextView) -> UndoManager? {
-        editorBoundDoc?.undoManager ?? textView.undoManager
+        // Each group has its own bound document, so undo must resolve against
+        // the text view that asked rather than whichever group is focused.
+        if let pane = pane(containing: textView) {
+            return pane.boundDocument?.undoManager ?? textView.undoManager
+        }
+        return textView.undoManager
     }
 
     func textView(_ textView: NSTextView,

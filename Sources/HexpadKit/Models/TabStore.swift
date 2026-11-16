@@ -19,6 +19,15 @@ public final class TabStore: ObservableObject {
         documents.append(doc)
         selectedIndex = documents.count - 1
     }
+
+    /// Inserts `doc` at `index` and selects it. Used by the split view when a
+    /// tab is dragged from one group's bar into the other, where the drop
+    /// position matters (unlike `addDocument`, which always appends).
+    public func insertDocument(_ doc: DocumentModel, at index: Int) {
+        let clamped = max(0, min(index, documents.count))
+        documents.insert(doc, at: clamped)
+        selectedIndex = clamped
+    }
     
     public func removeDocument(at index: Int) {
         guard index >= 0, index < documents.count else { return }

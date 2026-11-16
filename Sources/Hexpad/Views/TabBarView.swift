@@ -5,6 +5,16 @@ class TabBarView: NSView {
     
     private let tabStore: TabStore
     private var tabButtons: [TabButton] = []
+
+    /// The other group's bar while the split view is open. Drags that leave
+    /// this bar over its sibling move the tab between the two TabStores.
+    weak var siblingTabBar: TabBarView?
+    /// Called when the user interacts with this bar, so the controller can make
+    /// this group the focused one.
+    var onFocus: (() -> Void)?
+    /// Called after a tab selection/reorder/transfer so the controller can
+    /// rebind the affected editors.
+    var onChange: (() -> Void)?
     
     init(tabStore: TabStore) {
         self.tabStore = tabStore
@@ -59,6 +69,7 @@ class TabBarView: NSView {
         tabStore.moveDocument(from: source, to: destination)
         reloadTabs()
         NotificationCenter.default.post(name: NSNotification.Name("TabStoreSelectedIndexDidChange"), object: nil)
+        onChange?()
     }
 
     /// Index whose slot contains the given point in bar coordinates.
@@ -67,11 +78,42 @@ class TabBarView: NSView {
         guard point.x >= 0, point.x < CGFloat(tabButtons.count) * slot else { return nil }
         return min(tabButtons.count - 1, max(0, Int(point.x / slot)))
     }
+
+    /// Insertion index for a drop at `point`, clamped to the current tab count
+    /// so a drop past the last tab appends.
+    func dropIndex(at point: NSPoint) -> Int {
+        guard let index = tabIndex(at: point) else { return tabStore.count }
+        return min(index, tabStore.count)
+    }
+
+    /// Accepts a tab dragged in from the sibling group's bar.
+    func insertDroppedDocument(_ doc: DocumentModel, at index: Int) {
+        tabStore.insertDocument(doc, at: index)
+        reloadTabs()
+        NotificationCenter.default.post(name: NSNotification.Name("TabStoreSelectedIndexDidChange"), object: nil)
+        onFocus?()
+        onChange?()
+    }
+
+    /// Moves the tab at `sourceIndex` into `target`'s store at `targetIndex`.
+    /// The document identity check makes a second drag event after the button
+    /// was removed by `reloadTabs` a no-op instead of moving a neighbour.
+    func transferTab(at sourceIndex: Int, doc: DocumentModel, to target: TabBarView, at targetIndex: Int) {
+        guard sourceIndex >= 0, sourceIndex < tabStore.count,
+              tabStore.documents[sourceIndex] === doc else { return }
+        tabStore.removeDocument(at: sourceIndex)
+        target.insertDroppedDocument(doc, at: targetIndex)
+        reloadTabs()
+        NotificationCenter.default.post(name: NSNotification.Name("TabStoreSelectedIndexDidChange"), object: nil)
+        onChange?()
+    }
     
     @objc private func tabClicked(_ sender: TabButton) {
+        onFocus?()
         tabStore.selectedIndex = sender.index
         reloadTabs()
         NotificationCenter.default.post(name: NSNotification.Name("TabStoreSelectedIndexDidChange"), object: nil)
+        onChange?()
     }
     
     @objc private func documentsDidChange() {
@@ -155,7 +197,13 @@ class TabButton: NSButton {
     }
     
     @objc private func closeTabClicked() {
-        NotificationCenter.default.post(name: NSNotification.Name("TabCloseRequested"), object: nil, userInfo: ["index": index])
+        // The bar identity rides along so closing a tab in the unfocused group
+        // targets that group's store, not whichever group happens to be focused.
+        var userInfo: [AnyHashable: Any] = ["index": index]
+        if let bar = reorderDelegate { userInfo["tabBar"] = bar }
+        NotificationCenter.default.post(name: NSNotification.Name("TabCloseRequested"),
+                                        object: nil,
+                                        userInfo: userInfo)
     }
 
     // MARK: - Drag reorder
@@ -171,6 +219,20 @@ class TabButton: NSButton {
         let here = convert(event.locationInWindow, from: nil)
         if abs(here.x - start.x) > 6 { draggedOut = true }
         guard draggedOut, let bar = reorderDelegate else { return }
+
+        // Cross-group drop: the pointer is over the sibling bar. This runs
+        // before same-bar reorder because the two bars never overlap.
+        if let sibling = bar.siblingTabBar {
+            bar.onFocus?()
+            let inSibling = sibling.convert(event.locationInWindow, from: nil)
+            if sibling.bounds.contains(inSibling) {
+                sibling.onFocus?()
+                bar.transferTab(at: index, doc: doc, to: sibling,
+                                at: sibling.dropIndex(at: inSibling))
+                return
+            }
+        }
+
         let inBar = bar.convert(event.locationInWindow, from: nil)
         if let target = bar.tabIndex(at: inBar), target != index {
             bar.moveTab(from: index, to: target)

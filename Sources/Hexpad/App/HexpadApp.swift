@@ -337,6 +337,16 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         viewMenu.addItem(zoomOutItem)
         viewMenu.addItem(resetZoomItem)
         viewMenu.addItem(.separator())
+        // Split view: group 2 starts empty and tabs are dragged into it. The
+        // item is nil-targeted so MainWindowController owns both the action and
+        // the open/closed checkmark.
+        let splitViewItem = NSMenuItem(title: "Toggle Split View",
+                                       action: #selector(MainWindowController.toggleSplitView(_:)),
+                                       keyEquivalent: "2")
+        splitViewItem.keyEquivalentModifierMask = [.command, .shift]
+        splitViewItem.target = nil
+        viewMenu.addItem(splitViewItem)
+        viewMenu.addItem(.separator())
         viewMenu.addItem(appearanceItem)
         menu.addItem((NSMenuItem(title: "View", action: nil, keyEquivalent: "").apply { $0.submenu = viewMenu }))
         
