@@ -249,45 +249,26 @@ enum PreferencesStore {
     }
 }
 
-// MARK: - Live application
+// MARK: - Visual mapping
 
-/// Applies preferences to the editor that is currently on screen.
+/// Pure mappings from ``Preferences`` values to editor visuals.
 ///
-/// `MainWindowController` exposes its text view and its view hierarchy, but it
-/// owns font/highlighting state privately. Applying through those read-only
-/// accessors keeps this slice out of the window controller. Per-document
-/// defaults (theme persistence across tab switches, auto-indent, auto-close,
-/// tab size) still need controller support; see the follow-up note in
-/// ``PreferencesWindowController``.
+/// This type does not apply a whole preference set. Saving posts
+/// `.preferencesDidChange` and every `MainWindowController` applies that
+/// notification to its own editor (`handlePreferencesDidChange`), so the
+/// notification is the single live-apply path: a change cannot be applied
+/// twice, in two orders, or through two different wrap implementations.
+///
+/// The font resolution and theme-painting helpers stay here because the
+/// Preferences preview, startup/tab-bind mapping, and palette tests all share
+/// that math; live theme changes during a session go through the controller's
+/// re-highlight path instead.
+///
+/// Deferred vs. done: theme persistence across tab switches is implemented (the
+/// controller re-resolves the global preference on every bind) and word wrap is
+/// applied live. Auto-indent, auto-close, tab width, and spaces/tabs are still
+/// stored only and are not applied anywhere yet.
 enum PreferencesApplier {
-
-    /// Which editor aspects to touch. The Preferences panes apply only what
-    /// they changed, so changing the font never repaints an unrelated theme.
-    struct Options: OptionSet {
-        let rawValue: Int
-        static let font = Options(rawValue: 1 << 0)
-        static let wrap = Options(rawValue: 1 << 1)
-        static let theme = Options(rawValue: 1 << 2)
-        static let all: Options = [.font, .wrap, .theme]
-    }
-
-    static func apply(_ preferences: Preferences,
-                      to controller: MainWindowController?,
-                      options: Options = .all) {
-        guard let controller else { return }
-        let editor = editorContainer(in: controller.view)
-        let textView = editor?.textView ?? controller.editorTextView
-
-        if options.contains(.font) {
-            applyFont(preferences, editor: editor, textView: textView)
-        }
-        if options.contains(.wrap) {
-            applyWordWrap(preferences.wordWrap, to: textView)
-        }
-        if options.contains(.theme) {
-            applyTheme(preferences.themePreference, to: textView)
-        }
-    }
 
     // MARK: Font
 
@@ -299,26 +280,6 @@ enum PreferencesApplier {
                                          weight: 5,
                                          size: clamped)
             ?? NSFont.monospacedSystemFont(ofSize: clamped, weight: .regular)
-    }
-
-    static func applyFont(_ preferences: Preferences,
-                          editor: EditorContainer?,
-                          textView: NSTextView?) {
-        let font = resolvedFont(family: preferences.fontFamily, size: preferences.fontSize)
-        if let editor {
-            // Updates bodyFont as well, so the next tab bind keeps the choice.
-            editor.setBodyFont(font)
-        } else {
-            textView?.font = font
-        }
-    }
-
-    // MARK: Word wrap
-
-    /// The editor maps word wrap to `isHorizontallyResizable` in reverse, which
-    /// is exactly what the View > Word Wrap menu toggles.
-    static func applyWordWrap(_ enabled: Bool, to textView: NSTextView?) {
-        textView?.isHorizontallyResizable = !enabled
     }
 
     // MARK: Theme
@@ -433,9 +394,11 @@ enum PreferencesApplier {
 /// Settings. Four panes: Font, Editor, Appearance, Advanced.
 final class PreferencesWindowController: NSWindowController {
 
-    /// The editor window whose text view receives live changes. The app
-    /// delegate points this at its `MainWindowController` each time the window
-    /// is shown; tests may leave it nil and use the appliers directly.
+    /// The editor window the app delegate associates with this panel. Live
+    /// application does not read this: saving posts `.preferencesDidChange`,
+    /// which every `MainWindowController` observes. The property stays so the
+    /// delegate's handoff still compiles, but it is intentionally not an apply
+    /// target.
     weak var targetController: MainWindowController?
 
     private var preferences = PreferencesStore.load()
@@ -736,17 +699,17 @@ final class PreferencesWindowController: NSWindowController {
 
     @objc private func fontFamilyChanged() {
         guard let family = fontFamilyPopup.titleOfSelectedItem else { return }
-        persist(options: .font) { $0.fontFamily = family }
+        persist { $0.fontFamily = family }
     }
 
     @objc private func fontSizeChanged(_ sender: NSControl) {
         let value = sender === fontSizeStepper ? fontSizeStepper.doubleValue
                                                : fontSizeField.doubleValue
-        persist(options: .font) { $0.fontSize = CGFloat(value) }
+        persist { $0.fontSize = CGFloat(value) }
     }
 
     @objc private func editorCheckboxChanged() {
-        persist(options: .wrap) {
+        persist {
             $0.wordWrap = wordWrapCheckbox.state == .on
             $0.autoIndent = autoIndentCheckbox.state == .on
             $0.autoCloseBrackets = autoCloseCheckbox.state == .on
@@ -765,7 +728,7 @@ final class PreferencesWindowController: NSWindowController {
 
     @objc private func themeChanged() {
         guard let raw = themePopup.titleOfSelectedItem else { return }
-        persist(options: .theme) { $0.theme = raw }
+        persist { $0.theme = raw }
     }
 
     @objc private func resetToDefaults() {
@@ -773,7 +736,6 @@ final class PreferencesWindowController: NSWindowController {
             try PreferencesStore.resetToDefaults()
             preferences = .defaults
             refreshControls()
-            PreferencesApplier.apply(preferences, to: resolvedTargetController())
         } catch {
             showError(error)
         }
@@ -781,24 +743,17 @@ final class PreferencesWindowController: NSWindowController {
 
     // MARK: - Persistence
 
-    private func persist(options: PreferencesApplier.Options = [],
-                         _ mutate: (inout Preferences) -> Void) {
+    /// Persists one control's change. The store posts `.preferencesDidChange`
+    /// with the normalized value; every `MainWindowController` observer applies
+    /// it to its editor. This method intentionally applies nothing itself: the
+    /// notification is the single live-apply path.
+    private func persist(_ mutate: (inout Preferences) -> Void) {
         do {
             preferences = try PreferencesStore.update(mutate)
             refreshControls()
-            PreferencesApplier.apply(preferences,
-                                     to: resolvedTargetController(),
-                                     options: options)
         } catch {
             showError(error)
         }
-    }
-
-    /// The controller the delegate handed us, or the only document window when
-    /// the window controller is used standalone.
-    private func resolvedTargetController() -> MainWindowController? {
-        if let targetController { return targetController }
-        return NSApp.windows.lazy.compactMap { $0.contentViewController as? MainWindowController }.first
     }
 
     private func showError(_ error: Error) {

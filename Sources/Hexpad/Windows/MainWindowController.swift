@@ -143,14 +143,23 @@ class MainWindowController: NSViewController {
 
     /// Applies a live preference change to the selected editor.
     ///
+    /// This is the single live-apply path: `PreferencesStore` posts
+    /// `.preferencesDidChange` with the normalized value, and observers apply
+    /// that value directly. Nothing re-reads the file or applies preferences a
+    /// second time, so font, wrap, and theme can never be applied twice or in
+    /// two different orders.
+    ///
     /// Font and theme are global editor settings. Word wrap is still owned by
     /// each document (`DocumentModel.editorState`), so changing the preference
-    /// writes it through to the selected tab, making it that tab's explicit
-    /// value; other tabs keep their own state and new tabs use the preference
-    /// as their default.
+    /// goes through ``EditorContainer/setWordWrapEnabled(_:)``, which writes the
+    /// value through to the selected tab, making it that tab's explicit value;
+    /// other tabs keep their own state and new tabs use the preference as their
+    /// default.
     @objc private func handlePreferencesDidChange(_ notification: Notification) {
         guard let updated = notification.object as? Preferences else { return }
         let previous = preferences
+        // The notification object is the value the store normalized before
+        // writing, so this is the applied truth; do not re-read from disk.
         preferences = updated.normalized()
         guard previous != preferences, let editor = editorContainer else { return }
 
@@ -158,9 +167,9 @@ class MainWindowController: NSViewController {
                                                            size: preferences.fontSize))
 
         if previous.wordWrap != preferences.wordWrap {
-            if let doc = tabStore.selectedDocument {
-                doc.wordWrapEnabled = preferences.wordWrap
-            }
+            // Write-through: the container persists the new value on its bound
+            // document. A direct text view or model write here would be a
+            // second, order-dependent path.
             editor.setWordWrapEnabled(preferences.wordWrap)
         }
 

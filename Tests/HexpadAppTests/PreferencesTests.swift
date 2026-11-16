@@ -308,20 +308,26 @@ final class PreferencesTests: XCTestCase {
         XCTAssertEqual(PreferencesApplier.detectedTheme(of: textView), .monokai)
     }
 
-    func testWordWrapPreferenceIsReadAndApplied() throws {
+    func testWordWrapPreferenceIsReadAndAppliedThroughTheContainer() throws {
         var preferences = Preferences.defaults
         preferences.wordWrap = true
         try PreferencesStore.save(preferences)
 
         XCTAssertTrue(PreferencesStore.load().wordWrap)
 
-        let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 320, height: 120))
-        textView.isHorizontallyResizable = true
-        PreferencesApplier.applyWordWrap(true, to: textView)
-        XCTAssertFalse(textView.isHorizontallyResizable)
+        // Contract change: the container is the only wrap apply path. It maps
+        // wrap to `isHorizontallyResizable` and writes through to the bound
+        // document, instead of the old direct text view assignment.
+        let editor = EditorContainer()
+        let doc = DocumentModel(text: "")
+        editor.bind(to: doc)
+        editor.setWordWrapEnabled(true)
+        XCTAssertFalse(editor.textView.isHorizontallyResizable)
+        XCTAssertTrue(doc.wordWrapEnabled, "the container write-through persists the choice")
 
-        PreferencesApplier.applyWordWrap(false, to: textView)
-        XCTAssertTrue(textView.isHorizontallyResizable)
+        editor.setWordWrapEnabled(false)
+        XCTAssertTrue(editor.textView.isHorizontallyResizable)
+        XCTAssertFalse(doc.wordWrapEnabled)
     }
 
     func testFontPreferenceResolvesMonospacedFont() {
@@ -342,9 +348,44 @@ final class PreferencesTests: XCTestCase {
 
         let editor = try XCTUnwrap(PreferencesApplier.editorContainer(in: controller.view))
         XCTAssertTrue(editor.textView === controller.editorTextView)
+    }
 
-        PreferencesApplier.apply(.defaults, to: controller)
-        XCTAssertEqual(editor.bodyFont.pointSize, Preferences.defaults.fontSize)
+    /// P2 contract: `.preferencesDidChange` is the single live-apply path.
+    ///
+    /// The notification drives font and wrap through the controller. Wrap is
+    /// observable on the bound document because it can only get there via
+    /// `EditorContainer.setWordWrapEnabled(_:)`, whose write-through updates
+    /// `editorState`; a direct `isHorizontallyResizable` assignment (the old
+    /// second path) would leave the model stale.
+    func testPreferenceNotificationIsTheSingleApplyPath() throws {
+        try PreferencesStore.save(.defaults)
+
+        let window = MainWindow()
+        let controller = MainWindowController(window: window)
+        window.contentViewController = controller
+        _ = controller.view
+
+        let editor = try XCTUnwrap(PreferencesApplier.editorContainer(in: controller.view))
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+
+        // Start from the unwrapped state the test expects to leave behind.
+        editor.setWordWrapEnabled(false)
+        XCTAssertTrue(editor.textView.isHorizontallyResizable)
+        XCTAssertFalse(doc.wordWrapEnabled)
+
+        var updated = Preferences.defaults
+        updated.wordWrap = true
+        updated.fontSize = 19
+        NotificationCenter.default.post(name: .preferencesDidChange, object: updated)
+
+        XCTAssertEqual(controller.preferences, updated,
+                       "the controller adopts the normalized notification object, not the disk")
+        XCTAssertEqual(editor.bodyFont.pointSize, 19)
+        XCTAssertFalse(editor.textView.isHorizontallyResizable)
+        XCTAssertTrue(doc.wordWrapEnabled,
+                      "wrap reaches the model only through the container write-through")
+        XCTAssertEqual(doc.editorState.wordWrapEnabled, true,
+                       "editorState reflects the same write-through, not a second apply pass")
     }
 
     // MARK: - Window
