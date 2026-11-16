@@ -13,9 +13,18 @@ class MainWindowController: NSViewController {
     private let commandRegistry = CommandRegistry.default
 
     /// The macro being recorded (or the last one stopped). This is the one
-    /// place recording state lives; `performCommand` is the single capture
-    /// point that feeds it, so no command can reach the editor without being
-    /// recorded while this model is recording.
+    /// place recording state lives. `performCommand` is the single capture
+    /// point that feeds it: line edits, bookmark commands, Tools (hash and
+    /// date/time), Line Ops and the view-only fold/wrap commands all funnel
+    /// through it, so no macro-recordable action can reach the editor without
+    /// being recorded while this model is recording.
+    ///
+    /// Recording and replay are deliberately asymmetric for view-only commands.
+    /// Text commands (everything except fold-all/unfold-all/toggle-word-wrap)
+    /// replay through `MacroModel` against document state. View commands are
+    /// recorded and can be replayed as no-ops only: folding and wrapping live in
+    /// the editor view, not in `DocumentState`, so a replay reports those steps
+    /// as skipped instead of silently pretending they ran.
     private(set) var macroRecorder = MacroModel(name: "Macro")
 
     /// The most recent recording or saved macro played, used by Play Last Macro.
@@ -1162,14 +1171,16 @@ class MainWindowController: NSViewController {
     // MARK: - View
 
     /// View > Fold All. Nil-targeted so menu validation can disable it when
-    /// there is no document or nothing foldable.
+    /// there is no document or nothing foldable. It dispatches through
+    /// ``performCommand(identifier:)`` so the action is macro-recorded like any
+    /// other command.
     @objc func foldAll(_ sender: Any?) {
-        editorContainer?.foldAll()
+        performCommand(identifier: "fold-all")
     }
 
-    /// View > Unfold All.
+    /// View > Unfold All. Recorded through the same capture point as Fold All.
     @objc func unfoldAll(_ sender: Any?) {
-        editorContainer?.unfoldAll()
+        performCommand(identifier: "unfold-all")
     }
 
     /// Both fold-all commands require an open document with at least one
@@ -1182,9 +1193,10 @@ class MainWindowController: NSViewController {
         canFoldAll()
     }
 
+    /// View > Word Wrap. Routes through the registry so the toggle is recorded
+    /// while a macro is being captured.
     func toggleWordWrap() {
-        guard let editor = editorContainer else { return }
-        editor.setWordWrapEnabled(!editor.isWordWrapEnabled)
+        performCommand(identifier: "toggle-word-wrap")
     }
     
     func zoomIn() {
@@ -1298,6 +1310,9 @@ class MainWindowController: NSViewController {
               let command = commandRegistry.command(for: identifier) else {
             return false
         }
+        if command.viewExecute != nil {
+            return canPerformViewCommand(identifier)
+        }
         let state = DocumentState(text: doc.text,
                                   selection: editor.textView.selectedRange,
                                   bookmarkState: doc.bookmarkState)
@@ -1311,6 +1326,18 @@ class MainWindowController: NSViewController {
         return result.text != doc.text
     }
 
+    /// View commands are only applicable when the live editor can service
+    /// their hook: folding needs foldable ranges, wrapping only needs an open
+    /// document. The identifiers mirror ``CommandRegistry/defaultViewCommands``.
+    private func canPerformViewCommand(_ identifier: String) -> Bool {
+        switch identifier {
+        case "fold-all": return canFoldAll()
+        case "unfold-all": return canUnfoldAll()
+        case "toggle-word-wrap": return editorContainer != nil
+        default: return false
+        }
+    }
+
     /// Runs a registry command against the selected document.
     ///
     /// The command receives the full ``DocumentState`` (text, selection and
@@ -1318,11 +1345,27 @@ class MainWindowController: NSViewController {
     /// change is applied as one `DocumentModel` replacement on the document's
     /// undo stack; bookmark changes go back to the document and the editor
     /// container so the gutter markers update immediately.
+    ///
+    /// View-only commands (fold-all/unfold-all/toggle-word-wrap) take the same
+    /// recording path but execute through ``EditorCommandContext`` against the
+    /// live editor, because their effect is not part of the document text.
     @discardableResult
     func performCommand(identifier: String, parameter: String? = nil) -> Bool {
         guard let editor = editorContainer,
               let doc = tabStore.selectedDocument,
-              let result = commandResult(identifier: identifier,
+              let command = commandRegistry.command(for: identifier) else {
+            return false
+        }
+
+        if command.viewExecute != nil {
+            // The single macro capture point, view-command path. Recording
+            // happens before execution, matching the text-command path.
+            macroRecorder.record(identifier, parameter: parameter)
+            return commandRegistry.executeView(identifier,
+                                               context: editorCommandContext(for: editor)) ?? false
+        }
+
+        guard let result = commandResult(identifier: identifier,
                                          parameter: parameter,
                                          doc: doc,
                                          editor: editor) else {
@@ -1331,11 +1374,24 @@ class MainWindowController: NSViewController {
 
         // The single macro capture point: every command that actually runs
         // through the registry is appended while recording. Replay never calls
-        // back into here (it applies one final result), so playing a macro
-        // cannot re-record its own steps.
+        // back into here — `MacroModel.replay` runs each step through the
+        // registry directly and the app applies one final result — so playing a
+        // macro cannot re-record its own steps.
         macroRecorder.record(identifier, parameter: parameter)
 
         return applyCommandResult(result, to: doc, editor: editor)
+    }
+
+    /// Installs the live-editor hooks a view-only command needs.
+    ///
+    /// The closures read the current editor at execution time (not at definition
+    /// time), and report whether anything actually changed.
+    private func editorCommandContext(for editor: EditorContainer) -> EditorCommandContext {
+        EditorCommandContext(
+            foldAll: { editor.foldAll() > 0 },
+            unfoldAll: { editor.unfoldAll() > 0 },
+            toggleWordWrap: { editor.setWordWrapEnabled(!editor.isWordWrapEnabled) }
+        )
     }
 
     /// Resolves a registry command against the selected document's live state,
@@ -1523,7 +1579,11 @@ class MainWindowController: NSViewController {
     ///
     /// Replay itself is pure (``MacroModel/replay(using:text:selection:)``);
     /// skipped steps are reported in a transient status flash and do not stop
-    /// the remaining steps, matching the Kit model's contract.
+    /// the remaining steps, matching the Kit model's contract. View-only steps
+    /// (`fold-all`, `unfold-all`, `toggle-word-wrap`) are recorded like any
+    /// other command but have no text effect, so replay reports them as
+    /// no-change skips; restoring view state is outside the document replay
+    /// contract.
     @discardableResult
     func playMacro(_ macro: MacroModel) -> Bool {
         guard !macro.isEmpty,
@@ -1619,6 +1679,15 @@ class MainWindowController: NSViewController {
 
         var title: String { rawValue }
 
+        /// Registry command implementing this algorithm.
+        var commandIdentifier: String {
+            switch self {
+            case .md5: return "hash-md5"
+            case .sha1: return "hash-sha1"
+            case .sha256: return "hash-sha256"
+            }
+        }
+
         /// Lowercase hexadecimal digest of the UTF-8 text, as HashKit returns.
         func digest(of text: String) -> String {
             switch self {
@@ -1639,6 +1708,15 @@ class MainWindowController: NSViewController {
 
         var title: String { rawValue }
 
+        /// Registry command implementing this style.
+        var commandIdentifier: String {
+            switch self {
+            case .shortDate: return "insert-date"
+            case .shortTime: return "insert-time"
+            case .fullDateTime: return "insert-datetime"
+            }
+        }
+
         func string(from date: Date) -> String {
             switch self {
             case .shortDate: return DateTimeInsert.shortDate(date)
@@ -1651,59 +1729,22 @@ class MainWindowController: NSViewController {
 
     /// Tools > MD5 / SHA-1 / SHA-256.
     ///
-    /// Digests the selected text when there is a selection; otherwise it
-    /// digests the whole buffer. The digest is inserted at the caret through
-    /// the document's replacement path, so it is one undoable edit and shares
-    /// the per-document undo stack with typing and the Text menu commands.
+    /// The digest is computed by the registry (`hash-*` group); this action only
+    /// maps the menu's legacy raw value to that identifier. The registry path
+    /// digests the selection when there is one and the whole buffer otherwise,
+    /// then inserts the digest at the caret as one undoable edit.
     @objc func insertHashDigest(_ sender: NSMenuItem) {
-        guard let identifier = sender.representedObject as? String,
-              let algorithm = HashAlgorithm(rawValue: identifier) else { return }
-
-        let source = selectedTextForTools() ?? tabStore.selectedDocument?.text
-        guard let source else { return }
-        insertAtCaret(algorithm.digest(of: source))
+        guard let rawValue = sender.representedObject as? String,
+              let algorithm = HashAlgorithm(rawValue: rawValue) else { return }
+        performCommand(identifier: algorithm.commandIdentifier)
     }
 
-    /// Tools > Insert Date/Time. Formats `Date()` at the moment the item is
-    /// chosen and inserts it at the caret as one undoable edit.
+    /// Tools > Insert Date/Time. The registry formats the timestamp when the
+    /// command executes, so replay inserts a fresh value.
     @objc func insertDateTime(_ sender: NSMenuItem) {
-        guard let identifier = sender.representedObject as? String,
-              let style = DateTimeStyle(rawValue: identifier) else { return }
-        insertAtCaret(style.string(from: Date()))
-    }
-
-    /// Non-empty selection within the buffer, or nil when the caret sits in an
-    /// empty selection. Reads the model's text so hashing matches what a save
-    /// would write.
-    private func selectedTextForTools() -> String? {
-        guard let editor = editorContainer, let doc = tabStore.selectedDocument else { return nil }
-        let selection = editor.textView.selectedRange
-        let length = (doc.text as NSString).length
-        guard selection.location != NSNotFound,
-              selection.length > 0,
-              selection.location <= length,
-              NSMaxRange(selection) <= length else { return nil }
-        return (doc.text as NSString).substring(with: selection)
-    }
-
-    /// Inserts `text` at the caret, replacing nothing, as exactly one undoable
-    /// `DocumentModel` replacement. The caret ends after the inserted text.
-    @discardableResult
-    private func insertAtCaret(_ text: String) -> Bool {
-        guard let editor = editorContainer, let doc = tabStore.selectedDocument else { return false }
-
-        let length = (doc.text as NSString).length
-        let caret = min(max(0, editor.textView.selectedRange.location), length)
-        doc.replaceCharacters(in: NSRange(location: caret, length: 0), with: text)
-
-        let inserted = NSRange(location: caret, length: (text as NSString).length)
-        editor.textView.setSelectedRange(NSRange(location: NSMaxRange(inserted), length: 0))
-        editor.textView.scrollRangeToVisible(inserted)
-
-        // Same notice the Text menu republishes, so tab dirty dots, the window
-        // title and the status bar update on the same run loop turn.
-        NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
-        return true
+        guard let rawValue = sender.representedObject as? String,
+              let style = DateTimeStyle(rawValue: rawValue) else { return }
+        performCommand(identifier: style.commandIdentifier)
     }
 
     /// Both Tools groups need an open document; validation funnels through
@@ -1714,26 +1755,14 @@ class MainWindowController: NSViewController {
 
     // MARK: - Line operations
 
-    /// Apply a text transform to the selection when there is one, otherwise to
-    /// the whole document. LineOps shipped fully tested but had no menu at all.
-    private func applyLineOp(_ transform: (String) -> String) {
-        guard let editor = editorContainer, let doc = tabStore.selectedDocument else { return }
-        let sel = editor.textView.selectedRange
-        if sel.length > 0 {
-            guard let swiftRange = Range(sel, in: doc.text) else { return }
-            let slice = String(doc.text[swiftRange])
-            // Mutating the shared storage keeps the visible text and the model
-            // in step, and registers the transform on this document's undo stack.
-            doc.replaceCharacters(in: sel, with: transform(slice))
-        } else {
-            doc.replaceAllText(with: transform(doc.text))
-        }
-    }
-
-    func sortLinesAscending() { applyLineOp(LineOps.sortAscending) }
-    func sortLinesDescending() { applyLineOp(LineOps.sortDescending) }
-    func removeDuplicateLines() { applyLineOp(LineOps.removeDuplicates) }
-    func removeBlankLines() { applyLineOp(LineOps.removeBlankLines) }
+    /// Bulk line operations now live in `CommandRegistry` as the
+    /// `lineOpCommands` group, so they record/replay and can take keybinding
+    /// overrides. These wrappers keep the existing controller API for callers
+    /// and tests while routing through the same capture point.
+    func sortLinesAscending() { performCommand(identifier: "sort-lines-ascending") }
+    func sortLinesDescending() { performCommand(identifier: "sort-lines-descending") }
+    func removeDuplicateLines() { performCommand(identifier: "remove-duplicate-lines") }
+    func removeBlankLines() { performCommand(identifier: "remove-blank-lines") }
     
     func setLanguage(_ lang: Language) {
         if let doc = tabStore.selectedDocument {

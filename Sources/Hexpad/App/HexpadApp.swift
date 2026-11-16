@@ -323,6 +323,14 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         let viewMenu = NSMenu(title: "View")
         let wordWrapItem = NSMenuItem(title: "Word Wrap", action: #selector(toggleWordWrap), keyEquivalent: "y")
         wordWrapItem.target = self
+        // These three view actions are registry identifiers too, so a saved
+        // keybinding override applies even though the items keep their stable
+        // selectors (and Fold All/Unfold All keep nil targets for validation).
+        wordWrapItem.representedObject = "toggle-word-wrap"
+        if let binding = KeybindingStore.resolvedBinding(for: "toggle-word-wrap") {
+            wordWrapItem.keyEquivalent = binding.keyEquivalent
+            wordWrapItem.keyEquivalentModifierMask = binding.modifierMask
+        }
         // Notepad++ toggles the Function List with Ctrl+F12; the macOS
         // convention is the same chord with Command. F12 alone is left to the
         // system (Mission Control/Launchpad on some setups). The item is
@@ -341,11 +349,21 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
                                      keyEquivalent: "0")
         foldAllItem.keyEquivalentModifierMask = [.option]
         foldAllItem.target = nil
+        foldAllItem.representedObject = "fold-all"
+        if let binding = KeybindingStore.resolvedBinding(for: "fold-all") {
+            foldAllItem.keyEquivalent = binding.keyEquivalent
+            foldAllItem.keyEquivalentModifierMask = binding.modifierMask
+        }
         let unfoldAllItem = NSMenuItem(title: "Unfold All",
                                        action: #selector(MainWindowController.unfoldAll(_:)),
                                        keyEquivalent: "0")
         unfoldAllItem.keyEquivalentModifierMask = [.option, .shift]
         unfoldAllItem.target = nil
+        unfoldAllItem.representedObject = "unfold-all"
+        if let binding = KeybindingStore.resolvedBinding(for: "unfold-all") {
+            unfoldAllItem.keyEquivalent = binding.keyEquivalent
+            unfoldAllItem.keyEquivalentModifierMask = binding.modifierMask
+        }
         let zoomInItem = NSMenuItem(title: "Zoom In", action: #selector(zoomIn), keyEquivalent: "+")
         zoomInItem.target = self
         let zoomOutItem = NSMenuItem(title: "Zoom Out", action: #selector(zoomOut), keyEquivalent: "-")
@@ -422,15 +440,20 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         encodingMenu.addItem(eolItem)
         menu.addItem((NSMenuItem(title: "Encoding", action: nil, keyEquivalent: "").apply { $0.submenu = encodingMenu }))
 
-        // Line operations menu: LineOps was fully implemented and unit-tested
-        // but unreachable from the app.
+        // Line operations menu: the registry owns these commands, so the menu
+        // items share the same identifiers, macro capture and keybinding
+        // override path as the Text menu.
         let lineOpsMenu = NSMenu(title: "Line Operations")
-        for (title, sel) in [("Sort Lines A-Z", #selector(sortLinesAscending)),
-                             ("Sort Lines Z-A", #selector(sortLinesDescending)),
-                             ("Remove Duplicate Lines", #selector(removeDuplicateLines)),
-                             ("Remove Blank Lines", #selector(removeBlankLines))] {
-            let item = NSMenuItem(title: title, action: sel, keyEquivalent: "")
-            item.target = self
+        for command in CommandRegistry.default.lineOpCommands {
+            let item = NSMenuItem(title: command.title,
+                                  action: #selector(MainWindowController.performCommand(withIdentifier:)),
+                                  keyEquivalent: "")
+            item.target = nil
+            item.representedObject = command.identifier
+            if let binding = KeybindingStore.resolvedBinding(for: command.identifier) {
+                item.keyEquivalent = binding.keyEquivalent
+                item.keyEquivalentModifierMask = binding.modifierMask
+            }
             lineOpsMenu.addItem(item)
         }
         menu.addItem((NSMenuItem(title: "Line Ops", action: nil, keyEquivalent: "").apply { $0.submenu = lineOpsMenu }))
@@ -445,28 +468,37 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         }
         menu.addItem((NSMenuItem(title: "Language", action: nil, keyEquivalent: "").apply { $0.submenu = languageMenu }))
 
-        // Tools menu: hashing and date/time insertion. Items are nil-targeted
-        // so MainWindowController owns both the action and the no-document
-        // validation, like the Text and Encoding menus. The enums drive the
-        // item order and values, so the menu cannot drift from the actions.
+        // Tools menu: hashing and date/time insertion. Both groups are registry
+        // commands, so the items use the shared performCommand action and the
+        // full identifier/keybinding/macro path. They stay nil-targeted so the
+        // controller owns the no-document validation.
         let toolsMenu = NSMenu(title: "Tools")
-        for algorithm in MainWindowController.HashAlgorithm.allCases {
-            let item = NSMenuItem(title: algorithm.title,
-                                  action: #selector(MainWindowController.insertHashDigest(_:)),
+        let toolCommands = CommandRegistry.default.toolCommands
+        for command in toolCommands where command.identifier.hasPrefix("hash-") {
+            let item = NSMenuItem(title: command.title,
+                                  action: #selector(MainWindowController.performCommand(withIdentifier:)),
                                   keyEquivalent: "")
             item.target = nil
-            item.representedObject = algorithm.rawValue
+            item.representedObject = command.identifier
+            if let binding = KeybindingStore.resolvedBinding(for: command.identifier) {
+                item.keyEquivalent = binding.keyEquivalent
+                item.keyEquivalentModifierMask = binding.modifierMask
+            }
             toolsMenu.addItem(item)
         }
         toolsMenu.addItem(.separator())
 
         let dateTimeMenu = NSMenu(title: "Insert Date/Time")
-        for style in MainWindowController.DateTimeStyle.allCases {
-            let item = NSMenuItem(title: style.title,
-                                  action: #selector(MainWindowController.insertDateTime(_:)),
+        for command in toolCommands where command.identifier.hasPrefix("insert-") {
+            let item = NSMenuItem(title: command.title,
+                                  action: #selector(MainWindowController.performCommand(withIdentifier:)),
                                   keyEquivalent: "")
             item.target = nil
-            item.representedObject = style.rawValue
+            item.representedObject = command.identifier
+            if let binding = KeybindingStore.resolvedBinding(for: command.identifier) {
+                item.keyEquivalent = binding.keyEquivalent
+                item.keyEquivalentModifierMask = binding.modifierMask
+            }
             dateTimeMenu.addItem(item)
         }
         let dateTimeItem = NSMenuItem(title: "Insert Date/Time", action: nil, keyEquivalent: "")

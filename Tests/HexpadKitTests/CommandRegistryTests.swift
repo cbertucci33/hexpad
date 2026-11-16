@@ -537,4 +537,229 @@ final class CommandRegistryTests: XCTestCase {
             XCTAssertEqual(result?.selection, expectedResult.selection, identifier)
         }
     }
+
+    // MARK: - Tools and view command groups
+
+    func testExtraCommandGroupsAreRegisteredInMenuOrder() {
+        let registry = CommandRegistry.default
+        XCTAssertEqual(registry.toolCommands.map(\.identifier), [
+            "hash-md5", "hash-sha1", "hash-sha256",
+            "insert-date", "insert-time", "insert-datetime"
+        ])
+        XCTAssertEqual(registry.lineOpCommands.map(\.identifier), [
+            "sort-lines-ascending", "sort-lines-descending",
+            "remove-duplicate-lines", "remove-blank-lines"
+        ])
+        XCTAssertEqual(registry.viewCommands.map(\.identifier), [
+            "fold-all", "unfold-all", "toggle-word-wrap"
+        ])
+        XCTAssertNotNil(registry.command(for: "hash-md5"))
+        XCTAssertNotNil(registry.command(for: "insert-datetime"))
+        XCTAssertNotNil(registry.command(for: "remove-blank-lines"))
+        XCTAssertNotNil(registry.command(for: "fold-all"))
+    }
+
+    // MARK: - Hash commands
+
+    func testHashCommandDigestsWholeBufferWhenCaretOnly() {
+        let result = CommandRegistry.default.execute("hash-md5",
+                                                     text: "abc",
+                                                     selection: NSRange(location: 1, length: 0))
+        XCTAssertEqual(result?.text, "a900150983cd24fb0d6963f7d28e17f72bc")
+        XCTAssertEqual(result?.selection, NSRange(location: 33, length: 0))
+    }
+
+    func testHashCommandDigestsSelectionAndInsertsAtCaret() {
+        let result = CommandRegistry.default.execute("hash-sha256",
+                                                     text: "abc",
+                                                     selection: NSRange(location: 0, length: 3))
+        XCTAssertEqual(
+            result?.text,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015adabc"
+        )
+        XCTAssertEqual(result?.selection, NSRange(location: 64, length: 0))
+    }
+
+    func testHashCommandsCoverEveryAlgorithm() {
+        XCTAssertNotNil(CommandRegistry.default.execute("hash-md5", text: "abc",
+                                                        selection: NSRange(location: 0, length: 0)))
+        XCTAssertNotNil(CommandRegistry.default.execute("hash-sha1", text: "abc",
+                                                        selection: NSRange(location: 0, length: 0)))
+        XCTAssertNotNil(CommandRegistry.default.execute("hash-sha256", text: "abc",
+                                                        selection: NSRange(location: 0, length: 0)))
+    }
+
+    func testHashCommandTreatedOutOfRangeSelectionAsWholeBuffer() {
+        let result = CommandRegistry.default.execute("hash-md5",
+                                                     text: "abc",
+                                                     selection: NSRange(location: 2, length: 100))
+        XCTAssertEqual(result?.text, "ab" + HashKit.md5("abc") + "c")
+        XCTAssertEqual(result?.selection, NSRange(location: 34, length: 0))
+    }
+
+    // MARK: - Date/time commands
+
+    /// 2021-03-04 05:06:07 UTC, matching the Tools fixtures.
+    private func fixedDate(second: Int = 7) throws -> Date {
+        var components = DateComponents()
+        components.year = 2021
+        components.month = 3
+        components.day = 4
+        components.hour = 5
+        components.minute = 6
+        components.second = second
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        return try XCTUnwrap(calendar.date(from: components))
+    }
+
+    func testDateTimeCommandsUseTheInjectedClock() throws {
+        let date = try fixedDate()
+        let registry = CommandRegistry(now: { date })
+
+        let expectedDate = DateTimeInsert.shortDate(date)
+        let expectedTime = DateTimeInsert.shortTime(date)
+        let expectedDateTime = DateTimeInsert.formatted(date, pattern: "yyyy-MM-dd HH:mm:ss")
+
+        XCTAssertEqual(registry.execute("insert-date", text: "", selection: NSRange(location: 0, length: 0))?.text,
+                       expectedDate)
+        XCTAssertEqual(registry.execute("insert-time", text: "", selection: NSRange(location: 0, length: 0))?.text,
+                       expectedTime)
+        XCTAssertEqual(registry.execute("insert-datetime", text: "", selection: NSRange(location: 0, length: 0))?.text,
+                       expectedDateTime)
+    }
+
+    func testClockIsReadAtExecutionTimeNotDefinitionTime() throws {
+        var now = try fixedDate(second: 7)
+        let registry = CommandRegistry(now: { now })
+
+        let first = registry.execute("insert-datetime", text: "", selection: NSRange(location: 0, length: 0))?.text
+        now = try fixedDate(second: 42)
+        let second = registry.execute("insert-datetime", text: "", selection: NSRange(location: 0, length: 0))?.text
+
+        let expectedFirst = DateTimeInsert.formatted(try fixedDate(second: 7),
+                                                     pattern: "yyyy-MM-dd HH:mm:ss")
+        let expectedSecond = DateTimeInsert.formatted(try fixedDate(second: 42),
+                                                      pattern: "yyyy-MM-dd HH:mm:ss")
+        XCTAssertEqual(first, expectedFirst)
+        XCTAssertEqual(second, expectedSecond)
+        XCTAssertNotEqual(first, second)
+    }
+
+    func testRecordedDateTimeReplayUsesAFreshTimestamp() throws {
+        var now = try fixedDate(second: 7)
+        let registry = CommandRegistry(now: { now })
+        let macro = MacroModel(name: "Time", steps: [MacroStep(identifier: "insert-datetime")])
+
+        let recorded = macro.replay(using: registry,
+                                    text: "",
+                                    selection: NSRange(location: 0, length: 0))
+        now = try fixedDate(second: 42)
+        let replayed = macro.replay(using: registry,
+                                    text: "",
+                                    selection: NSRange(location: 0, length: 0))
+
+        let expectedRecorded = DateTimeInsert.formatted(try fixedDate(second: 7),
+                                                        pattern: "yyyy-MM-dd HH:mm:ss")
+        let expectedReplayed = DateTimeInsert.formatted(try fixedDate(second: 42),
+                                                        pattern: "yyyy-MM-dd HH:mm:ss")
+        XCTAssertEqual(recorded.text, expectedRecorded)
+        XCTAssertEqual(replayed.text, expectedReplayed)
+        XCTAssertNotEqual(recorded.text, replayed.text)
+        XCTAssertEqual(replayed.stepResults.map(\.outcome), [.applied])
+    }
+
+    // MARK: - Line operation commands
+
+    func testLineOpCommandTransformsWholeBufferWithoutSelection() {
+        let result = CommandRegistry.default.execute("sort-lines-ascending",
+                                                     text: "b\na",
+                                                     selection: NSRange(location: 0, length: 0))
+        XCTAssertEqual(result?.text, "a\nb")
+        XCTAssertEqual(result?.selection, NSRange(location: 0, length: 0))
+    }
+
+    func testLineOpCommandTransformsOnlyTheSelection() {
+        let result = CommandRegistry.default.execute("remove-blank-lines",
+                                                     text: "a\n\nb",
+                                                     selection: NSRange(location: 0, length: 3))
+        // "a\n\n" loses its blank line, leaving "a"; the untouched "b" follows.
+        XCTAssertEqual(result?.text, "ab")
+        XCTAssertEqual(result?.selection, NSRange(location: 0, length: 1))
+    }
+
+    func testLineOpCommandsCoverEveryVariant() {
+        let selection = NSRange(location: 0, length: 0)
+        XCTAssertEqual(CommandRegistry.default.execute("sort-lines-descending",
+                                                        text: "a\nb",
+                                                        selection: selection)?.text, "b\na")
+        XCTAssertEqual(CommandRegistry.default.execute("remove-duplicate-lines",
+                                                        text: "a\na\nb",
+                                                        selection: selection)?.text, "a\nb")
+        XCTAssertEqual(CommandRegistry.default.execute("remove-blank-lines",
+                                                        text: "a\n\nb",
+                                                        selection: selection)?.text, "a\nb")
+    }
+
+    // MARK: - View commands
+
+    func testViewCommandsRunThroughTheContextHooks() {
+        var calls: [String] = []
+        let context = EditorCommandContext(
+            foldAll: { calls.append("fold"); return true },
+            unfoldAll: { calls.append("unfold"); return true },
+            toggleWordWrap: { calls.append("wrap"); return true }
+        )
+
+        XCTAssertEqual(CommandRegistry.default.executeView("fold-all", context: context), true)
+        XCTAssertEqual(CommandRegistry.default.executeView("unfold-all", context: context), true)
+        XCTAssertEqual(CommandRegistry.default.executeView("toggle-word-wrap", context: context), true)
+        XCTAssertEqual(calls, ["fold", "unfold", "wrap"])
+    }
+
+    func testViewCommandWithoutHooksIsANoOp() {
+        let context = EditorCommandContext()
+        XCTAssertTrue(context.isEmpty)
+        XCTAssertEqual(CommandRegistry.default.executeView("fold-all", context: context), false)
+        XCTAssertNil(CommandRegistry.default.executeView("duplicate-line", context: context))
+        XCTAssertNil(CommandRegistry.default.executeView("not-a-command", context: context))
+    }
+
+    func testViewCommandsAreRecordedButReplaySkipsThemInPureTextReplay() {
+        let macro = MacroModel(name: "Folded", steps: [
+            MacroStep(identifier: "fold-all"),
+            MacroStep(identifier: "duplicate-line")
+        ])
+
+        let result = macro.replay(using: CommandRegistry.default,
+                                  text: "a",
+                                  selection: NSRange(location: 0, length: 0))
+
+        // fold-all is a real registered command, so it records like any other;
+        // its effect is view state, which MacroModel's pure text replay cannot
+        // express, so it is reported as a no-change skip rather than silently
+        // pretending it ran.
+        XCTAssertEqual(result.stepResults[0].outcome, .skipped(.noChange))
+        XCTAssertEqual(result.stepResults[0].skipReason, .noChange)
+        XCTAssertEqual(result.stepResults[1].outcome, .applied)
+        XCTAssertEqual(result.text, "a\na")
+        XCTAssertEqual(result.skippedCount, 1)
+    }
+
+    // MARK: - Macro round trip through the new command groups
+
+    func testRecordedHashCommandReplaysAsTheSameDigest() {
+        var macro = MacroModel()
+        macro.startRecording()
+        XCTAssertTrue(macro.record("hash-md5"))
+        macro.stopRecording()
+
+        let result = macro.replay(using: CommandRegistry.default,
+                                  text: "abc",
+                                  selection: NSRange(location: 0, length: 0))
+
+        XCTAssertEqual(result.text, HashKit.md5("abc") + "abc")
+        XCTAssertEqual(result.stepResults.map(\.outcome), [.applied])
+    }
 }

@@ -315,4 +315,127 @@ final class MacroUITests: XCTestCase {
         XCTAssertEqual(MacroStore.load().map(\.name), ["Duplicate"])
         XCTAssertFalse(saved.isRecording, "recordings never persist as recording")
     }
+
+    // MARK: - Tools/Line Ops/View commands through the capture point
+
+    func testRecordedDateTimeReplaysAtCaret() throws {
+        let (controller, _) = makeController()
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        let textView = try XCTUnwrap(controller.editorTextView)
+
+        doc.replaceAllText(with: "start ")
+        textView.setSelectedRange(NSRange(location: 6, length: 0))
+
+        controller.startMacroRecording()
+        XCTAssertTrue(controller.performCommand(identifier: "insert-datetime"))
+        controller.stopMacroRecording()
+
+        let macro = try XCTUnwrap(controller.lastMacro)
+        XCTAssertEqual(macro.steps, [MacroStep(identifier: "insert-datetime")])
+        XCTAssertNotNil(doc.text.range(
+            of: #"^start \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$"#,
+            options: .regularExpression
+        ))
+
+        // Reset and replay. The timestamp is read at execution time, so this
+        // asserts the shape rather than the recorded value.
+        doc.replaceAllText(with: "start ")
+        doc.undoManager.removeAllActions()
+        textView.setSelectedRange(NSRange(location: 6, length: 0))
+
+        XCTAssertTrue(controller.playMacro(macro))
+        XCTAssertNotNil(doc.text.range(
+            of: #"^start \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$"#,
+            options: .regularExpression
+        ))
+        XCTAssertEqual(textView.selectedRange.length, 0)
+        XCTAssertEqual(textView.selectedRange.location, (doc.text as NSString).length)
+
+        doc.undoManager.undo()
+        XCTAssertEqual(doc.text, "start ", "the whole replay is one undoable edit")
+    }
+
+    func testRecordedHashCommandReplaysTheSameDigest() throws {
+        let (controller, _) = makeController()
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        let textView = try XCTUnwrap(controller.editorTextView)
+
+        doc.replaceAllText(with: "abc\n")
+        textView.setSelectedRange(NSRange(location: 0, length: 3))
+
+        controller.startMacroRecording()
+        XCTAssertTrue(controller.performCommand(identifier: "hash-md5"))
+        controller.stopMacroRecording()
+
+        let macro = try XCTUnwrap(controller.lastMacro)
+        XCTAssertEqual(macro.steps, [MacroStep(identifier: "hash-md5")])
+        let expected = HashKit.md5("abc") + "abc\n"
+        XCTAssertEqual(doc.text, expected)
+
+        doc.replaceAllText(with: "abc\n")
+        doc.undoManager.removeAllActions()
+        textView.setSelectedRange(NSRange(location: 0, length: 3))
+
+        XCTAssertTrue(controller.playMacro(macro))
+        XCTAssertEqual(doc.text, expected)
+        XCTAssertEqual(textView.selectedRange,
+                       NSRange(location: HashKit.md5("abc").count, length: 0))
+    }
+
+    func testRecordedFoldAllIsCapturedButPureTextReplaySkipsIt() throws {
+        let (controller, _) = makeController()
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        let editor = try XCTUnwrap(PreferencesApplier.editorContainer(in: controller.view))
+
+        doc.setLanguage(Language.swift.rawValue)
+        doc.replaceAllText(with: "outer {\n    inner {\n        x\n    }\n}\ntail\n")
+        controller.updateEditor()
+
+        controller.startMacroRecording()
+        controller.foldAll(nil)
+        controller.stopMacroRecording()
+
+        let macro = try XCTUnwrap(controller.lastMacro)
+        XCTAssertEqual(macro.steps, [MacroStep(identifier: "fold-all")],
+                       "Fold All is now captured through performCommand")
+        XCTAssertEqual(doc.foldState.count, 2)
+        XCTAssertEqual(editor.foldMarkers[1], .collapsed)
+
+        // Reset the view state without recording, then replay the macro. Fold
+        // state is view state, not DocumentState: replay reports the step as
+        // skipped instead of silently claiming it ran.
+        controller.unfoldAll(nil)
+        XCTAssertTrue(doc.foldState.isEmpty)
+        XCTAssertEqual(editor.foldMarkers[1], .expanded)
+
+        XCTAssertFalse(controller.playMacro(macro), "a view-only step changes no document text")
+        XCTAssertTrue(doc.foldState.isEmpty, "pure text replay cannot restore fold state")
+    }
+
+    func testReplayDuringRecordingDoesNotAppendItsOwnSteps() throws {
+        let (controller, _) = makeController()
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        let textView = try XCTUnwrap(controller.editorTextView)
+
+        doc.replaceAllText(with: "alpha\nbeta")
+        textView.setSelectedRange(NSRange(location: 0, length: 0))
+
+        controller.startMacroRecording()
+        XCTAssertTrue(controller.performCommand(identifier: "duplicate-line"))
+        XCTAssertEqual(controller.macroRecorder.stepCount, 1)
+
+        // Replay the in-progress recording while the recorder is still live.
+        let inProgress = controller.macroRecorder
+        _ = controller.playMacro(inProgress)
+
+        XCTAssertEqual(controller.macroRecorder.stepCount, 1,
+                       "replay must not feed its steps back into the recording")
+        XCTAssertEqual(controller.macroRecorder.steps,
+                       [MacroStep(identifier: "duplicate-line")])
+
+        // The recorder is still live for genuine user commands afterwards.
+        XCTAssertTrue(controller.performCommand(identifier: "delete-line"))
+        XCTAssertEqual(controller.macroRecorder.stepCount, 2)
+        controller.stopMacroRecording()
+    }
 }

@@ -47,15 +47,38 @@ final class BookmarkCommandTests: XCTestCase {
 
     func testAllCommandsKeepsLineCommandsFirst() {
         XCTAssertEqual(registry.allCommands.map(\.identifier),
-                       registry.commands.map(\.identifier) + registry.bookmarkCommands.map(\.identifier))
-        XCTAssertEqual(registry.commands.map(\.identifier), [
+                       registry.commands.map(\.identifier)
+                       + registry.bookmarkCommands.map(\.identifier)
+                       + registry.toolCommands.map(\.identifier)
+                       + registry.lineOpCommands.map(\.identifier)
+                       + registry.viewCommands.map(\.identifier))
+        // Contract: the line-editing group stays first and unchanged, then
+        // bookmarks, then Tools, Line Ops and view commands in registry order.
+        XCTAssertEqual(registry.allCommands.map(\.identifier), [
             "duplicate-line",
             "delete-line",
             "move-line-up",
             "move-line-down",
             "toggle-line-comment",
             "uppercase",
-            "lowercase"
+            "lowercase",
+            "bookmark-toggle",
+            "bookmark-next",
+            "bookmark-prev",
+            "bookmark-clear-all",
+            "hash-md5",
+            "hash-sha1",
+            "hash-sha256",
+            "insert-date",
+            "insert-time",
+            "insert-datetime",
+            "sort-lines-ascending",
+            "sort-lines-descending",
+            "remove-duplicate-lines",
+            "remove-blank-lines",
+            "fold-all",
+            "unfold-all",
+            "toggle-word-wrap"
         ])
     }
 
