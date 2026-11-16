@@ -12,9 +12,24 @@ class MainWindowController: NSViewController {
     /// selected document.
     private let commandRegistry = CommandRegistry.default
 
+    /// The macro being recorded (or the last one stopped). This is the one
+    /// place recording state lives; `performCommand` is the single capture
+    /// point that feeds it, so no command can reach the editor without being
+    /// recorded while this model is recording.
+    private(set) var macroRecorder = MacroModel(name: "Macro")
+
+    /// The most recent recording or saved macro played, used by Play Last Macro.
+    private(set) var lastMacro: MacroModel?
+
+    /// Pending timer that clears a transient window-subtitle status flash.
+    private var statusFlashWorkItem: DispatchWorkItem?
+
     /// The text view backing the selected document. Exposed for menu
     /// validation/action tests in the app test bundle.
     var editorTextView: NSTextView? { editorContainer?.textView }
+
+    /// Whether the macro recorder is currently appending commands.
+    var isRecordingMacro: Bool { macroRecorder.isRecording }
     
     // Subviews
     private var tabBarView: TabBarView?
@@ -1051,19 +1066,53 @@ class MainWindowController: NSViewController {
     /// undo stack; bookmark changes go back to the document and the editor
     /// container so the gutter markers update immediately.
     @discardableResult
-    func performCommand(identifier: String) -> Bool {
+    func performCommand(identifier: String, parameter: String? = nil) -> Bool {
         guard let editor = editorContainer,
               let doc = tabStore.selectedDocument,
-              commandRegistry.command(for: identifier) != nil,
-              let result = commandRegistry.execute(
-                  identifier,
-                  on: DocumentState(text: doc.text,
-                                    selection: editor.textView.selectedRange,
-                                    bookmarkState: doc.bookmarkState)
-              ) else {
+              let result = commandResult(identifier: identifier,
+                                         parameter: parameter,
+                                         doc: doc,
+                                         editor: editor) else {
             return false
         }
 
+        // The single macro capture point: every command that actually runs
+        // through the registry is appended while recording. Replay never calls
+        // back into here (it applies one final result), so playing a macro
+        // cannot re-record its own steps.
+        macroRecorder.record(identifier, parameter: parameter)
+
+        return applyCommandResult(result, to: doc, editor: editor)
+    }
+
+    /// Resolves a registry command against the selected document's live state,
+    /// passing the macro-style parameter when the command accepts one.
+    private func commandResult(identifier: String,
+                               parameter: String?,
+                               doc: DocumentModel,
+                               editor: EditorContainer) -> DocumentState? {
+        let state = DocumentState(text: doc.text,
+                                  selection: editor.textView.selectedRange,
+                                  bookmarkState: doc.bookmarkState)
+        guard let command = commandRegistry.command(for: identifier) else { return nil }
+        if let parameter, let makeAction = command.parameterizedExecute {
+            let result = makeAction(parameter)(state.text, state.selection)
+            return DocumentState(text: result.text,
+                                 selection: result.selection,
+                                 bookmarkState: state.bookmarkState)
+        }
+        return commandRegistry.execute(identifier, on: state)
+    }
+
+    /// Applies a command/replay result to the document as one undoable edit.
+    ///
+    /// Shared by ``performCommand(identifier:parameter:)`` and macro playback so
+    /// a replayed macro lands on the same per-document undo stack as a single
+    /// command: one undo restores the pre-command text, selection and bookmarks.
+    @discardableResult
+    private func applyCommandResult(_ result: DocumentState,
+                                    to doc: DocumentModel,
+                                    editor: EditorContainer) -> Bool {
         let original = doc.text
         var didChange = false
 
@@ -1126,6 +1175,183 @@ class MainWindowController: NSViewController {
         guard let item = sender as? NSMenuItem,
               let identifier = item.representedObject as? String else { return }
         performCommand(identifier: identifier)
+    }
+
+    // MARK: - Macros
+
+    /// Macro menu toggle: starts a fresh recording, or stops the current one.
+    @objc func toggleMacroRecording(_ sender: Any?) {
+        if macroRecorder.isRecording {
+            stopMacroRecording()
+        } else {
+            startMacroRecording()
+        }
+    }
+
+    /// Begins recording. Commands run through ``performCommand`` from now on
+    /// become the macro's steps; a previous recording is discarded (the same
+    /// Notepad++ behaviour of starting over).
+    func startMacroRecording(name: String = "Macro") {
+        macroRecorder.startRecording(name: name)
+        flashStatus("Recording macro…")
+    }
+
+    /// Stops recording and makes the result the current "last macro".
+    func stopMacroRecording() {
+        guard macroRecorder.isRecording else { return }
+        macroRecorder.stopRecording()
+        lastMacro = macroRecorder
+        flashStatus(macroRecorder.isEmpty
+                    ? "Macro recorded with no steps"
+                    : "Macro recorded: \(macroRecorder.stepCount) step\(macroRecorder.stepCount == 1 ? "" : "s")")
+    }
+
+    /// Macro > Stop Recording. Separate selector so the menu item can be
+    /// validated against the live recording state.
+    @objc func stopRecordingMacro(_ sender: Any?) {
+        stopMacroRecording()
+    }
+
+    /// Macro > Play Last Macro.
+    @objc func playLastMacro(_ sender: Any?) {
+        guard let macro = lastMacro else { return }
+        playMacro(macro)
+    }
+
+    /// Macro > Play Macro > <saved name>. The saved name rides in
+    /// `representedObject`, so one action covers every saved macro.
+    @objc func playSavedMacro(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String,
+              let macro = MacroStore.macro(named: name) else { return }
+        playMacro(macro)
+    }
+
+    /// Macro > Save Recording As…: names the current recording and persists it.
+    @objc func saveRecordingAs(_ sender: Any?) {
+        guard !macroRecorder.isEmpty else { return }
+        guard let name = promptForMacroName() else { return }
+        do {
+            try saveRecording(named: name)
+        } catch {
+            showError("Failed to save macro: \(error.localizedDescription)")
+        }
+    }
+
+    /// Persists the current recording under `name`, replacing any saved macro
+    /// with that name. Returns the saved macro, or nil when there is nothing to
+    /// save. Exposed separately from the prompt so tests can save headlessly.
+    @discardableResult
+    func saveRecording(named name: String) throws -> MacroModel? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !macroRecorder.isEmpty else { return nil }
+
+        var macro = macroRecorder
+        macro.name = trimmed
+        try MacroStore.set(macro)
+        macroRecorder.name = trimmed
+        lastMacro = macro
+        flashStatus("Saved macro “\(trimmed)”")
+        return macro
+    }
+
+    /// Macro > Delete Macro > <saved name>.
+    @objc func deleteMacro(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String else { return }
+        do {
+            try MacroStore.remove(named: name)
+            flashStatus("Deleted macro “\(name)”")
+        } catch {
+            showError("Failed to delete macro: \(error.localizedDescription)")
+        }
+    }
+
+    /// Replays `macro` through the registry and applies the final document
+    /// state as ONE undoable edit via the shared command apply path.
+    ///
+    /// Replay itself is pure (``MacroModel/replay(using:text:selection:)``);
+    /// skipped steps are reported in a transient status flash and do not stop
+    /// the remaining steps, matching the Kit model's contract.
+    @discardableResult
+    func playMacro(_ macro: MacroModel) -> Bool {
+        guard !macro.isEmpty,
+              let editor = editorContainer,
+              let doc = tabStore.selectedDocument else { return false }
+
+        let replay = macro.replay(using: commandRegistry,
+                                  text: doc.text,
+                                  selection: editor.textView.selectedRange)
+        lastMacro = macro
+
+        let result = DocumentState(text: replay.text,
+                                   selection: replay.selection,
+                                   bookmarkState: doc.bookmarkState)
+        let applied = applyCommandResult(result, to: doc, editor: editor)
+
+        if replay.skippedCount > 0 {
+            let total = replay.stepResults.count
+            flashStatus("Macro “\(macro.name)”: \(replay.skippedCount) of \(total) step\(total == 1 ? "" : "s") skipped")
+        } else if applied {
+            flashStatus("Played macro “\(macro.name)”")
+        }
+        return applied
+    }
+
+    // MARK: - Macro menu validation
+
+    /// Only a non-empty recording can be saved.
+    func canSaveMacroRecording() -> Bool { !macroRecorder.isEmpty }
+
+    /// A last macro needs steps and an open document to replay against.
+    func canPlayLastMacro() -> Bool {
+        tabStore.selectedDocument != nil && !(lastMacro?.isEmpty ?? true)
+    }
+
+    /// A saved macro can be played once it exists, has steps, and a document
+    /// is open. Reads the store, so the menu reflects macros.json exactly.
+    func canPlaySavedMacro(named name: String) -> Bool {
+        guard tabStore.selectedDocument != nil,
+              let macro = MacroStore.macro(named: name) else { return false }
+        return !macro.isEmpty
+    }
+
+    /// Saved macros can be deleted even when they are empty.
+    func canDeleteMacro(named name: String) -> Bool {
+        MacroStore.macro(named: name) != nil
+    }
+
+    /// Runs the save prompt. Cancelling or entering a blank name returns nil so
+    /// the caller can leave the recording untouched.
+    private func promptForMacroName() -> String? {
+        let alert = NSAlert()
+        alert.messageText = "Save Macro"
+        alert.informativeText = "Name this macro so it appears in the Macro menu."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.stringValue = macroRecorder.name
+        alert.accessoryView = field
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? nil : name
+    }
+
+    /// Transient one-line status message in the window subtitle.
+    ///
+    /// Views/** (StatusBar in particular) is outside this change's scope, so the
+    /// subtitle is the cheapest existing surface for reporting macro progress
+    /// and per-step skips without adding a new status bar widget.
+    func flashStatus(_ message: String) {
+        guard let window = mainWindow ?? view.window else { return }
+        statusFlashWorkItem?.cancel()
+        window.subtitle = message
+        let item = DispatchWorkItem { [weak window] in
+            window?.subtitle = ""
+        }
+        statusFlashWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: item)
     }
 
     // MARK: - Tools
@@ -1360,6 +1586,29 @@ extension MainWindowController: NSMenuItemValidation {
         if menuItem.action == #selector(MainWindowController.insertHashDigest(_:))
             || menuItem.action == #selector(MainWindowController.insertDateTime(_:)) {
             return canInsertToolOutput()
+        }
+        if menuItem.action == #selector(MainWindowController.toggleMacroRecording(_:)) {
+            // A checkmark mirrors the recording state; the item stays enabled so
+            // the same entry can stop the recording it started.
+            menuItem.state = isRecordingMacro ? .on : .off
+            return true
+        }
+        if menuItem.action == #selector(MainWindowController.stopRecordingMacro(_:)) {
+            return isRecordingMacro
+        }
+        if menuItem.action == #selector(MainWindowController.playLastMacro(_:)) {
+            return canPlayLastMacro()
+        }
+        if menuItem.action == #selector(MainWindowController.playSavedMacro(_:)) {
+            guard let name = menuItem.representedObject as? String else { return false }
+            return canPlaySavedMacro(named: name)
+        }
+        if menuItem.action == #selector(MainWindowController.saveRecordingAs(_:)) {
+            return canSaveMacroRecording()
+        }
+        if menuItem.action == #selector(MainWindowController.deleteMacro(_:)) {
+            guard let name = menuItem.representedObject as? String else { return false }
+            return canDeleteMacro(named: name)
         }
         return true
     }
