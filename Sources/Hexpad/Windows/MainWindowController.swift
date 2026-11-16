@@ -1666,9 +1666,8 @@ class MainWindowController: NSViewController {
 
     /// Transient one-line status message in the window subtitle.
     ///
-    /// Views/** (StatusBar in particular) is outside this change's scope, so the
-    /// subtitle is the cheapest existing surface for reporting macro progress
-    /// and per-step skips without adding a new status bar widget.
+    /// Reports macro progress and per-step skips on the window subtitle for three
+    /// seconds; a later flash cancels the pending clear and replaces the text.
     func flashStatus(_ message: String) {
         guard let window = mainWindow ?? view.window else { return }
         statusFlashWorkItem?.cancel()
