@@ -103,6 +103,8 @@ class MainWindowController: NSViewController {
 
     deinit {
         stopFileWatching()
+        statusFlashWorkItem?.cancel()
+        statusFlashWorkItem = nil
         NotificationCenter.default.removeObserver(self)
         if let observer = textSelectionObserver {
             NotificationCenter.default.removeObserver(observer)
