@@ -953,6 +953,51 @@ class MainWindowController: NSViewController {
         guard isFunctionListVisible else { return }
         functionListController?.update(document: tabStore.selectedDocument)
     }
+
+    // MARK: - Run command
+
+    /// Single reusable Run… panel. The Run menu item is nil-targeted, so this
+    /// controller owns both the action and the no-document validation.
+    private var runCommandController: RunCommandWindowController?
+
+    /// Run > Run… (F5). The panel itself is display-only: it never writes to
+    /// the document or its undo stack, it only reads the current file path and
+    /// caret line to fill `$(...)` placeholders.
+    @objc func showRunCommandDialog(_ sender: Any?) {
+        guard canRunCommand() else { return }
+        let controller = runCommandPanel()
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Lazily creates (and then always returns) the one Run… panel. Internal so
+    /// app tests can assert the single-instance contract without showing it.
+    func runCommandPanel() -> RunCommandWindowController {
+        if let runCommandController { return runCommandController }
+
+        let controller = RunCommandWindowController()
+        // Resolved on every Run press against the tab that is selected then.
+        controller.contextProvider = { [weak self] in
+            self?.currentCommandContext() ?? ExternalCommandContext()
+        }
+        runCommandController = controller
+        return controller
+    }
+
+    /// The placeholder context for the selected document at this instant.
+    /// Uses `LineIndex` like the status bar, so `$(CURRENT_LINE)` matches the
+    /// Ln label; an untitled buffer simply has no file path.
+    func currentCommandContext() -> ExternalCommandContext {
+        guard let doc = tabStore.selectedDocument else { return ExternalCommandContext() }
+        let caret = editorContainer?.textView.selectedRange.location ?? 0
+        return RunCommandWindowController.context(for: doc, caretLocation: caret)
+    }
+
+    /// Run… needs a document; the panel's placeholders are defined relative to
+    /// one, and validation disables the menu item with none open.
+    func canRunCommand() -> Bool {
+        tabStore.selectedDocument != nil
+    }
     
     // MARK: - External change monitoring
 
@@ -1712,6 +1757,9 @@ extension MainWindowController: NSMenuItemValidation {
         if menuItem.action == #selector(MainWindowController.toggleFunctionList(_:)) {
             menuItem.state = isFunctionListVisible ? .on : .off
             return canShowFunctionList()
+        }
+        if menuItem.action == #selector(MainWindowController.showRunCommandDialog(_:)) {
+            return canRunCommand()
         }
         return true
     }
