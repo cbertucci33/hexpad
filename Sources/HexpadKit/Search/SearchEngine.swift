@@ -26,6 +26,43 @@ public struct SearchMatch {
 
 /// Search engine for document and file operations
 public final class SearchEngine {
+
+    /// One-entry compiled-regex cache. Search is main-thread UI work, so the
+    /// cache is deliberately not synchronized; it never crosses threads.
+    private struct RegexCacheKey: Hashable {
+        let pattern: String
+        let options: UInt
+    }
+    private static var cachedRegexKey: RegexCacheKey?
+    private static var cachedRegex: NSRegularExpression?
+    private static var regexCompileCount = 0
+
+    /// Test hook: resets the one-entry cache and its compile counter.
+    static func resetRegexCacheForTesting() {
+        cachedRegexKey = nil
+        cachedRegex = nil
+        regexCompileCount = 0
+    }
+
+    /// Test hook: number of `NSRegularExpression` compilations since reset.
+    static var regexCompileCountForTesting: Int { regexCompileCount }
+
+    /// Returns the cached regex for this effective pattern + options, compiling
+    /// only on a miss. A pattern change evicts the previous entry naturally.
+    private static func compiledRegex(pattern: String, options: SearchOptions) throws -> NSRegularExpression {
+        let effectivePattern = regexPattern(for: pattern, options: options)
+        let effectiveOptions = regexOptions(for: options)
+        let key = RegexCacheKey(pattern: effectivePattern,
+                                options: effectiveOptions.rawValue)
+        if cachedRegexKey == key, let cachedRegex {
+            return cachedRegex
+        }
+        let regex = try NSRegularExpression(pattern: effectivePattern, options: effectiveOptions)
+        regexCompileCount += 1
+        cachedRegexKey = key
+        cachedRegex = regex
+        return regex
+    }
     
     /// True when `pattern` compiles as a regex. SearchEngine falls back to a
     /// literal pass on failure, so callers need this to tell the user.
@@ -49,8 +86,7 @@ public final class SearchEngine {
         guard searchRange.length > 0 else { return matches }
         
         do {
-            let regex = try NSRegularExpression(pattern: regexPattern(for: pattern, options: options),
-                                                options: regexOptions(for: options))
+            let regex = try compiledRegex(pattern: pattern, options: options)
             let results = regex.matches(in: text, options: [], range: searchRange)
             
             for result in results {
@@ -144,8 +180,7 @@ public final class SearchEngine {
         guard searchRange.length > 0 else { return text }
         
         do {
-            let regex = try NSRegularExpression(pattern: regexPattern(for: pattern, options: options),
-                                                options: regexOptions(for: options))
+            let regex = try compiledRegex(pattern: pattern, options: options)
             // Literal mode must treat the replacement as literal text too;
             // otherwise $1 and backslashes get template-mangled.
             let template = options.contains(.regex) ? replacement : NSRegularExpression.escapedTemplate(for: replacement)

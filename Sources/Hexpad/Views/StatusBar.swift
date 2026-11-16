@@ -24,6 +24,15 @@ class StatusBar: NSView {
 
     private var lineIndexCache: LineIndexCache?
 
+    /// Character edit waiting to be spliced into the cached index. Usually at
+    /// most one (updateStatusBar runs per keystroke); more than one between
+    /// updates falls back to a full scan rather than guessing intermediate text.
+    private struct PendingTextEdit {
+        let range: NSRange
+        let changeInLength: Int
+    }
+    private var pendingEdits: [PendingTextEdit] = []
+
     /// Counts character edits on the storage currently being indexed. Attribute
     /// edits are ignored: the highlighter rewrites attributes on every keystroke
     /// and scroll, and attributes cannot move a line start.
@@ -71,6 +80,13 @@ class StatusBar: NSView {
                   ObjectIdentifier(storage) == observed,
                   storage.editedMask.contains(.editedCharacters) else { return }
             self.textGeneration &+= 1
+            self.pendingEdits.append(PendingTextEdit(range: storage.editedRange,
+                                                     changeInLength: storage.changeInLength))
+            // Bounded: two coalesced edits already mean a full rebuild is
+            // cheaper and safer than replaying imaginary intermediate text.
+            if self.pendingEdits.count > 2 {
+                self.pendingEdits.removeFirst(self.pendingEdits.count - 2)
+            }
         }
     }
     
@@ -171,13 +187,11 @@ class StatusBar: NSView {
         languageLabel?.stringValue = doc?.language ?? "Plain Text"
     }
 
-    /// Returns the cached index when it still describes the text on screen,
-    /// rebuilding it only on the first update and after a character edit or a
-    /// document/tab switch.
+    /// Returns the cached index when it still describes the text on screen.
     ///
-    /// The length check is a cheap guard (O(1)) against a missed notification;
-    /// the generation counter is what makes same-length edits (typing over a
-    /// selection, undo) rebuild.
+    /// A single recorded character edit is spliced in incrementally (the edit
+    /// band only). Multiple coalesced edits, a tab switch, or a failed
+    /// consistency check fall back to one full scan.
     private func cachedLineIndex(for doc: DocumentModel?, textView: NSTextView) -> LineIndex? {
         guard let storage = textView.textStorage else { return nil }
         let storageID = ObjectIdentifier(storage)
@@ -185,12 +199,25 @@ class StatusBar: NSView {
 
         if let cache = lineIndexCache,
            cache.storageID == storageID,
-           cache.documentID == doc?.id,
-           cache.generation == textGeneration,
-           cache.index.textLength == storage.length {
-            return cache.index
+           cache.documentID == doc?.id {
+            if pendingEdits.count == 1 {
+                let edit = pendingEdits[0]
+                pendingEdits.removeAll()
+                let updated = cache.index.updating(textView.string,
+                                                   editedRange: edit.range,
+                                                   changeInLength: edit.changeInLength)
+                lineIndexCache = LineIndexCache(documentID: doc?.id,
+                                                storageID: storageID,
+                                                generation: textGeneration,
+                                                index: updated)
+                return updated
+            }
+            if pendingEdits.isEmpty, cache.index.textLength == storage.length {
+                return cache.index
+            }
         }
 
+        pendingEdits.removeAll()
         let index = LineIndex(textView.string)
         lineIndexCache = LineIndexCache(documentID: doc?.id,
                                         storageID: storageID,

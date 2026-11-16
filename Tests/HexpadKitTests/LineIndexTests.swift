@@ -219,4 +219,69 @@ final class LineIndexTests: XCTestCase {
             XCTAssertEqual(index.line(of: index.firstCharIndex(of: lineNumber)), lineNumber)
         }
     }
+
+    // MARK: - Incremental update
+
+    func testIncrementalUpdateMatchesFullScanOnHundredThousandLineIndex() {
+        let lineCount = 100_000
+        let text = (0..<lineCount).map { "line \($0)" }.joined(separator: "\n")
+        let index = LineIndex(text)
+        XCTAssertEqual(index.count, lineCount)
+
+        let nsText = text as NSString
+        let target = "line 50000"
+        let targetRange = nsText.range(of: target)
+        XCTAssertNotEqual(targetRange.location, NSNotFound)
+        let replacement = "line 50000 EDITED"
+
+        let replacedText = nsText.replacingCharacters(in: targetRange, with: replacement)
+        let updated = index.updating(
+            replacedText,
+            editedRange: NSRange(location: targetRange.location,
+                                 length: (replacement as NSString).length),
+            changeInLength: (replacement as NSString).length - targetRange.length
+        )
+
+        XCTAssertEqual(updated.lineStarts, LineIndex(replacedText).lineStarts,
+                       "incremental offsets must equal a fresh full scan")
+        XCTAssertLessThan(updated.lastUpdateScannedLineCount, 10,
+                          "only the edited line band was rescanned")
+    }
+
+    func testIncrementalInsertAndDeleteMatchFullScan() {
+        let text = (0..<20_000).map { "row \($0)" }.joined(separator: "\n")
+        var index = LineIndex(text)
+        var current = text
+
+        // Insert three lines in the middle.
+        let ns = current as NSString
+        let insertLocation = ns.range(of: "row 10000").location
+        let inserted = "new A\nnew B\nnew C\n"
+        current = ns.replacingCharacters(in: NSRange(location: insertLocation, length: 0),
+                                         with: inserted)
+        index = index.updating(current,
+                               editedRange: NSRange(location: insertLocation,
+                                                    length: (inserted as NSString).length),
+                               changeInLength: (inserted as NSString).length)
+        XCTAssertEqual(index.lineStarts, LineIndex(current).lineStarts)
+
+        // Delete part of a line, including no newline.
+        let ns2 = current as NSString
+        let deleteRange = NSRange(location: insertLocation + 3, length: 5)
+        current = ns2.replacingCharacters(in: deleteRange, with: "")
+        index = index.updating(current,
+                               editedRange: NSRange(location: deleteRange.location, length: 0),
+                               changeInLength: -deleteRange.length)
+        XCTAssertEqual(index.lineStarts, LineIndex(current).lineStarts)
+        XCTAssertLessThan(index.lastUpdateScannedLineCount, 10)
+    }
+
+    func testIncrementalUpdateFallsBackWhenEditDoesNotMatchLength() {
+        let text = "one\ntwo"
+        let index = LineIndex(text)
+        let updated = index.updating("one\ntwo\nthree",
+                                     editedRange: NSRange(location: 7, length: 6),
+                                     changeInLength: 1) // deliberately inconsistent
+        XCTAssertEqual(updated.lineStarts, LineIndex("one\ntwo\nthree").lineStarts)
+    }
 }

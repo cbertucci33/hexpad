@@ -217,3 +217,25 @@ final class SearchEngineTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: untouched, encoding: .utf8), "bar")
     }
 }
+
+extension SearchEngineTests {
+    func testRepeatedSearchReusesCompiledRegexAndPatternChangeRecaches() {
+        SearchEngine.resetRegexCacheForTesting()
+        let text = "alpha beta alpha"
+
+        _ = SearchEngine.search(text, pattern: "alpha", options: [])
+        XCTAssertEqual(SearchEngine.regexCompileCountForTesting, 1)
+
+        _ = SearchEngine.search(text, pattern: "alpha", options: [])
+        XCTAssertEqual(SearchEngine.regexCompileCountForTesting, 1,
+                       "same pattern and options must hit the one-entry cache")
+
+        _ = SearchEngine.search(text, pattern: "beta", options: [])
+        XCTAssertEqual(SearchEngine.regexCompileCountForTesting, 2,
+                       "a pattern change misses and compiles once")
+
+        _ = SearchEngine.search(text, pattern: "beta", options: [])
+        XCTAssertEqual(SearchEngine.regexCompileCountForTesting, 2,
+                       "the replacement entry is cached too")
+    }
+}

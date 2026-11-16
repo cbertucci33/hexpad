@@ -42,6 +42,12 @@ class FindBar: NSView, NSSearchFieldDelegate {
     // Observers for document changes
     private var documentChangeObserver: NSObjectProtocol?
     private var tabSelectionObserver: NSObjectProtocol?
+
+    /// Debounce for live full-buffer searches in large documents. Small docs
+    /// stay immediate so counts remain instant.
+    private var pendingFindWorkItem: DispatchWorkItem?
+    private static let debounceSearchLength = 1_000_000
+    private static let debounceInterval: TimeInterval = 0.15
     
     override init(frame frameRect: NSRect) {
         searchField = NSSearchField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
@@ -272,6 +278,8 @@ class FindBar: NSView, NSSearchFieldDelegate {
     }
 
     func hide() {
+        pendingFindWorkItem?.cancel()
+        pendingFindWorkItem = nil
         commitSearchHistory()
         clearHighlights()
         isVisible = false
@@ -451,10 +459,33 @@ class FindBar: NSView, NSSearchFieldDelegate {
         }
     }
 
-    func performFind(select: Bool = true) {
-        // The regex button state must track the live query: typing an invalid
-        // pattern flags it, fixing the pattern or toggling regex off clears it.
+    func performFind(select: Bool = true, debounce: Bool = false) {
+        // The regex button state must track the live query immediately: typing
+        // an invalid pattern flags it without waiting for the debounce.
         updateRegexButtonValidity()
+
+        pendingFindWorkItem?.cancel()
+        pendingFindWorkItem = nil
+
+        let length = tabStore?.selectedDocument?.textStorage.length ?? 0
+        if debounce, length > Self.debounceSearchLength {
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.pendingFindWorkItem = nil
+                self.performFindNow(select: select)
+            }
+            pendingFindWorkItem = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.debounceInterval,
+                                          execute: work)
+            return
+        }
+
+        performFindNow(select: select)
+    }
+
+    /// Synchronous search used by the debounce's trailing edge and by every
+    /// non-typing caller (navigation, toggles, tab switches).
+    private func performFindNow(select: Bool) {
         guard let doc = tabStore?.selectedDocument, let textView = editorContainer?.textView else { return }
 
         let pattern = searchField.stringValue
@@ -668,11 +699,13 @@ class FindBar: NSView, NSSearchFieldDelegate {
             isFinding = true
             defer { isFinding = false }
             // Recompute counts without stealing the caret: the user is mid-edit.
-            performFind(select: false)
+            // Large documents debounce the full pass; small ones stay instant.
+            performFind(select: false, debounce: true)
         }
     }
     
     deinit {
+        pendingFindWorkItem?.cancel()
         if let observer = documentChangeObserver {
             NotificationCenter.default.removeObserver(observer)
         }
@@ -717,8 +750,9 @@ class FindBar: NSView, NSSearchFieldDelegate {
     func controlTextDidChange(_ obj: Notification) {
         // NSSearchField's action alone is not fired for every keystroke, so
         // hook the field editor for live counts and highlights while typing.
+        // Large buffers wait for a 150ms pause; small ones update immediately.
         historyIndex = nil
-        performFind()
+        performFind(debounce: true)
     }
     
     // Direct references injected by MainWindowController. The responder-chain walks
