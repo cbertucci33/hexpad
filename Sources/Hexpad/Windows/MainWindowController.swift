@@ -81,6 +81,20 @@ class MainWindowController: NSViewController {
     /// Routes clicks in either group's editor/tab bar to ``focusGroup(_:)``.
     private var mouseDownMonitor: Any?
 
+    /// View > Synchronize Scrolling. Defaults to on and is remembered in
+    /// UserDefaults, alongside the other view-only state that is not part of
+    /// the document/session model.
+    private(set) var synchronizeScrolling: Bool = {
+        UserDefaults.standard.object(forKey: "synchronizeScrolling") == nil
+            ? true
+            : UserDefaults.standard.bool(forKey: "synchronizeScrolling")
+    }()
+
+    /// Re-entrancy guard for the leader/follower scroll pair. Set while the
+    /// follower is being scrolled; the follower's own coalesced viewport
+    /// notification is ignored, so one wheel event cannot bounce between panes.
+    private var isPropagatingScroll = false
+
     /// Single reusable Function List panel. The View item is nil-targeted, so
     /// this controller owns both the toggle and the no-document validation.
     private var functionListController: FunctionListWindowController?
@@ -370,8 +384,9 @@ class MainWindowController: NSViewController {
     /// groups so they cannot drift in what they wire.
     private func wire(_ pane: TabGroupPane) {
         pane.editor.textView.delegate = self
+        let group = pane.group
         pane.editor.onViewportChange = { [weak self] in
-            self?.refreshVisibleHighlighting()
+            self?.handleViewportChange(in: group)
         }
         pane.editor.onAppearanceChange = { [weak self] in
             self?.handleAppearanceChange()
@@ -382,7 +397,6 @@ class MainWindowController: NSViewController {
             self?.selectCharacter(charIndex, anchorCharIndex: anchorCharIndex)
         }
 
-        let group = pane.group
         pane.tabBar.onFocus = { [weak self] in
             self?.focusGroup(group)
         }
@@ -915,6 +929,36 @@ class MainWindowController: NSViewController {
         }
     }
 
+    /// View > Synchronize Scrolling. Inert while the split is closed (the menu
+    /// item is disabled); the setting itself is remembered for next launch.
+    @objc func toggleSynchronizeScrolling(_ sender: Any?) {
+        synchronizeScrolling.toggle()
+        UserDefaults.standard.set(synchronizeScrolling, forKey: "synchronizeScrolling")
+    }
+
+    /// View > Move to Other View. Moves the focused group's selected tab into
+    /// the other group and leaves focus there. Live caret/scroll is captured
+    /// first; dirty state, undo stack and editor state travel with the
+    /// DocumentModel, and the transfer reuses the drag path's store move.
+    @objc func moveToOtherView(_ sender: Any?) {
+        guard canMoveToOtherView(),
+              let receiving = pane(for: focusedGroup == .primary ? .secondary : .primary) else { return }
+
+        let source = activePane
+        let index = source.tabStore.selectedIndex
+        guard index >= 0, index < source.tabStore.count else { return }
+        let doc = source.tabStore.documents[index]
+
+        // The document stores caret/scroll/wrap/zoom; capture the live values
+        // before the pane unbinds so the receiving editor restores them.
+        source.editor.captureEditorState()
+        source.tabBar.transferTab(at: index,
+                                  doc: doc,
+                                  to: receiving.tabBar,
+                                  at: receiving.tabStore.count)
+        focusGroup(receiving.group)
+    }
+
     /// Opens group 2. It starts empty by design: the user drags tabs into it.
     func openSplitView() {
         guard secondaryPane == nil else { return }
@@ -969,6 +1013,16 @@ class MainWindowController: NSViewController {
         updateLayout()
         refreshTabBar()
         updateEditor()
+    }
+
+    /// Move to Other View needs an open split and a tab in the focused group.
+    func canMoveToOtherView() -> Bool {
+        isSplitViewOpen && tabStore.selectedDocument != nil
+    }
+
+    /// Synchronized scrolling only has meaning while both groups are open.
+    func canSynchronizeScrolling() -> Bool {
+        isSplitViewOpen
     }
 
     /// Applies the persisted font and word-wrap defaults to the bound editor.
@@ -1091,6 +1145,56 @@ class MainWindowController: NSViewController {
         }
         textStorage.endEditing()
         lastHighlightedRange = target
+    }
+
+    private func pane(for group: TabGroup) -> TabGroupPane? {
+        group == .primary ? primaryPane : secondaryPane
+    }
+
+    /// Shared viewport hook: keep the incremental highlighting current, then
+    /// (when enabled and split) drive the other editor to the same fractional
+    /// vertical offset.
+    private func handleViewportChange(in group: TabGroup) {
+        refreshVisibleHighlighting()
+        synchronizeScroll(from: group)
+    }
+
+    /// Leader/follower scroll sync. Whichever pane moved is the leader for that
+    /// event; the follower is scrolled to the same fraction of its own maximum
+    /// vertical offset, so documents of different lengths stay aligned.
+    private func synchronizeScroll(from group: TabGroup) {
+        guard isSplitViewOpen,
+              synchronizeScrolling,
+              !isPropagatingScroll,
+              let source = pane(for: group),
+              let target = pane(for: group == .primary ? .secondary : .primary),
+              source.tabStore.selectedDocument != nil,
+              target.tabStore.selectedDocument != nil,
+              let fraction = verticalScrollFraction(in: source.editor) else { return }
+
+        let clip = target.editor.scrollView.contentView
+        let documentHeight = target.editor.scrollView.documentView?.bounds.height ?? 0
+        let maxY = max(0, documentHeight - clip.bounds.height)
+        let targetY = fraction * maxY
+
+        isPropagatingScroll = true
+        clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: targetY))
+        target.editor.scrollView.reflectScrolledClipView(clip)
+        // The follower's viewport notification is coalesced on the next main
+        // queue turn; clearing after that turn keeps it from echoing back.
+        DispatchQueue.main.async { [weak self] in
+            self?.isPropagatingScroll = false
+        }
+    }
+
+    /// Current vertical position as a 0...1 fraction of the scrollable range.
+    /// `nil` when the document cannot scroll vertically at all.
+    private func verticalScrollFraction(in editor: EditorContainer) -> CGFloat? {
+        let clip = editor.scrollView.contentView
+        let documentHeight = editor.scrollView.documentView?.bounds.height ?? 0
+        let maxY = documentHeight - clip.bounds.height
+        guard maxY > 0.5 else { return nil }
+        return min(max(clip.bounds.origin.y / maxY, 0), 1)
     }
 
     /// Scroll/resize hook: only re-run the pipeline when the viewport leaves
@@ -2181,6 +2285,13 @@ extension MainWindowController: NSMenuItemValidation {
             // it enabled while open even if both groups happen to be empty so
             // the user can always close the split.
             return view.window != nil && (isSplitViewOpen || primaryPane.tabStore.selectedDocument != nil)
+        }
+        if menuItem.action == #selector(MainWindowController.toggleSynchronizeScrolling(_:)) {
+            menuItem.state = synchronizeScrolling ? .on : .off
+            return canSynchronizeScrolling()
+        }
+        if menuItem.action == #selector(MainWindowController.moveToOtherView(_:)) {
+            return canMoveToOtherView()
         }
         return true
     }

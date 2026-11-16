@@ -346,6 +346,18 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         splitViewItem.keyEquivalentModifierMask = [.command, .shift]
         splitViewItem.target = nil
         viewMenu.addItem(splitViewItem)
+        // Both are nil-targeted too: validation disables them while the split
+        // is closed (sync has nothing to pair, and there is no other view).
+        let synchronizeScrollItem = NSMenuItem(title: "Synchronize Scrolling",
+                                               action: #selector(MainWindowController.toggleSynchronizeScrolling(_:)),
+                                               keyEquivalent: "")
+        synchronizeScrollItem.target = nil
+        viewMenu.addItem(synchronizeScrollItem)
+        let moveToOtherViewItem = NSMenuItem(title: "Move to Other View",
+                                             action: #selector(MainWindowController.moveToOtherView(_:)),
+                                             keyEquivalent: "")
+        moveToOtherViewItem.target = nil
+        viewMenu.addItem(moveToOtherViewItem)
         viewMenu.addItem(.separator())
         viewMenu.addItem(appearanceItem)
         menu.addItem((NSMenuItem(title: "View", action: nil, keyEquivalent: "").apply { $0.submenu = viewMenu }))
