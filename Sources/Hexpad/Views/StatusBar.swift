@@ -11,14 +11,12 @@ class StatusBar: NSView {
 
     /// A line index plus the identity of the text it was built from.
     ///
-    /// `generation` is bumped by `NSTextStorage`'s character-edit
-    /// notification; `storageID`/`documentID` prevent a tab switch from reusing
-    /// another buffer's offsets. Together they make the cache valid exactly
-    /// while the (document, text) pair is unchanged.
+    /// `storageID`/`documentID` prevent a tab switch from reusing another
+    /// buffer's offsets, and the pending-edit list below makes the cache valid
+    /// exactly while the (document, text) pair is unchanged.
     private struct LineIndexCache {
         let documentID: UUID?
         let storageID: ObjectIdentifier
-        let generation: Int
         let index: LineIndex
     }
 
@@ -32,11 +30,6 @@ class StatusBar: NSView {
         let changeInLength: Int
     }
     private var pendingEdits: [PendingTextEdit] = []
-
-    /// Counts character edits on the storage currently being indexed. Attribute
-    /// edits are ignored: the highlighter rewrites attributes on every keystroke
-    /// and scroll, and attributes cannot move a line start.
-    private var textGeneration = 0
 
     /// The storage the edit observer is currently following. Set on every
     /// `update` so edits to a previously shown tab cannot invalidate the
@@ -63,11 +56,12 @@ class StatusBar: NSView {
         }
     }
 
-    /// Bumps `textGeneration` whenever the observed buffer's characters change.
-    /// Typing, undo, find/replace, line operations and reloads all mutate the
-    /// document's single `NSTextStorage`, so this one notification covers every
-    /// path that can move a line start (the container already relies on the
-    /// same notification for fold/bookmark remapping).
+    /// Records character edits on the observed buffer so the cached index can
+    /// be spliced instead of rebuilt. Typing, undo, find/replace, line
+    /// operations and reloads all mutate the document's single `NSTextStorage`,
+    /// so this one notification covers every path that can move a line start
+    /// (the container already relies on the same notification for
+    /// fold/bookmark remapping).
     private func startEditObservation() {
         editObserver = NotificationCenter.default.addObserver(
             forName: NSTextStorage.didProcessEditingNotification,
@@ -79,7 +73,6 @@ class StatusBar: NSView {
                   let observed = self.observedStorageID,
                   ObjectIdentifier(storage) == observed,
                   storage.editedMask.contains(.editedCharacters) else { return }
-            self.textGeneration &+= 1
             self.pendingEdits.append(PendingTextEdit(range: storage.editedRange,
                                                      changeInLength: storage.changeInLength))
             // Bounded: two coalesced edits already mean a full rebuild is
@@ -208,7 +201,6 @@ class StatusBar: NSView {
                                                    changeInLength: edit.changeInLength)
                 lineIndexCache = LineIndexCache(documentID: doc?.id,
                                                 storageID: storageID,
-                                                generation: textGeneration,
                                                 index: updated)
                 return updated
             }
@@ -221,7 +213,6 @@ class StatusBar: NSView {
         let index = LineIndex(textView.string)
         lineIndexCache = LineIndexCache(documentID: doc?.id,
                                         storageID: storageID,
-                                        generation: textGeneration,
                                         index: index)
         return index
     }

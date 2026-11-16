@@ -240,6 +240,9 @@ class EditorContainer: NSView {
             // in place would move the new tab's caret to the old tab's offset.
             setMultiCaretState(MultiCaretState(caretAt: 0))
             applyBodyFont()
+            // The gutter registered its redraw observer on the previous tab's
+            // storage; re-subscribe to the buffer now in use.
+            ruler.textStorageDidChange()
         }
 
         // Runs on every bind, including rebinding the same buffer after a
@@ -1009,6 +1012,14 @@ class EditorContainer: NSView {
         guard let document = boundDocument, let model = bookmarkModel else { return }
         bookmarkStates[document.id] = model.bookmarkState
         document.bookmarkState = model.bookmarkState
+    }
+
+    /// Drops the per-document caches kept for a tab that has been closed.
+    /// Called by the controller once the document is no longer open in either
+    /// group, so a long session cannot retain every closed tab's state.
+    func forgetDocumentState(for id: UUID) {
+        foldStates.removeValue(forKey: id)
+        bookmarkStates.removeValue(forKey: id)
     }
 
     /// Remaps bookmarks across a text edit so their circles follow the lines.

@@ -31,9 +31,10 @@ final class FunctionListWindowController: NSWindowController {
 
     /// Identity of the last build. Repeating notifications for an unchanged
     /// buffer (for example a tab refresh immediately after a debounced update)
-    /// are dropped before the model runs its regex pass again.
+    /// are dropped before the model runs its regex pass again. The document's
+    /// O(1) text revision stands in for comparing the whole buffer.
     private var lastDocumentID: UUID?
-    private var lastText: String?
+    private var lastRevision: Int?
     private var lastLanguageName: String?
     private var hasDocument = false
     private var language: Language = .plain
@@ -66,7 +67,7 @@ final class FunctionListWindowController: NSWindowController {
             language = .plain
             hasSymbolMetadata = false
             lastDocumentID = nil
-            lastText = nil
+            lastRevision = nil
             lastLanguageName = nil
             symbols = []
             tableView.reloadData()
@@ -75,13 +76,13 @@ final class FunctionListWindowController: NSWindowController {
 
         let currentLanguage = Language(rawValue: document.language) ?? .plain
         if lastDocumentID == document.id,
-           lastText == document.text,
+           lastRevision == document.textRevision,
            lastLanguageName == document.language {
             return
         }
 
         lastDocumentID = document.id
-        lastText = document.text
+        lastRevision = document.textRevision
         lastLanguageName = document.language
         hasDocument = true
         language = currentLanguage

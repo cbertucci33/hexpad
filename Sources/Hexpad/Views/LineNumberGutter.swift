@@ -233,8 +233,21 @@ final class LineNumberGutter: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        refreshObservers()
+    }
+
+    /// Re-subscribes to the editor's current text storage. The container swaps
+    /// the shared buffer when a tab is bound, so the storage captured when the
+    /// view attached to its window is stale after the first tab switch.
+    func textStorageDidChange() {
+        guard window != nil else { return }
+        refreshObservers()
+    }
+
+    private func refreshObservers() {
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         observers.removeAll()
+        fontObservation = nil
         guard window != nil, let textView else { return }
 
         let center = NotificationCenter.default

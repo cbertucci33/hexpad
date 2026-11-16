@@ -27,25 +27,35 @@ public struct SearchMatch {
 /// Search engine for document and file operations
 public final class SearchEngine {
 
-    /// One-entry compiled-regex cache. Search is main-thread UI work, so the
-    /// cache is deliberately not synchronized; it never crosses threads.
+    /// One-entry compiled-regex cache shared by every caller. In-editor find
+    /// runs on the main thread, but Find in Files runs `searchInFiles` /
+    /// `replaceInFiles` on a background queue, so the cache is guarded: a
+    /// reader must never observe a new key paired with the previous pattern's
+    /// compiled object.
     private struct RegexCacheKey: Hashable {
         let pattern: String
         let options: UInt
     }
+    private static let cacheLock = NSLock()
     private static var cachedRegexKey: RegexCacheKey?
     private static var cachedRegex: NSRegularExpression?
     private static var regexCompileCount = 0
 
     /// Test hook: resets the one-entry cache and its compile counter.
     static func resetRegexCacheForTesting() {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
         cachedRegexKey = nil
         cachedRegex = nil
         regexCompileCount = 0
     }
 
     /// Test hook: number of `NSRegularExpression` compilations since reset.
-    static var regexCompileCountForTesting: Int { regexCompileCount }
+    static var regexCompileCountForTesting: Int {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        return regexCompileCount
+    }
 
     /// Returns the cached regex for this effective pattern + options, compiling
     /// only on a miss. A pattern change evicts the previous entry naturally.
@@ -54,13 +64,22 @@ public final class SearchEngine {
         let effectiveOptions = regexOptions(for: options)
         let key = RegexCacheKey(pattern: effectivePattern,
                                 options: effectiveOptions.rawValue)
+        cacheLock.lock()
         if cachedRegexKey == key, let cachedRegex {
+            cacheLock.unlock()
             return cachedRegex
         }
+        cacheLock.unlock()
+
         let regex = try NSRegularExpression(pattern: effectivePattern, options: effectiveOptions)
-        regexCompileCount += 1
-        cachedRegexKey = key
+
+        cacheLock.lock()
+        // Publish the value before the key (and under the lock) so a concurrent
+        // reader can never pair this key with a different compiled pattern.
         cachedRegex = regex
+        cachedRegexKey = key
+        regexCompileCount += 1
+        cacheLock.unlock()
         return regex
     }
     

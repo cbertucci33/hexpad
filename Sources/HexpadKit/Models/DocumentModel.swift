@@ -46,6 +46,13 @@ public final class DocumentModel: Identifiable, ObservableObject {
     /// tab switch so switching tabs no longer wipes a tab's undo history.
     /// Not persisted: undo stacks intentionally do not survive app restarts.
     public let undoManager = UndoManager()
+
+    /// Monotonic counter of character edits to this document's buffer. Bumped
+    /// by the same storage observer that maintains the dirty flag, so typing,
+    /// programmatic replacements, reloads and undo all advance it. Callers that
+    /// cache work derived from the text (session snapshots, find matches, the
+    /// function list) compare it instead of comparing whole strings.
+    public private(set) var textRevision: Int = 0
     
     private var _originalText: String = ""
     /// Authoritative O(1) dirty bit. Set by storage character edits (typing and
@@ -195,6 +202,7 @@ public final class DocumentModel: Identifiable, ObservableObject {
                   storage === self.textStorage,
                   storage.editedMask.contains(.editedCharacters) else { return }
             self._isDirty = true
+            self.textRevision &+= 1
         })
         for name in [Notification.Name("NSUndoManagerDidUndoChangeNotification"),
                      Notification.Name("NSUndoManagerDidRedoChangeNotification")] {

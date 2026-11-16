@@ -12,6 +12,11 @@ class MainWindowController: NSViewController {
     private var secondaryPane: TabGroupPane?
     private(set) var focusedGroup: TabGroup = .primary
 
+    /// True for a window opened with File > New Window. Additional windows do
+    /// not write the (single) session on their own; the app delegate merges
+    /// every window into one snapshot on quit and when a window closes.
+    var isAdditionalWindow = false
+
     /// First-bind state per group. A fresh empty pane still needs its theme and
     /// preferences applied once even when its document id is nil.
     private var hasBoundPrimaryPane = false
@@ -77,11 +82,10 @@ class MainWindowController: NSViewController {
     // names, so the existing command paths follow focus without a second copy
     // of each action.
     private var editorContainer: EditorContainer? { activePane.editor }
-    /// Document whose buffer/undo stack is currently loaded in the focused
-    /// editor.
-    private var editorBoundDoc: DocumentModel? { activePane.boundDocument }
     private var statusBar: StatusBar?
-    private var findBar: FindBar?
+    /// Exposed for app tests (find-bar counts/highlight behaviour) and refreshed
+    /// only through `refreshChrome`'s injected refs.
+    private(set) var findBar: FindBar?
     private var dividerView: NSView?
     /// Routes clicks in either group's editor/tab bar to ``focusGroup(_:)``.
     private var mouseDownMonitor: Any?
@@ -517,6 +521,7 @@ class MainWindowController: NSViewController {
         refreshTabBar()
         updateEditor()
         updateStatusBar()
+        postTabSelectionDidChange()
     }
     
     func openFile() {
@@ -556,13 +561,18 @@ class MainWindowController: NSViewController {
         // opening a second one. A dirty buffer keeps the user's unsaved edits;
         // a clean one may have changed on disk since it was opened, so reload it
         // through the same path the external-change watcher uses before focusing.
-        if let existingIndex = tabStore.documents.firstIndex(where: { $0.filePath?.path == url.path }) {
-            let existingDoc = tabStore.documents[existingIndex]
+        // Both split groups are searched: two DocumentModels for one path would
+        // be two independent buffers and undo stacks for the same file.
+        if let existing = existingOpenDocument(forPath: url.path) {
+            let existingDoc = existing.document
             var didReload = false
             if !existingDoc.unsavedChanges {
                 didReload = reloadDocument(existingDoc, from: url)
             }
-            selectTab(at: existingIndex)
+            // Focus the owning group before selecting: all tab commands act on
+            // the focused store, and the match may live in the other group.
+            focusGroup(existing.pane.group)
+            selectTab(at: existing.index)
             if didReload {
                 // The reload swapped the buffer, so force the chrome to re-read
                 // the new text even when the tab was already selected (selectTab
@@ -606,6 +616,20 @@ class MainWindowController: NSViewController {
         }
     }
     
+    /// The open tab showing `path`, searching both split groups. The focused
+    /// group is searched first so a legacy state that somehow holds two tabs for
+    /// one file still resolves to the one the user is looking at.
+    private func existingOpenDocument(forPath path: String)
+        -> (pane: TabGroupPane, index: Int, document: DocumentModel)? {
+        let panes = [activePane] + allPanes.filter { $0 !== activePane }
+        for pane in panes {
+            if let index = pane.tabStore.documents.firstIndex(where: { $0.filePath?.path == path }) {
+                return (pane, index, pane.tabStore.documents[index])
+            }
+        }
+        return nil
+    }
+
     func saveFile() {
         guard let doc = tabStore.selectedDocument else { return }
         do {
@@ -801,33 +825,70 @@ class MainWindowController: NSViewController {
     
     func closeTabAtIndex(_ index: Int) {
         guard tabStore.count > 0 else { return }
+        let closed = (index >= 0 && index < tabStore.count) ? tabStore.documents[index] : nil
         tabStore.removeDocument(at: index)
         refreshTabBar()
         updateEditor()
         updateStatusBar()
-        
-        if tabStore.count == 0 {
+        postTabSelectionDidChange()
+
+        // Forget per-document caches (fold/bookmark models, theme tags, watcher
+        // baselines) once the document is no longer open anywhere, so a long
+        // session cannot retain every closed tab's state.
+        if let closed,
+           !allPanes.contains(where: { $0.tabStore.documents.contains { $0 === closed } }) {
+            allPanes.forEach { $0.editor.forgetDocumentState(for: closed.id) }
+            docThemeNames.removeValue(forKey: closed.id)
+            seenModDates.removeValue(forKey: closed.id)
+        }
+
+        // Refill only when the whole window is empty: closing one group's last
+        // tab while the other group still has documents leaves that group empty
+        // instead of spawning a tab the user did not ask for.
+        if tabStore.count == 0 && allPanes.allSatisfy({ $0.tabStore.isEmpty }) {
+            focusedGroup = .primary
             addNewTab()
         }
     }
+
+    /// Closes `doc` in whichever group owns it. Focus follows the document so
+    /// the normal close path (index, selection, chrome, empty-group handling)
+    /// applies even while the other group was focused.
+    private func closeDocument(_ doc: DocumentModel) {
+        guard let pane = allPanes.first(where: { $0.tabStore.documents.contains { $0 === doc } }),
+              let index = pane.tabStore.documents.firstIndex(where: { $0 === doc }) else { return }
+        focusGroup(pane.group)
+        closeTabAtIndex(index)
+    }
     
     func closeAllTabs() {
-        guard tabStore.count > 0 else {
+        // "All tabs" is window-scoped: close both split groups. Each group is
+        // walked back-to-front so removing a higher index never shifts a lower
+        // one into an already-processed slot. Dirty docs get the same save
+        // prompt as a single close; Cancel stops the sweep and leaves the
+        // remaining tabs open.
+        var queue: [(pane: TabGroupPane, doc: DocumentModel)] = []
+        for pane in allPanes {
+            queue.append(contentsOf: pane.tabStore.documents.reversed().map { (pane, $0) })
+        }
+        guard !queue.isEmpty else {
             addNewTab()
             return
         }
-        
-        // Walk tabs back-to-front so removing a higher index never shifts a
-        // lower one into an already-processed slot. Dirty docs get the same
-        // save prompt as a single close; Cancel stops the sweep and leaves the
-        // remaining tabs open.
-        var index = tabStore.count - 1
+
+        var index = 0
         var shouldContinueClosing = true
-        
+
         func closeNextTab() {
-            guard shouldContinueClosing, index >= 0, index < tabStore.count else { return }
-            let doc = tabStore.documents[index]
-            
+            guard shouldContinueClosing, index < queue.count else { return }
+            let (pane, doc) = queue[index]
+            // The document may already be gone (closed while a sheet ran).
+            guard pane.tabStore.documents.contains(where: { $0 === doc }) else {
+                index += 1
+                closeNextTab()
+                return
+            }
+
             if doc.unsavedChanges {
                 let alert = NSAlert()
                 alert.messageText = "Save changes to \(doc.name)?"
@@ -846,19 +907,20 @@ class MainWindowController: NSViewController {
                             // (or the user actually picked a destination). A
                             // cancelled panel must stop the whole sweep.
                             if doc.isUntitled {
+                                self.focusGroup(pane.group)
                                 guard self.saveAsAndClose(doc) else {
                                     shouldContinueClosing = false
                                     return
                                 }
                             } else {
                                 self.saveDocument(doc)
-                                self.closeTabAtIndex(index)
+                                self.closeDocument(doc)
                             }
-                            index -= 1
+                            index += 1
                             closeNextTab()
                         case .alertSecondButtonReturn: // Don't Save
-                            self.closeTabAtIndex(index)
-                            index -= 1
+                            self.closeDocument(doc)
+                            index += 1
                             closeNextTab()
                         case .alertThirdButtonReturn: // Cancel
                             shouldContinueClosing = false
@@ -868,8 +930,8 @@ class MainWindowController: NSViewController {
                     }
                 }
             } else {
-                closeTabAtIndex(index)
-                index -= 1
+                closeDocument(doc)
+                index += 1
                 closeNextTab()
             }
         }
@@ -887,6 +949,18 @@ class MainWindowController: NSViewController {
         refreshTabBar()
         updateEditor()
         updateStatusBar()
+        // Every tab-switch path shares this notice (FindBar and the tab bars
+        // observe it). Posting only from the tab-bar click path left the find
+        // bar's counts and highlights on the previous document after
+        // Cmd+Shift+] / Cmd+1-9 / the document switcher / Open.
+        postTabSelectionDidChange()
+    }
+
+    /// Announces that the focused group's selected tab changed. Kept in one
+    /// place so programmatic and mouse-driven selection cannot drift again.
+    private func postTabSelectionDidChange() {
+        NotificationCenter.default.post(name: NSNotification.Name("TabStoreSelectedIndexDidChange"),
+                                        object: nil)
     }
 
     /// Wraps forward through the open tabs. Disabled with fewer than two tabs
@@ -1003,7 +1077,13 @@ class MainWindowController: NSViewController {
         if group == .secondary && secondaryPane == nil { return }
         guard group != focusedGroup else { return }
         focusedGroup = group
-        refreshChrome()
+        // Bind first, then refresh chrome. A focus change can be the first thing
+        // to happen after a store's selection moved (Move to Other View and a
+        // cross-group drop both select the incoming tab before focusing its
+        // group), so highlighting the new document against the pane's previous
+        // storage would index past the old buffer. updateEditor is
+        // bind-guarded: an unchanged pane costs no document work.
+        updateEditor()
         if findBar?.isVisible == true {
             findBar?.performFind()
         }
@@ -1220,6 +1300,11 @@ class MainWindowController: NSViewController {
                                          forceReset: Bool = false) {
         let textStorage = editor.textView.textStorage
         guard let textStorage else { return }
+        // The editor must already be showing this document's buffer. Every
+        // caller either binds first or works on the focused pane; a mismatch
+        // here would paint offsets from `doc` onto a different (possibly
+        // shorter) storage and raise NSRangeException, so refuse instead.
+        guard textStorage === doc.textStorage else { return }
 
         let text = doc.text
         let textLength = (text as NSString).length
@@ -1311,11 +1396,11 @@ class MainWindowController: NSViewController {
         group == .primary ? primaryPane : secondaryPane
     }
 
-    /// Shared viewport hook: keep the incremental highlighting current, then
-    /// (when enabled and split) drive the other editor to the same fractional
-    /// vertical offset.
+    /// Shared viewport hook: keep the incremental highlighting current for the
+    /// pane that actually scrolled, then (when enabled and split) drive the
+    /// other editor to the same fractional vertical offset.
     private func handleViewportChange(in group: TabGroup) {
-        refreshVisibleHighlighting()
+        refreshVisibleHighlighting(in: group)
         synchronizeScroll(from: group)
     }
 
@@ -1359,14 +1444,23 @@ class MainWindowController: NSViewController {
 
     /// Scroll/resize hook: only re-run the pipeline when the viewport leaves
     /// the band that is already highlighted.
-    private func refreshVisibleHighlighting() {
-        guard let editor = editorContainer,
-              let doc = tabStore.selectedDocument,
-              doc === editorBoundDoc else { return }
+    ///
+    /// Uses the pane that scrolled, not the focused one: a mouse wheel over the
+    /// other split group (which does not change first responder) must still
+    /// tokenize the lines it brings into view.
+    private func refreshVisibleHighlighting(in group: TabGroup) {
+        guard let pane = pane(for: group),
+              let doc = pane.tabStore.selectedDocument else { return }
+        let editor = pane.editor
+        // The pane must already show this document's buffer; a focus/selection
+        // ordering hole must never paint this document's offsets onto another
+        // storage (applySyntaxHighlighting refuses that too).
+        guard editor.textView.textStorage === doc.textStorage else { return }
 
         let textLength = (doc.text as NSString).length
         let visible = clipped(editor.visibleCharacterRange(), to: textLength)
-        if lastHighlightedRange.length > 0,
+        if highlightedDoc === doc,
+           lastHighlightedRange.length > 0,
            visible.location >= lastHighlightedRange.location,
            NSMaxRange(visible) <= NSMaxRange(lastHighlightedRange) {
             return
@@ -1673,7 +1767,7 @@ class MainWindowController: NSViewController {
                 continue
             }
             guard FileManager.default.fileExists(atPath: path) else { continue }
-            guard reloadDocument(doc, from: doc.filePath!) else { continue }
+            guard reloadDocument(doc, from: URL(fileURLWithPath: path)) else { continue }
             if allPanes.contains(where: { $0.tabStore.selectedDocument === doc }) {
                 updateEditor(forceRebind: true)
             }
@@ -1780,31 +1874,18 @@ class MainWindowController: NSViewController {
         return doc.canEncode(as: encoding)
     }
 
-    /// Changing encoding must re-decode the bytes on disk, otherwise the status
-    /// bar says UTF-16 while the buffer still holds the mis-detected decode and
-    /// the next save writes the wrong bytes.
-    func setEncoding(_ encoding: String) {
-        guard let doc = tabStore.selectedDocument else { return }
-        doc.setEncoding(encoding)
-
-        guard let path = doc.filePath, let data = try? Data(contentsOf: path) else {
-            updateStatusBar()
-            return
-        }
-        if let text = EncodingDetective.decodeForEditing(data, as: encoding), text != doc.text {
-            doc.keepsBOM = EncodingDetective.detectBOM(of: data) != nil
-            doc.text = text
-            doc.setModified(true)
-            updateEditor(forceRebind: true)
-        }
-        updateStatusBar()
-    }
-
+    /// Encoding > Line Endings: retarget the bytes the next save writes. The
+    /// buffer stays LF-only, so the change is not a text edit; the document's
+    /// dirty chrome is refreshed explicitly.
     func setEOL(_ eol: String) {
         guard let doc = tabStore.selectedDocument else { return }
-        // convertEOL replaces through the shared storage, so the edit is
-        // visible and undoable; the model notice drives the UI refresh.
+        // "Convert to" line endings only retargets the next save: the LF-only
+        // buffer is untouched, so there is no text notification to observe.
+        // Refresh the dirty chrome explicitly, exactly like Convert to
+        // encoding, or the tab dot, window edited flag and scheduled session
+        // write would all miss the new pending conversion.
         doc.convertEOL(to: eol)
+        NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
         updateStatusBar()
     }
 
@@ -2292,35 +2373,55 @@ class MainWindowController: NSViewController {
         // (never-saved-to-disk) edits are already in the tab stores. Capture
         // each visible tab's caret/scroll/wrap/zoom first: tab switches
         // capture on unbind, but the tab on screen may have moved since.
+        captureSessionState()
+        try? SessionStore.save(sessionSnapshot())
+    }
+
+    /// Captures the live caret/scroll/wrap/zoom of every visible tab. The quit
+    /// path and a closing window both use it so the persisted session matches
+    /// what is on screen. Cheap: one state copy per pane.
+    func captureSessionState() {
         for pane in allPanes {
             pane.editor.captureEditorState()
         }
-        try? SessionStore.save(sessionSnapshot())
     }
 
     /// Coalesced write used by the edit notifications.
     private func scheduleSessionSave() {
+        // A second window writing its own tabs would replace the primary
+        // window's session. The app delegate merges every window instead.
+        guard !isAdditionalWindow else { return }
         SessionStore.scheduleSave(sessionSnapshot())
     }
 
     /// One snapshot for the existing session schema, which stores a single tab
     /// array and selected index.
     ///
+    /// Serialized here, on the main thread, so `SessionStore`'s write queue only
+    /// ever sees finished dictionaries and never reads a live `NSTextStorage`.
+    ///
     /// TODO: persist the split state itself (whether group 2 is open and which
     /// documents belong to which group). That needs a schema addition in
     /// SessionStore; until then both groups' documents are merged so closing
     /// the app cannot drop a buffer from either group. On relaunch every tab
     /// reopens in group 1.
-    private func sessionSnapshot() -> TabStore {
-        guard let secondaryPane else { return primaryPane.tabStore }
-        let merged = TabStore()
-        merged.documents = primaryPane.tabStore.documents + secondaryPane.tabStore.documents
-        merged.selectedIndex = primaryPane.tabStore.selectedIndex
-        return merged
+    func sessionSnapshot() -> SessionStore.Snapshot {
+        let documents = primaryPane.tabStore.documents
+            + (secondaryPane?.tabStore.documents ?? [])
+        return SessionStore.Snapshot(tabs: documents.map { $0.toSessionData() },
+                                     selectedIndex: primaryPane.tabStore.selectedIndex)
     }
     
     // MARK: - Error
     
+    /// Drops the controller's strong reference to its window so a closed
+    /// additional window can deallocate: the window retains this controller as
+    /// its content view controller, so keeping `mainWindow` strong would leave
+    /// the pair in a cycle after the app delegate forgets the controller.
+    func releaseWindowReference() {
+        mainWindow = nil
+    }
+
     private func showError(_ message: String) {
         let alert = NSAlert()
         alert.messageText = "Error"

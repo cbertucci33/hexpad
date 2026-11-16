@@ -268,4 +268,40 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertFalse(restored.unsavedChanges, "an unchanged UTF-16 buffer restores clean")
         XCTAssertTrue(restored.keepsBOM, "BOM state survives the session")
     }
+
+    // MARK: - R6: snapshots are taken on the caller's (main) thread
+
+    /// The write queue must serialize only the snapshot built at schedule time.
+    /// Editing the live model afterwards must not change what lands on disk —
+    /// and `SessionStore` must never read the editor's `NSTextStorage` itself.
+    func testScheduledSaveWritesCallerSnapshotNotLiveModels() throws {
+        let doc = DocumentModel(text: "before")
+        let store = TabStore()
+        store.addDocument(doc)
+
+        SessionStore.scheduleSave(store, after: 0.05)
+        doc.replaceAllText(with: "after")
+
+        let deadline = Date().addingTimeInterval(2)
+        while SessionStore.hasPendingChanges && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        XCTAssertFalse(SessionStore.hasPendingChanges, "the scheduled save did not run")
+
+        let restored = try XCTUnwrap(SessionStore.restore())
+        XCTAssertEqual(restored.tabs.documents.first?.text, "before",
+                       "the write must use the snapshot, not the live buffer")
+    }
+
+    /// The quit path hands SessionStore finished dictionaries; it writes them
+    /// without needing a TabStore at all.
+    func testSnapshotRoundTripsWithoutATabStore() throws {
+        let doc = DocumentModel(text: "snapshot text")
+        let snapshot = SessionStore.Snapshot(tabs: [doc.toSessionData()], selectedIndex: 0)
+        try SessionStore.save(snapshot)
+
+        let restored = try XCTUnwrap(SessionStore.restore())
+        XCTAssertEqual(restored.tabs.documents.first?.text, "snapshot text")
+        XCTAssertEqual(restored.selectedIndex, 0)
+    }
 }

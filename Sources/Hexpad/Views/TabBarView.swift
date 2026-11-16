@@ -28,7 +28,6 @@ class TabBarView: NSView {
         wantsLayer = true
         layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
         
-        NotificationCenter.default.addObserver(self, selector: #selector(documentsDidChange), name: NSNotification.Name("TabStoreDocumentsDidChange"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(selectedIndexDidChange), name: NSNotification.Name("TabStoreSelectedIndexDidChange"), object: nil)
     }
     
@@ -172,8 +171,11 @@ class TabBarView: NSView {
         tabStore.insertDocument(doc, at: index)
         reloadTabs()
         NotificationCenter.default.post(name: NSNotification.Name("TabStoreSelectedIndexDidChange"), object: nil)
-        onFocus?()
+        // Rebind before focusing: inserting selects the incoming document, so
+        // focus chrome run against the pane's old binding would highlight the
+        // new text into the previous buffer.
         onChange?()
+        onFocus?()
     }
 
     /// Moves the tab at `sourceIndex` into `target`'s store at `targetIndex`.
@@ -197,10 +199,6 @@ class TabBarView: NSView {
         }
         NotificationCenter.default.post(name: NSNotification.Name("TabStoreSelectedIndexDidChange"), object: nil)
         onChange?()
-    }
-    
-    @objc private func documentsDidChange() {
-        reloadTabs()
     }
     
     @objc private func selectedIndexDidChange() {
@@ -280,6 +278,9 @@ class TabButton: NSButton {
             } else {
                 layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
             }
+            // The underline is drawn in draw(_:), so changing the layer colour
+            // alone leaves it under the previously selected tab.
+            needsDisplay = true
         }
     }
     

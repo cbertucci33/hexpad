@@ -30,6 +30,34 @@ public final class SessionStore {
         appSupportDir.appendingPathComponent("session.json")
     }
 
+    // MARK: - Snapshots
+
+    /// A session ready to write: serialized tab dictionaries plus the selected
+    /// index.
+    ///
+    /// Snapshots are built on the main thread from the live models (see
+    /// `DocumentModel.toSessionData()`), and `SessionStore` only ever reads the
+    /// finished values. The write queue therefore never touches
+    /// `DocumentModel`/`NSTextStorage`, which are main-thread objects owned by
+    /// the editor.
+    public struct Snapshot {
+        public let tabs: [[String: Any]]
+        public let selectedIndex: Int
+
+        public init(tabs: [[String: Any]], selectedIndex: Int) {
+            self.tabs = tabs
+            self.selectedIndex = selectedIndex
+        }
+
+        /// Serializes `tabs` immediately, on the calling thread.
+        ///
+        /// Must be called on the main thread: it reads every document's shared
+        /// text storage.
+        public static func make(from tabs: TabStore) -> Snapshot {
+            Snapshot(tabs: tabs.toSessionData(), selectedIndex: tabs.selectedIndex)
+        }
+    }
+
     // MARK: - Write Scheduling
 
     /// All file mutations run on this serial queue. Serialization is what keeps
@@ -39,7 +67,7 @@ public final class SessionStore {
     private static let queue = DispatchQueue(label: "com.hexpad.session-store")
 
     private static var pendingWorkItem: DispatchWorkItem?
-    private static var pendingTabs: TabStore?
+    private static var pendingSnapshot: Snapshot?
     private static var pendingGeneration: UInt64 = 0
     private static var dirty = false
     private static var lastError: Error?
@@ -56,11 +84,11 @@ public final class SessionStore {
 
     /// Mark the session dirty and coalesce writes: rapid change events collapse
     /// into a single write once the debounce interval has elapsed. The latest
-    /// store reference wins, so the flush persists the newest state.
-    public static func scheduleSave(_ tabs: TabStore, after delay: TimeInterval? = nil) {
+    /// snapshot wins, so the flush persists the newest state.
+    public static func scheduleSave(_ snapshot: Snapshot, after delay: TimeInterval? = nil) {
         let interval = max(0, delay ?? debounceInterval)
         queue.async {
-            pendingTabs = tabs
+            pendingSnapshot = snapshot
             dirty = true
             pendingGeneration &+= 1
             let generation = pendingGeneration
@@ -83,6 +111,13 @@ public final class SessionStore {
         }
     }
 
+    /// Convenience for callers holding a `TabStore`. The store is serialized
+    /// synchronously on the calling thread so the write queue never reads a
+    /// live document. Main thread only.
+    public static func scheduleSave(_ tabs: TabStore, after delay: TimeInterval? = nil) {
+        scheduleSave(Snapshot.make(from: tabs), after: delay)
+    }
+
     /// Write any pending dirty state now. Explicit save/close paths use this so
     /// quitting never waits for the debounce timer.
     public static func flush() throws {
@@ -101,16 +136,24 @@ public final class SessionStore {
     // MARK: - Session State
 
     /// Save session state immediately, superseding any scheduled write.
-    public static func save(_ tabs: TabStore) throws {
+    public static func save(_ snapshot: Snapshot) throws {
         try queue.sync {
             cancelPendingLocked()
-            try writeSessionLocked(tabs)
+            try writeSessionLocked(snapshot)
         }
     }
-    
-    /// Restore session state
+
+    /// Convenience for callers holding a `TabStore`. Serialized on the calling
+    /// thread, on the same main-thread contract as `scheduleSave(_ tabs:)`.
+    public static func save(_ tabs: TabStore) throws {
+        try save(Snapshot.make(from: tabs))
+    }
+
+    /// Restore session state. Parsing happens on the write queue (plain JSON),
+    /// but the `DocumentModel`s — and their `NSTextStorage`s — are built on the
+    /// calling (main) thread.
     public static func restore() -> (tabs: TabStore, selectedIndex: Int)? {
-        queue.sync {
+        let snapshotData: (tabs: [[String: Any]], selectedIndex: Int)? = queue.sync {
             guard FileManager.default.fileExists(atPath: sessionFile.path) else { return nil }
             
             do {
@@ -120,14 +163,14 @@ public final class SessionStore {
                       let selectedIndex = dict["selectedIndex"] as? Int else {
                     return nil
                 }
-                
-                let tabs = TabStore.fromSessionData(tabsData)
-                return (tabs, selectedIndex)
+                return (tabsData, selectedIndex)
             } catch {
                 print("Failed to restore session: \(error)")
                 return nil
             }
         }
+        guard let snapshotData else { return nil }
+        return (TabStore.fromSessionData(snapshotData.tabs), snapshotData.selectedIndex)
     }
     
     /// Clear saved session
@@ -177,10 +220,10 @@ public final class SessionStore {
         pendingWorkItem?.cancel()
         pendingWorkItem = nil
 
-        guard dirty, let tabs = pendingTabs else { return }
-        try writeSessionLocked(tabs)
+        guard dirty, let snapshot = pendingSnapshot else { return }
+        try writeSessionLocked(snapshot)
         dirty = false
-        pendingTabs = nil
+        pendingSnapshot = nil
         lastError = nil
     }
 
@@ -189,18 +232,18 @@ public final class SessionStore {
         pendingGeneration &+= 1
         pendingWorkItem?.cancel()
         pendingWorkItem = nil
-        pendingTabs = nil
+        pendingSnapshot = nil
         dirty = false
     }
 
-    /// Must run on `queue`.
-    private static func writeSessionLocked(_ tabs: TabStore) throws {
+    /// Must run on `queue`. Reads only the already-serialized snapshot.
+    private static func writeSessionLocked(_ snapshot: Snapshot) throws {
         try FileManager.default.createDirectory(at: appSupportDir, withIntermediateDirectories: true)
         
         // Preserve keys written by other writers (e.g. "recents" from saveRecents)
         var data = readExistingLocked()
-        data["tabs"] = tabs.toSessionData()
-        data["selectedIndex"] = tabs.selectedIndex
+        data["tabs"] = snapshot.tabs
+        data["selectedIndex"] = snapshot.selectedIndex
         
         let jsonData = try JSONSerialization.data(withJSONObject: data)
         try writeAtomicallyLocked(jsonData, to: sessionFile)

@@ -382,4 +382,65 @@ final class MenuWiringTests: XCTestCase {
         XCTAssertEqual(changes, 1, "one commit on mouseUp, not one per slot")
         XCTAssertEqual(store.documents.map(\.text), ["b", "c", "d", "a"])
     }
+
+    // MARK: - R4: Find Next after the bar closed
+
+    func testFindNextAfterClosingFindBarClampsToCurrentBuffer() throws {
+        let (controller, _) = makeController()
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        doc.text = "alpha alpha alpha"
+
+        controller.toggleFindBar()
+        let bar = try XCTUnwrap(controller.findBar)
+        XCTAssertTrue(bar.isVisible)
+        bar.searchField.stringValue = "alpha"
+        bar.performFind()
+        XCTAssertEqual(bar.matchCountLabel.stringValue, "1 of 3")
+
+        // Close the bar while it holds three matches, then delete them all.
+        controller.toggleFindBar()
+        XCTAssertFalse(bar.isVisible)
+        doc.text = "zzz"
+        let textView = try XCTUnwrap(controller.editorTextView)
+        textView.setSelectedRange(NSRange(location: 0, length: 0))
+
+        // Used to hand NSTextView a 5-character range inside a 3-character
+        // buffer, raising NSRangeException.
+        controller.findNext()
+
+        let length = (doc.text as NSString).length
+        let selection = try XCTUnwrap(controller.editorTextView?.selectedRange)
+        XCTAssertLessThanOrEqual(NSMaxRange(selection), length,
+                                 "Find Next must never select past the buffer")
+        XCTAssertEqual(bar.matchCountLabel.stringValue, "No matches",
+                       "the stale match list must be discarded, not reused")
+    }
+
+    // MARK: - R5: programmatic tab switches refresh the find bar
+
+    func testSelectTabRefreshesFindBarCounts() throws {
+        let (controller, _) = makeController()
+        let first = try XCTUnwrap(controller.tabStore.selectedDocument)
+        first.text = "needle needle"
+
+        controller.addNewTab()
+        let second = try XCTUnwrap(controller.tabStore.selectedDocument)
+        second.text = "haystack"
+
+        controller.selectTab(at: 0)
+        controller.toggleFindBar()
+        let bar = try XCTUnwrap(controller.findBar)
+        bar.searchField.stringValue = "needle"
+        bar.performFind()
+        XCTAssertEqual(bar.matchCountLabel.stringValue, "1 of 2")
+
+        // Cmd+1-9 / Cmd+Shift+] / doc-switcher path: only the controller's
+        // selectTab runs, and it must post the tab-selection notice.
+        controller.selectTab(at: 1)
+        XCTAssertEqual(bar.matchCountLabel.stringValue, "No matches",
+                       "the find bar must re-search the newly selected document")
+
+        controller.selectTab(at: 0)
+        XCTAssertEqual(bar.matchCountLabel.stringValue, "1 of 2")
+    }
 }

@@ -33,6 +33,12 @@ class FindBar: NSView, NSSearchFieldDelegate {
     /// selected this" apart from "the find bar selected this".
     private var lastSelectedMatchRange: NSRange?
 
+    /// Document identity and text revision that `allMatches` describes. Find
+    /// Next compares them and re-searches instead of trusting a list built for
+    /// an older buffer (the bar can be closed while the user keeps typing).
+    private var matchesDocumentID: UUID?
+    private var matchesRevision: Int = -1
+
     // Notepad++-style find history. Newest first; cap at searchHistoryLimit.
     private static let searchHistoryKey = "HexpadFindSearchHistory"
     private static let searchHistoryLimit = 10
@@ -281,6 +287,13 @@ class FindBar: NSView, NSSearchFieldDelegate {
         pendingFindWorkItem?.cancel()
         pendingFindWorkItem = nil
         commitSearchHistory()
+        // No match list survives the bar closing: the buffer stays editable
+        // while the bar is hidden, and Search > Find Next must not select a
+        // range that no longer exists in the document.
+        allMatches = []
+        currentMatchIndex = 0
+        matchesDocumentID = nil
+        matchesRevision = -1
         clearHighlights()
         isVisible = false
         isHidden = true
@@ -497,6 +510,8 @@ class FindBar: NSView, NSSearchFieldDelegate {
         lastQuery = pattern
         let scope = activeSearchScope()
         allMatches = SearchEngine.search(doc.text, pattern: pattern, options: searchOptions, range: scope)
+        matchesDocumentID = doc.id
+        matchesRevision = doc.textRevision
 
         if pattern.isEmpty {
             // Empty query: show nothing
@@ -531,9 +546,10 @@ class FindBar: NSView, NSSearchFieldDelegate {
         // typing in the document does not yank the caret to a match.
         guard select else { return }
         let match = allMatches[currentMatchIndex]
-        textView.setSelectedRange(match.range)
-        textView.scrollRangeToVisible(match.range)
-        lastSelectedMatchRange = match.range
+        let range = clampedMatchRange(match.range, in: textView)
+        textView.setSelectedRange(range)
+        textView.scrollRangeToVisible(range)
+        lastSelectedMatchRange = range
     }
 
     /// Returns the selection captured for "In selection", or nil when the
@@ -581,12 +597,36 @@ class FindBar: NSView, NSSearchFieldDelegate {
     }
 
     private func clearHighlights() {
-        guard let textView = editorContainer?.textView,
-              let layoutManager = textView.layoutManager else { return }
-        let length = (textView.string as NSString).length
-        guard length > 0 else { return }
-        layoutManager.removeTemporaryAttribute(.backgroundColor,
-                                               forCharacterRange: NSRange(location: 0, length: length))
+        // Temporary attributes live on each pane's layout manager, so the
+        // unfocused split group keeps stale match highlights unless it is
+        // cleared too.
+        for textView in allEditorTextViews() {
+            guard let layoutManager = textView.layoutManager else { continue }
+            let length = (textView.string as NSString).length
+            guard length > 0 else { continue }
+            layoutManager.removeTemporaryAttribute(.backgroundColor,
+                                                   forCharacterRange: NSRange(location: 0, length: length))
+        }
+    }
+
+    /// Every editor text view in this window, covering both split groups. Falls
+    /// back to the injected editor when the bar is not in a window (tests).
+    private func allEditorTextViews() -> [NSTextView] {
+        var found: [NSTextView] = []
+        func collect(_ view: NSView) {
+            if let editor = view as? EditorContainer {
+                found.append(editor.textView)
+                return
+            }
+            view.subviews.forEach(collect)
+        }
+        if let root = window?.contentView {
+            collect(root)
+        }
+        if found.isEmpty, let textView = editorContainer?.textView {
+            found.append(textView)
+        }
+        return found
     }
 
     // MARK: - Search history
@@ -636,8 +676,22 @@ class FindBar: NSView, NSSearchFieldDelegate {
         performFind()
     }
     
+    /// Ensures `allMatches` describes the focused document's current text.
+    ///
+    /// The bar can be hidden while the document keeps changing, and tab
+    /// switches change the document underneath an open bar. Either case makes
+    /// the cached list unreliable, so Find Next/Previous re-run the search
+    /// (without moving the selection) before navigating.
+    private func prepareForNavigation() -> Bool {
+        guard let doc = tabStore?.selectedDocument else { return false }
+        if !isVisible || doc.id != matchesDocumentID || doc.textRevision != matchesRevision {
+            performFind(select: false)
+        }
+        return !allMatches.isEmpty
+    }
+
     func findNext() {
-        guard !allMatches.isEmpty else { return }
+        guard prepareForNavigation() else { return }
         commitSearchHistory()
         if !searchOptions.contains(.wrapAround), currentMatchIndex == allMatches.count - 1 {
             NSSound.beep()
@@ -649,7 +703,7 @@ class FindBar: NSView, NSSearchFieldDelegate {
     }
     
     func findPrevious() {
-        guard !allMatches.isEmpty else { return }
+        guard prepareForNavigation() else { return }
         commitSearchHistory()
         if !searchOptions.contains(.wrapAround), currentMatchIndex == 0 {
             NSSound.beep()
@@ -661,12 +715,24 @@ class FindBar: NSView, NSSearchFieldDelegate {
     }
     
     private func updateMatchDisplay() {
-        guard let textView = editorContainer?.textView else { return }
-        let match = allMatches[currentMatchIndex]
-        textView.setSelectedRange(match.range)
-        textView.scrollRangeToVisible(match.range)
-        lastSelectedMatchRange = match.range
+        guard let textView = editorContainer?.textView,
+              allMatches.indices.contains(currentMatchIndex) else { return }
+        let range = clampedMatchRange(allMatches[currentMatchIndex].range, in: textView)
+        textView.setSelectedRange(range)
+        textView.scrollRangeToVisible(range)
+        lastSelectedMatchRange = range
         matchCountLabel.stringValue = "\(currentMatchIndex + 1) of \(allMatches.count)"
+    }
+
+    /// Clamps a match range to the editor's current buffer. A stale list — or a
+    /// match edited away between search and navigation — must never hand
+    /// NSTextView an out-of-range selection: `setSelectedRange` raises
+    /// NSRangeException past the end of the text.
+    private func clampedMatchRange(_ range: NSRange, in textView: NSTextView) -> NSRange {
+        let length = (textView.string as NSString).length
+        let location = min(max(0, range.location == NSNotFound ? 0 : range.location), length)
+        return NSRange(location: location,
+                       length: min(max(0, range.length), length - location))
     }
     
     func setupObservers() {

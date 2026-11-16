@@ -168,4 +168,69 @@ final class SessionRestoreTests: XCTestCase {
         textView.insertText("typed", replacementRange: textView.selectedRange)
         XCTAssertTrue(SessionStore.hasPendingChanges)
     }
+
+    // MARK: - R1: Move to Other View into an empty group
+
+    /// Acceptance gate for the split-view crash: inserting the tab selects it
+    /// in the receiving store *before* focus moves there. Chrome used to
+    /// highlight the new document into the empty pane's unbound storage, which
+    /// raised NSRangeException. Binding must land first.
+    func testMoveToOtherViewIntoEmptyGroupBindsBeforeHighlighting() throws {
+        let (controller, _) = makeController()
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        // Long enough that highlighting it against an empty storage would be a
+        // guaranteed out-of-bounds attribute set.
+        doc.text = String(repeating: "let value = 1\n", count: 200)
+
+        controller.openSplitView()
+        XCTAssertTrue(controller.isSplitViewOpen)
+        XCTAssertEqual(controller.tabStore.count, 1, "group 2 starts empty")
+
+        controller.moveToOtherView(nil)
+
+        // The move focuses group 2; its store holds the moved document only if
+        // focus followed.
+        XCTAssertEqual(controller.tabStore.count, 1)
+        XCTAssertTrue(controller.tabStore.selectedDocument === doc)
+
+        let textView = try XCTUnwrap(controller.editorTextView)
+        XCTAssertTrue(textView.textStorage === doc.textStorage,
+                      "the moved document must be bound before focus chrome runs")
+        XCTAssertEqual(textView.string, doc.text)
+        XCTAssertNotNil(doc.textStorage.attribute(.foregroundColor, at: 0, effectiveRange: nil),
+                        "chrome/highlighting ran against the bound buffer")
+    }
+
+    // MARK: - R2: one file, one document across split groups
+
+    func testOpeningFileAlreadyOpenInOtherGroupFocusesExistingTab() throws {
+        let file = testDir.appendingPathComponent("shared-\(UUID().uuidString).txt")
+        try "shared text\n".write(to: file, atomically: true, encoding: .utf8)
+
+        let (controller, _) = makeController()
+        controller.openFile(atPath: file.path)
+        let opened = try XCTUnwrap(controller.tabStore.selectedDocument)
+        XCTAssertEqual(opened.filePath?.path, file.path)
+
+        controller.openSplitView()
+        controller.moveToOtherView(nil)
+        XCTAssertEqual(controller.tabStore.count, 1)
+        XCTAssertTrue(controller.tabStore.selectedDocument === opened)
+
+        // Focus group 1, which holds only the original untitled tab.
+        controller.focusGroup(.primary)
+        XCTAssertEqual(controller.tabStore.count, 1)
+        XCTAssertNil(controller.tabStore.selectedDocument?.filePath)
+
+        controller.openFile(atPath: file.path)
+
+        // Dedupe found the tab in group 2: no second DocumentModel for the same
+        // path, and focus followed the existing tab instead of opening here.
+        XCTAssertEqual(controller.tabStore.count, 1)
+        XCTAssertTrue(controller.tabStore.selectedDocument === opened)
+
+        controller.focusGroup(.primary)
+        XCTAssertEqual(controller.tabStore.count, 1, "group 1 must not gain a duplicate tab")
+        XCTAssertNil(controller.tabStore.selectedDocument?.filePath)
+    }
 }

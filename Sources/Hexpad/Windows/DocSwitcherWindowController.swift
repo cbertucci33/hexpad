@@ -20,6 +20,7 @@ struct DocSwitcherItem: Equatable {
 /// arrow keys, Return and Escape before they reach the field editor, so the
 /// overlay is completely keyboard driven while the document stays untouched.
 final class DocSwitcherWindowController: NSWindowController,
+                                         NSWindowDelegate,
                                          NSSearchFieldDelegate,
                                          NSTableViewDataSource,
                                          NSTableViewDelegate {
@@ -36,7 +37,7 @@ final class DocSwitcherWindowController: NSWindowController,
     private(set) var selectedIndex = 0
 
     let searchField = NSSearchField()
-    let tableView = NSTableView()
+    private let tableView = DocSwitcherTableView()
     private let scrollView = NSScrollView()
     private let hintLabel = NSTextField(labelWithString: "↑↓ select   ↵ open   esc cancel")
     private static let cellIdentifier = NSUserInterfaceItemIdentifier("DocSwitcherCell")
@@ -57,6 +58,7 @@ final class DocSwitcherWindowController: NSWindowController,
         panel.hasShadow = true
         panel.level = .modalPanel
         self.init(window: panel)
+        panel.delegate = self
         panel.onCancel = { [weak self] in self?.cancel() }
         buildUI()
     }
@@ -147,6 +149,17 @@ final class DocSwitcherWindowController: NSWindowController,
         selectRow(next)
     }
 
+    // MARK: - NSWindowDelegate
+
+    /// Clicking back into the editor makes the parent key again. A borderless
+    /// floating panel has no close affordance of its own, so dismiss it as soon
+    /// as it stops being key: otherwise it floats over the document forever and
+    /// the next Escape/Return goes to the editor while the overlay still looks
+    /// active.
+    func windowDidResignKey(_ notification: Notification) {
+        dismiss()
+    }
+
     // MARK: - UI
 
     private func buildUI() {
@@ -182,6 +195,11 @@ final class DocSwitcherWindowController: NSWindowController,
         tableView.delegate = self
         tableView.target = self
         tableView.doubleAction = #selector(tableDoubleClicked)
+        // Clicking a row moves first responder off the search field, so the
+        // field delegate no longer sees Return/Escape. Route them from the
+        // table too, or the overlay beeps and ignores the keyboard.
+        tableView.onActivate = { [weak self] in self?.commitSelection() }
+        tableView.onCancel = { [weak self] in self?.cancel() }
 
         scrollView.frame = NSRect(x: 8, y: 30, width: 464, height: 302)
         scrollView.autoresizingMask = [.width, .height]
@@ -262,6 +280,26 @@ final class DocSwitcherWindowController: NSWindowController,
             return true
         default:
             return false
+        }
+    }
+}
+
+/// Borderless panel whose table keeps Return/Escape working after a row click.
+///
+/// `NSTableView` consumes those keys itself, and the search field's delegate
+/// only sees them while the field editor has focus.
+private final class DocSwitcherTableView: NSTableView {
+    var onActivate: (() -> Void)?
+    var onCancel: (() -> Void)?
+
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 53: // Escape
+            onCancel?()
+        case 36, 76: // Return, keypad Enter
+            onActivate?()
+        default:
+            super.keyDown(with: event)
         }
     }
 }

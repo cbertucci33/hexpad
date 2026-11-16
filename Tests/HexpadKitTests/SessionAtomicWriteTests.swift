@@ -116,13 +116,17 @@ final class SessionAtomicWriteTests: XCTestCase {
                        "the coalesced write should persist the newest state")
     }
 
-    func testScheduledWritePersistsLatestState() throws {
+    func testScheduledWritePersistsLatestScheduledSnapshot() throws {
         SessionStore.debounceInterval = 0.1
         let store = makeStore(["before"])
         SessionStore.scheduleSave(store)
 
-        // A later mutation before the timer fires must be what lands on disk.
+        // R6: the snapshot is serialized on the caller's (main) thread when
+        // scheduleSave is called, so the write queue never reads the live model.
+        // A later change is picked up by scheduling again — exactly what the
+        // controller's per-edit notice does.
         store.documents[0].text = "after"
+        SessionStore.scheduleSave(store)
         wait(0.4)
 
         XCTAssertEqual(SessionStore.restore()?.tabs.documents.first?.text, "after")

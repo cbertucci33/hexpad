@@ -17,6 +17,9 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     
     private var mainWindow: MainWindow?
     private var windowController: MainWindowController?
+    /// Windows opened with File > New Window. Retained here so their editors and
+    /// watchers stay alive; removed when the window closes.
+    private var extraWindowControllers: [MainWindowController] = []
     private var preferencesWindowController: PreferencesWindowController?
     private let recentFilesManager = RecentFilesManager()
     private var openRecentMenu: NSMenu?
@@ -56,14 +59,45 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        // Dirty documents stay dirty on quit; the session store preserves dirty buffers.
-        // saveSession writes immediately (superseding the debounced write), so
-        // the quit path never waits for a pending timer.
-        if let wc = windowController {
-            // Then save the session state
-            wc.saveSession()
-        }
+        // Dirty documents stay dirty on quit; the session store preserves dirty
+        // buffers. saveMergedSession writes immediately (superseding the
+        // debounced write), so the quit path never waits for a pending timer.
+        saveMergedSession()
         return .terminateNow
+    }
+
+    /// Every open window's controller, primary first. Menu actions that are
+    /// targeted at this delegate resolve against the key window instead.
+    private var allWindowControllers: [MainWindowController] {
+        ([windowController].compactMap { $0 }) + extraWindowControllers
+    }
+
+    /// The controller for the key window, so File/Edit actions follow the window
+    /// the user is working in. Falls back to the primary window (also the case
+    /// while a sheet or panel owns key status).
+    private var activeController: MainWindowController? {
+        if let controller = NSApp.keyWindow?.contentViewController as? MainWindowController {
+            return controller
+        }
+        return windowController
+    }
+
+    /// Writes one session containing every open window's tabs.
+    ///
+    /// Snapshots are built here, on the main thread, and handed to
+    /// `SessionStore` as finished dictionaries. Additional windows skip their
+    /// own scheduled writes (`isAdditionalWindow`), so this is the only path
+    /// that can persist their buffers.
+    private func saveMergedSession() {
+        let controllers = allWindowControllers
+        guard !controllers.isEmpty else { return }
+        for controller in controllers {
+            controller.captureSessionState()
+        }
+        let snapshots = controllers.map { $0.sessionSnapshot() }
+        let merged = SessionStore.Snapshot(tabs: snapshots.flatMap { $0.tabs },
+                                           selectedIndex: snapshots.first?.selectedIndex ?? 0)
+        try? SessionStore.save(merged)
     }
     
     // MARK: - Session
@@ -722,59 +756,71 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Menu Actions
     
     @objc private func newTab() {
-        windowController?.addNewTab()
+        activeController?.addNewTab()
     }
     
     @objc private func newWindow() {
-        windowController?.addNewTab()
+        // A real second window (Notepad++ File > New Window), not another tab.
+        // It owns its own tab groups, editors and watchers; the primary
+        // controller keeps the session writes and the quit path merges all
+        // windows into one snapshot.
+        let window = MainWindow()
+        let controller = MainWindowController(window: window)
+        controller.isAdditionalWindow = true
+        controller.recentFilesManager = recentFilesManager
+        window.contentViewController = controller
+        window.delegate = self
+        extraWindowControllers.append(controller)
+        window.makeKeyAndOrderFront(nil)
+        controller.applyPreferences()
     }
     
     @objc private func openFile() {
-        windowController?.openFile()
+        activeController?.openFile()
     }
     
     @objc private func saveFile() {
-        windowController?.saveFile()
+        activeController?.saveFile()
     }
     
     @objc private func saveAsFile() {
-        windowController?.saveAsFile()
+        activeController?.saveAsFile()
     }
     
     @objc private func closeTab() {
-        windowController?.closeSelectedTab()
+        activeController?.closeSelectedTab()
     }
     
     @objc private func closeAllTabs() {
-        windowController?.closeAllTabs()
+        activeController?.closeAllTabs()
     }
     
     @objc private func toggleFindBar() {
-        windowController?.toggleFindBar()
+        activeController?.toggleFindBar()
     }
     
     @objc private func findNext() {
-        windowController?.findNext()
+        activeController?.findNext()
     }
     
     @objc private func findPrevious() {
-        windowController?.findPrevious()
+        activeController?.findPrevious()
     }
     
     @objc private func toggleWordWrap() {
-        windowController?.toggleWordWrap()
+        activeController?.toggleWordWrap()
     }
     
     @objc private func zoomIn() {
-        windowController?.zoomIn()
+        activeController?.zoomIn()
     }
     
     @objc private func zoomOut() {
-        windowController?.zoomOut()
+        activeController?.zoomOut()
     }
     
     @objc private func resetZoom() {
-        windowController?.resetZoom()
+        activeController?.resetZoom()
     }
 
     // MARK: - Preferences
@@ -786,20 +832,20 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         if preferencesWindowController == nil {
             preferencesWindowController = PreferencesWindowController()
         }
-        preferencesWindowController?.targetController = windowController
+        preferencesWindowController?.targetController = activeController
         preferencesWindowController?.showWindow(nil)
         preferencesWindowController?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    @objc private func setEOLLF() { windowController?.setEOL("LF") }
-    @objc private func setEOLCRLF() { windowController?.setEOL("CRLF") }
-    @objc private func setEOLCR() { windowController?.setEOL("CR") }
+    @objc private func setEOLLF() { activeController?.setEOL("LF") }
+    @objc private func setEOLCRLF() { activeController?.setEOL("CRLF") }
+    @objc private func setEOLCR() { activeController?.setEOL("CR") }
 
-    @objc private func sortLinesAscending() { windowController?.sortLinesAscending() }
-    @objc private func sortLinesDescending() { windowController?.sortLinesDescending() }
-    @objc private func removeDuplicateLines() { windowController?.removeDuplicateLines() }
-    @objc private func removeBlankLines() { windowController?.removeBlankLines() }
+    @objc private func sortLinesAscending() { activeController?.sortLinesAscending() }
+    @objc private func sortLinesDescending() { activeController?.sortLinesDescending() }
+    @objc private func removeDuplicateLines() { activeController?.removeDuplicateLines() }
+    @objc private func removeBlankLines() { activeController?.removeBlankLines() }
 
     // MARK: - Keybindings
 
@@ -854,7 +900,7 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         if findInFilesController == nil {
             let controller = FindInFilesWindowController()
             controller.onOpenMatch = { [weak self] url, range in
-                self?.windowController?.openFileAt(url: url, revealing: range)
+                self?.activeController?.openFileAt(url: url, revealing: range)
             }
             findInFilesController = controller
         }
@@ -865,14 +911,37 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     @objc private func setLanguage(_ sender: NSMenuItem) {
         let langs = Language.allCases
         guard sender.tag >= 0, sender.tag < langs.count else { return }
-        windowController?.setLanguage(langs[sender.tag])
+        activeController?.setLanguage(langs[sender.tag])
     }
     
     // MARK: - Open Recent
     
     @objc private func openRecentFile(_ sender: NSMenuItem) {
         guard let path = sender.representedObject as? String else { return }
-        windowController?.openFile(atPath: path)
+        activeController?.openFile(atPath: path)
+    }
+}
+
+// MARK: - NSWindowDelegate (additional windows)
+
+extension HexpadAppDelegate: NSWindowDelegate {
+    /// Closing any window persists the whole app's tabs before the window leaves
+    /// the controller registry, so a second window's buffers are restored on the
+    /// next launch instead of being dropped. Releases the controller's strong
+    /// window reference so a closed additional window can deallocate (the window
+    /// retains its content view controller, which would otherwise be a cycle).
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        let isPrimary = window === mainWindow
+        let extraIndex = extraWindowControllers.firstIndex { $0.view.window === window }
+        guard isPrimary || extraIndex != nil else { return }
+
+        saveMergedSession()
+
+        if let extraIndex {
+            let closing = extraWindowControllers.remove(at: extraIndex)
+            closing.releaseWindowReference()
+        }
     }
 }
 

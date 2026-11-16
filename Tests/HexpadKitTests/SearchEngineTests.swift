@@ -238,4 +238,43 @@ extension SearchEngineTests {
         XCTAssertEqual(SearchEngine.regexCompileCountForTesting, 2,
                        "the replacement entry is cached too")
     }
+
+    /// R3: Find in Files runs `searchInFiles` on a global queue while the find
+    /// bar searches on the main thread. The one-entry regex cache is shared, so
+    /// concurrent callers must neither corrupt it nor receive another pattern's
+    /// compiled regex.
+    func testConcurrentSearchInFilesReturnsCorrectResults() throws {
+        SearchEngine.resetRegexCacheForTesting()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hexpad-search-cache-race-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        // One distinct pattern per file: a cross-pattern cache mix-up changes
+        // the reported results instead of merely compiling twice.
+        let patterns = (0..<8).map { "needle\($0)" }
+        for (index, pattern) in patterns.enumerated() {
+            let url = directory.appendingPathComponent("file\(index).txt")
+            try "\(pattern) \(pattern)\n".write(to: url, atomically: true, encoding: .utf8)
+        }
+
+        let failureLock = NSLock()
+        var failures: [String] = []
+        DispatchQueue.concurrentPerform(iterations: 64) { iteration in
+            let pattern = patterns[iteration % patterns.count]
+            let hits = SearchEngine.searchInFiles(directory: directory,
+                                                  pattern: pattern,
+                                                  options: [.regex, .caseSensitive])
+            let matchCount = hits.reduce(0) { $0 + $1.1.count }
+            if hits.count != 1 || matchCount != 2 {
+                failureLock.lock()
+                failures.append("\(pattern): \(hits.count) file(s), \(matchCount) match(es)")
+                failureLock.unlock()
+            }
+        }
+
+        XCTAssertEqual(failures, [], "a concurrent search used the wrong compiled pattern")
+        XCTAssertGreaterThan(SearchEngine.regexCompileCountForTesting, 0,
+                             "the shared cache still compiles")
+    }
 }
