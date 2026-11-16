@@ -1012,6 +1012,10 @@ class MainWindowController: NSViewController {
         let clamped = NSRange(location: symbol.range.location,
                               length: min(symbol.range.length,
                                           length - symbol.range.location))
+        // Open any collapsed ancestor fold first: otherwise Fold All would
+        // leave the caret on a hidden range and the symbol line would not be
+        // visible when we scroll to it.
+        editor.reveal(location: clamped.location)
         editor.textView.setSelectedRange(clamped)
         editor.textView.scrollRangeToVisible(clamped)
         view.window?.makeKeyAndOrderFront(nil)

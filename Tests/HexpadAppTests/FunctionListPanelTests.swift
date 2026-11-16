@@ -24,6 +24,20 @@ final class FunctionListPanelTests: XCTestCase {
     }
     """
 
+    /// A symbol outside every fold plus one nested inside a struct fold, so a
+    /// test can navigate both with the document folded.
+    private let mixedSource = """
+    func standalone() {
+        let x = 1
+    }
+
+    struct Holder {
+        func nested() {
+            let y = 2
+        }
+    }
+    """
+
     private func makeController() -> (controller: MainWindowController, window: MainWindow) {
         let window = MainWindow()
         let controller = MainWindowController(window: window)
@@ -99,6 +113,75 @@ final class FunctionListPanelTests: XCTestCase {
         XCTAssertEqual(textView.selectedRange, symbol.range)
         XCTAssertEqual((textView.string as NSString).substring(with: textView.selectedRange),
                        "greet")
+    }
+
+    func testNavigationExpandsCollapsedAncestorFoldsToRevealTheSymbol() throws {
+        let (controller, _) = makeController()
+        let editor = try XCTUnwrap(PreferencesApplier.editorContainer(in: controller.view))
+        let document = try XCTUnwrap(controller.tabStore.selectedDocument)
+        document.replaceAllText(with: swiftSource)
+        document.setLanguage(Language.swift.rawValue)
+        controller.updateEditor()
+
+        XCTAssertGreaterThan(editor.foldAll(), 0)
+        XCTAssertEqual(editor.foldMarkers[1], .collapsed,
+                       "Fold All collapses the struct that contains the symbol")
+
+        let panel = FunctionListWindowController()
+        panel.onSelectSymbol = { [weak controller] symbol in
+            controller?.navigateToSymbol(symbol)
+        }
+        panel.update(document: document)
+
+        let row = try XCTUnwrap(panel.symbols.firstIndex(where: { $0.name == "greet" }))
+        let symbol = panel.symbols[row]
+        XCTAssertTrue(editor.foldHiddenRanges.contains {
+            NSLocationInRange(symbol.range.location, $0)
+        }, "the fixture must start with the symbol hidden for this test to mean anything")
+
+        panel.activateRow(row)
+
+        let textView = try XCTUnwrap(controller.editorTextView)
+        XCTAssertEqual(textView.selectedRange, symbol.range)
+        XCTAssertEqual((textView.string as NSString).substring(with: textView.selectedRange),
+                       "greet")
+        XCTAssertEqual(editor.foldMarkers[1], .expanded,
+                       "navigation opens the ancestor fold")
+        XCTAssertFalse(editor.foldHiddenRanges.contains {
+            NSIntersectionRange($0, symbol.range).length > 0
+        }, "the selected symbol must not remain inside hidden text")
+    }
+
+    func testNavigationOutsideEveryFoldLeavesFoldStateAlone() throws {
+        let (controller, _) = makeController()
+        let editor = try XCTUnwrap(PreferencesApplier.editorContainer(in: controller.view))
+        let document = try XCTUnwrap(controller.tabStore.selectedDocument)
+        document.replaceAllText(with: mixedSource)
+        document.setLanguage(Language.swift.rawValue)
+        controller.updateEditor()
+
+        XCTAssertGreaterThan(editor.foldAll(), 0)
+        let stateBeforeNavigation = document.foldState
+        let hiddenBeforeNavigation = editor.foldHiddenRanges
+
+        let panel = FunctionListWindowController()
+        panel.onSelectSymbol = { [weak controller] symbol in
+            controller?.navigateToSymbol(symbol)
+        }
+        panel.update(document: document)
+
+        let row = try XCTUnwrap(panel.symbols.firstIndex(where: { $0.name == "standalone" }))
+        let symbol = panel.symbols[row]
+        XCTAssertFalse(editor.reveal(location: symbol.range.location),
+                       "a symbol outside every fold has nothing to reveal")
+
+        panel.activateRow(row)
+
+        let textView = try XCTUnwrap(controller.editorTextView)
+        XCTAssertEqual(textView.selectedRange, symbol.range)
+        XCTAssertEqual(document.foldState, stateBeforeNavigation,
+                       "navigation must not expand unrelated folds")
+        XCTAssertEqual(editor.foldHiddenRanges, hiddenBeforeNavigation)
     }
 
     // MARK: - Menu validation

@@ -805,6 +805,45 @@ class EditorContainer: NSView {
         return changed
     }
 
+    /// Expands every foldable range that contains `location`.
+    ///
+    /// Navigation uses this to make a target line visible under N++ fold
+    /// semantics: expanding the ancestors of a position, rather than merely
+    /// moving the caret, is what guarantees the destination is not left inside
+    /// hidden text after Fold All. Ranges are removed outermost first (the
+    /// model's order), so an outer fold is opened before any nested fold that
+    /// also contains the target.
+    ///
+    /// The resulting state is written through `DocumentModel.foldState` by
+    /// ``adoptFoldStateAndRedraw(_:)`` exactly like a gutter toggle or Fold All,
+    /// and visibility is reapplied before the caller scrolls.
+    ///
+    /// - Returns: `true` when at least one collapsed range was expanded.
+    @discardableResult
+    func reveal(location: Int) -> Bool {
+        refreshFoldModelIfStale()
+        guard let document = boundDocument, var model = foldModel else { return false }
+
+        // A target outside the buffer cannot be inside a fold. Clamping also
+        // keeps a stale symbol offset from indexing past the current text.
+        let length = (document.text as NSString).length
+        let target = min(max(0, location), length)
+        let containing = model.foldableRanges.filter {
+            $0.location <= target && target < $0.upperBound
+        }
+
+        var expanded = false
+        for fold in containing {
+            if model.unfold(fold) {
+                expanded = true
+            }
+        }
+        guard expanded else { return false }
+
+        adoptFoldStateAndRedraw(model)
+        return true
+    }
+
     /// Adopts a folded model, persists its state on the document, and repaints
     /// the fold margin and hidden content. Shared by every fold mutation so
     /// they cannot drift in what they write through or invalidate.

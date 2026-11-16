@@ -334,6 +334,76 @@ final class FoldGutterTests: XCTestCase {
         XCTAssertEqual(visibleLines(editor), [1, 6])
     }
 
+    // MARK: - Reveal
+
+    func testRevealExpandsTheFoldContainingTheLocation() {
+        let (editor, document) = makeEditor(nestedText)
+        XCTAssertEqual(editor.foldAll(), 1)
+        let target = (nestedText as NSString).range(of: "let x").location
+        XCTAssertTrue(editor.foldHiddenRanges.contains { NSLocationInRange(target, $0) },
+                      "the fixture starts with the target inside the collapsed fold")
+
+        XCTAssertTrue(editor.reveal(location: target))
+
+        XCTAssertEqual(editor.foldMarkers[1], .expanded)
+        XCTAssertTrue(document.foldState.isEmpty,
+                      "the expansion is written through to the document")
+        XCTAssertTrue(editor.foldHiddenRanges.isEmpty)
+        XCTAssertFalse(editor.foldHiddenRanges.contains { NSLocationInRange(target, $0) },
+                       "the revealed location is visible")
+    }
+
+    func testRevealExpandsEveryNestedAncestorOutermostFirst() {
+        let text = "outer {\n    inner {\n        x\n    }\n}\ntail\n"
+        let (editor, document) = makeEditor(text)
+        XCTAssertEqual(editor.foldAll(), 2)
+        let target = (text as NSString).range(of: "x").location
+        XCTAssertTrue(editor.foldHiddenRanges.contains { NSLocationInRange(target, $0) })
+
+        XCTAssertTrue(editor.reveal(location: target))
+
+        XCTAssertEqual(editor.foldMarkers[1], .expanded)
+        XCTAssertEqual(editor.foldMarkers[2], .expanded,
+                       "a nested fold containing the target opens too")
+        XCTAssertTrue(document.foldState.isEmpty)
+        XCTAssertTrue(editor.foldHiddenRanges.isEmpty)
+    }
+
+    func testRevealOutsideEveryFoldIsANoOp() {
+        let (editor, document) = makeEditor(nestedText)
+        XCTAssertEqual(editor.foldAll(), 1)
+        let state = document.foldState
+        let target = (nestedText as NSString).range(of: "let y").location
+
+        XCTAssertFalse(editor.reveal(location: target))
+        XCTAssertEqual(document.foldState, state, "no fold may change")
+        XCTAssertEqual(editor.foldMarkers[1], .collapsed)
+    }
+
+    func testRevealWithoutADocumentIsANoOp() {
+        let editor = EditorContainer()
+        editor.bind(to: nil)
+
+        XCTAssertFalse(editor.reveal(location: 0))
+    }
+
+    func testRevealLeavesExtraCaretsAlone() {
+        // Keep `document` alive: the container only holds it weakly.
+        let (editor, document) = makeEditor(nestedText)
+        XCTAssertEqual(editor.foldAll(), 1)
+        editor.textView.setSelectedRange(NSRange(location: 0, length: 0))
+        editor.placeAdditionalCaret(atCharacterIndex: (nestedText as NSString).length)
+        XCTAssertEqual(editor.multiCaretState.count, 2)
+
+        let target = (nestedText as NSString).range(of: "let x").location
+        XCTAssertTrue(editor.reveal(location: target))
+
+        XCTAssertEqual(editor.multiCaretState.count, 2,
+                       "reveal changes folds, not the caret state")
+        XCTAssertTrue(document.foldState.isEmpty,
+                      "the fold still opens and writes through")
+    }
+
     // MARK: - Line numbers
 
     func testLineNumbersStayCorrectAfterCollapse() {
