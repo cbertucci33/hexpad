@@ -1128,6 +1128,111 @@ class MainWindowController: NSViewController {
         performCommand(identifier: identifier)
     }
 
+    // MARK: - Tools
+
+    /// Hash algorithms offered by the Tools menu. The raw value is both the
+    /// menu title and the `representedObject`, so one first-responder action
+    /// covers every algorithm and the menu builder stays data-driven.
+    enum HashAlgorithm: String, CaseIterable {
+        case md5 = "MD5"
+        case sha1 = "SHA-1"
+        case sha256 = "SHA-256"
+
+        var title: String { rawValue }
+
+        /// Lowercase hexadecimal digest of the UTF-8 text, as HashKit returns.
+        func digest(of text: String) -> String {
+            switch self {
+            case .md5: return HashKit.md5(text)
+            case .sha1: return HashKit.sha1(text)
+            case .sha256: return HashKit.sha256(text)
+            }
+        }
+    }
+
+    /// Date/time formats offered by Tools > Insert Date/Time. The short styles
+    /// follow the locale (via DateTimeInsert); the full entry inserts a
+    /// sortable, unambiguous date followed by the time of day.
+    enum DateTimeStyle: String, CaseIterable {
+        case shortDate = "Short Date"
+        case shortTime = "Short Time"
+        case fullDateTime = "Full Date+Time"
+
+        var title: String { rawValue }
+
+        func string(from date: Date) -> String {
+            switch self {
+            case .shortDate: return DateTimeInsert.shortDate(date)
+            case .shortTime: return DateTimeInsert.shortTime(date)
+            case .fullDateTime:
+                return DateTimeInsert.formatted(date, pattern: "yyyy-MM-dd HH:mm:ss")
+            }
+        }
+    }
+
+    /// Tools > MD5 / SHA-1 / SHA-256.
+    ///
+    /// Digests the selected text when there is a selection; otherwise it
+    /// digests the whole buffer. The digest is inserted at the caret through
+    /// the document's replacement path, so it is one undoable edit and shares
+    /// the per-document undo stack with typing and the Text menu commands.
+    @objc func insertHashDigest(_ sender: NSMenuItem) {
+        guard let identifier = sender.representedObject as? String,
+              let algorithm = HashAlgorithm(rawValue: identifier) else { return }
+
+        let source = selectedTextForTools() ?? tabStore.selectedDocument?.text
+        guard let source else { return }
+        insertAtCaret(algorithm.digest(of: source))
+    }
+
+    /// Tools > Insert Date/Time. Formats `Date()` at the moment the item is
+    /// chosen and inserts it at the caret as one undoable edit.
+    @objc func insertDateTime(_ sender: NSMenuItem) {
+        guard let identifier = sender.representedObject as? String,
+              let style = DateTimeStyle(rawValue: identifier) else { return }
+        insertAtCaret(style.string(from: Date()))
+    }
+
+    /// Non-empty selection within the buffer, or nil when the caret sits in an
+    /// empty selection. Reads the model's text so hashing matches what a save
+    /// would write.
+    private func selectedTextForTools() -> String? {
+        guard let editor = editorContainer, let doc = tabStore.selectedDocument else { return nil }
+        let selection = editor.textView.selectedRange
+        let length = (doc.text as NSString).length
+        guard selection.location != NSNotFound,
+              selection.length > 0,
+              selection.location <= length,
+              NSMaxRange(selection) <= length else { return nil }
+        return (doc.text as NSString).substring(with: selection)
+    }
+
+    /// Inserts `text` at the caret, replacing nothing, as exactly one undoable
+    /// `DocumentModel` replacement. The caret ends after the inserted text.
+    @discardableResult
+    private func insertAtCaret(_ text: String) -> Bool {
+        guard let editor = editorContainer, let doc = tabStore.selectedDocument else { return false }
+
+        let length = (doc.text as NSString).length
+        let caret = min(max(0, editor.textView.selectedRange.location), length)
+        doc.replaceCharacters(in: NSRange(location: caret, length: 0), with: text)
+
+        let inserted = NSRange(location: caret, length: (text as NSString).length)
+        editor.textView.setSelectedRange(NSRange(location: NSMaxRange(inserted), length: 0))
+        editor.textView.scrollRangeToVisible(inserted)
+
+        // Same notice the Text menu republishes, so tab dirty dots, the window
+        // title and the status bar update on the same run loop turn.
+        NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
+        return true
+    }
+
+    /// Both Tools groups need an open document; validation funnels through
+    /// this so a newly added item cannot forget the no-document guard.
+    func canInsertToolOutput() -> Bool {
+        tabStore.selectedDocument != nil
+    }
+
     // MARK: - Line operations
 
     /// Apply a text transform to the selection when there is one, otherwise to
@@ -1251,6 +1356,10 @@ extension MainWindowController: NSMenuItemValidation {
             guard let encoding = menuItem.representedObject as? String else { return false }
             menuItem.state = (tabStore.selectedDocument?.saveEncoding == encoding) ? .on : .off
             return canConvertTo(encoding)
+        }
+        if menuItem.action == #selector(MainWindowController.insertHashDigest(_:))
+            || menuItem.action == #selector(MainWindowController.insertDateTime(_:)) {
+            return canInsertToolOutput()
         }
         return true
     }

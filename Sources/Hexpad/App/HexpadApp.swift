@@ -348,6 +348,35 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
             languageMenu.addItem(item)
         }
         menu.addItem((NSMenuItem(title: "Language", action: nil, keyEquivalent: "").apply { $0.submenu = languageMenu }))
+
+        // Tools menu: hashing and date/time insertion. Items are nil-targeted
+        // so MainWindowController owns both the action and the no-document
+        // validation, like the Text and Encoding menus. The enums drive the
+        // item order and values, so the menu cannot drift from the actions.
+        let toolsMenu = NSMenu(title: "Tools")
+        for algorithm in MainWindowController.HashAlgorithm.allCases {
+            let item = NSMenuItem(title: algorithm.title,
+                                  action: #selector(MainWindowController.insertHashDigest(_:)),
+                                  keyEquivalent: "")
+            item.target = nil
+            item.representedObject = algorithm.rawValue
+            toolsMenu.addItem(item)
+        }
+        toolsMenu.addItem(.separator())
+
+        let dateTimeMenu = NSMenu(title: "Insert Date/Time")
+        for style in MainWindowController.DateTimeStyle.allCases {
+            let item = NSMenuItem(title: style.title,
+                                  action: #selector(MainWindowController.insertDateTime(_:)),
+                                  keyEquivalent: "")
+            item.target = nil
+            item.representedObject = style.rawValue
+            dateTimeMenu.addItem(item)
+        }
+        let dateTimeItem = NSMenuItem(title: "Insert Date/Time", action: nil, keyEquivalent: "")
+        dateTimeItem.submenu = dateTimeMenu
+        toolsMenu.addItem(dateTimeItem)
+        menu.addItem((NSMenuItem(title: "Tools", action: nil, keyEquivalent: "").apply { $0.submenu = toolsMenu }))
         
         // Window menu
         let windowMenu = NSMenu(title: "Window")
