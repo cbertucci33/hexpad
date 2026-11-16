@@ -305,6 +305,16 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         let viewMenu = NSMenu(title: "View")
         let wordWrapItem = NSMenuItem(title: "Word Wrap", action: #selector(toggleWordWrap), keyEquivalent: "y")
         wordWrapItem.target = self
+        // Notepad++ toggles the Function List with Ctrl+F12; the macOS
+        // convention is the same chord with Command. F12 alone is left to the
+        // system (Mission Control/Launchpad on some setups). The item is
+        // nil-targeted so MainWindowController validates it against the open
+        // document and can check it while the panel is visible.
+        let functionListItem = NSMenuItem(title: "Function List",
+                                          action: #selector(MainWindowController.toggleFunctionList(_:)),
+                                          keyEquivalent: "\u{F70F}")
+        functionListItem.keyEquivalentModifierMask = [.command]
+        functionListItem.target = nil
         let zoomInItem = NSMenuItem(title: "Zoom In", action: #selector(zoomIn), keyEquivalent: "+")
         zoomInItem.target = self
         let zoomOutItem = NSMenuItem(title: "Zoom Out", action: #selector(zoomOut), keyEquivalent: "-")
@@ -332,6 +342,7 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         updateAppearanceCheckmarks()
         
         viewMenu.addItem(wordWrapItem)
+        viewMenu.addItem(functionListItem)
         viewMenu.addItem(.separator())
         viewMenu.addItem(zoomInItem)
         viewMenu.addItem(zoomOutItem)

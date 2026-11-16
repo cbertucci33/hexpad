@@ -39,6 +39,14 @@ class MainWindowController: NSViewController {
     private weak var editorBoundDoc: DocumentModel?
     private var statusBar: StatusBar?
     private var findBar: FindBar?
+
+    /// Single reusable Function List panel. The View item is nil-targeted, so
+    /// this controller owns both the toggle and the no-document validation.
+    private var functionListController: FunctionListWindowController?
+    /// Debounces outline rebuilds while typing. The panel is a view of the
+    /// document, so bursts of edits should produce one model scan, not one per
+    /// keystroke.
+    private var functionListRefreshWorkItem: DispatchWorkItem?
     /// Block-based observer token for NSTextView selection changes; drives the
     /// status bar's live Ln/Col display.
     private var textSelectionObserver: NSObjectProtocol?
@@ -174,6 +182,11 @@ class MainWindowController: NSViewController {
         // model notice), so this is the keystroke-driven session save. The
         // store's debounce collapses a typing burst into one write.
         SessionStore.scheduleSave(tabStore)
+
+        // The Function List is a view of the same buffer: coalesce outline
+        // rebuilds here, before the typing-specific early return below, so both
+        // typing and programmatic edits keep it live.
+        scheduleFunctionListUpdate()
 
         // Typing posts this notice from textDidChange after it has already
         // incrementally re-highlighted and refreshed the chrome. Handling it
@@ -652,6 +665,9 @@ class MainWindowController: NSViewController {
         }
         updateStatusBar()
         updateWindowTitle()
+        // Tab/language changes replace the outline rather than editing it, so
+        // this path is not debounced. A no-op when the panel is closed.
+        refreshFunctionListImmediately()
     }
     
     // MARK: - Syntax highlighting
@@ -853,6 +869,89 @@ class MainWindowController: NSViewController {
     
     func findPrevious() {
         findBar?.findPrevious()
+    }
+    
+    // MARK: - Function List
+
+    /// Whether the reusable panel is currently on screen. Menu validation uses
+    /// this to keep the View item's checkmark in step with the window.
+    var isFunctionListVisible: Bool {
+        functionListController?.window?.isVisible ?? false
+    }
+
+    /// View > Function List. The item is nil-targeted so this method is both
+    /// the action and (through `validateMenuItem`) the enabled state.
+    @objc func toggleFunctionList(_ sender: Any?) {
+        guard tabStore.selectedDocument != nil else { return }
+
+        if let controller = functionListController, controller.window?.isVisible == true {
+            controller.close()
+            return
+        }
+
+        let controller = functionListController ?? makeFunctionListController()
+        // Always rebuild on open: the panel may have been closed while the
+        // document changed, and a one-shot refresh is cheaper than keeping it
+        // live in the background.
+        controller.update(document: tabStore.selectedDocument)
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+        controller.focusTable()
+    }
+
+    /// Function List menu validation: no document means no outline.
+    func canShowFunctionList() -> Bool {
+        tabStore.selectedDocument != nil
+    }
+
+    /// Moves the editor to `symbol` and highlights its name range. This is the
+    /// same selection + scroll path Find in Files uses; the range comes from
+    /// the model untouched and is only clamped for safety.
+    func navigateToSymbol(_ symbol: FunctionSymbol) {
+        guard let editor = editorContainer else { return }
+        let length = (editor.textView.string as NSString).length
+        guard symbol.range.location != NSNotFound,
+              symbol.range.location <= length else { return }
+        let clamped = NSRange(location: symbol.range.location,
+                              length: min(symbol.range.length,
+                                          length - symbol.range.location))
+        editor.textView.setSelectedRange(clamped)
+        editor.textView.scrollRangeToVisible(clamped)
+        view.window?.makeKeyAndOrderFront(nil)
+        view.window?.makeFirstResponder(editor.textView)
+    }
+
+    private func makeFunctionListController() -> FunctionListWindowController {
+        let controller = FunctionListWindowController()
+        controller.onSelectSymbol = { [weak self] symbol in
+            self?.navigateToSymbol(symbol)
+        }
+        functionListController = controller
+        return controller
+    }
+
+    /// Coalesced rebuild for keystroke and programmatic-edit notifications.
+    /// Does nothing while the panel is hidden, so the model's regex scan only
+    /// runs when its output can be seen.
+    private func scheduleFunctionListUpdate() {
+        guard isFunctionListVisible else { return }
+        functionListRefreshWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, self.isFunctionListVisible else { return }
+            self.functionListController?.update(document: self.tabStore.selectedDocument)
+        }
+        functionListRefreshWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: item)
+    }
+
+    /// Immediate rebuild used by tab switches and language changes. The panel
+    /// controller itself skips the work when the text/language are unchanged,
+    /// so this cannot double-scan the same buffer.
+    private func refreshFunctionListImmediately() {
+        functionListRefreshWorkItem?.cancel()
+        functionListRefreshWorkItem = nil
+        guard isFunctionListVisible else { return }
+        functionListController?.update(document: tabStore.selectedDocument)
     }
     
     // MARK: - External change monitoring
@@ -1609,6 +1708,10 @@ extension MainWindowController: NSMenuItemValidation {
         if menuItem.action == #selector(MainWindowController.deleteMacro(_:)) {
             guard let name = menuItem.representedObject as? String else { return false }
             return canDeleteMacro(named: name)
+        }
+        if menuItem.action == #selector(MainWindowController.toggleFunctionList(_:)) {
+            menuItem.state = isFunctionListVisible ? .on : .off
+            return canShowFunctionList()
         }
         return true
     }
