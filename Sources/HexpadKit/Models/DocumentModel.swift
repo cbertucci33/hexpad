@@ -36,8 +36,10 @@ public final class DocumentModel: Identifiable, ObservableObject {
     
     /// Dirty means the buffer differs from the saved baseline, or a "Convert
     /// to" changed the save encoding or line endings without touching a single
-    /// character.
-    public var unsavedChanges: Bool { text != _originalText || _saveConversionPending }
+    /// character. Backed by an explicit flag: comparing the whole buffer to the
+    /// saved text here made every tab-dirty check O(document), which turned
+    /// keystrokes and tab switches into hundreds of milliseconds on large files.
+    public var unsavedChanges: Bool { _isDirty || _saveConversionPending }
     public var isUntitled: Bool { filePath == nil }
 
     /// Per-document undo stack. The editor swaps its undoManager to this on
@@ -46,6 +48,11 @@ public final class DocumentModel: Identifiable, ObservableObject {
     public let undoManager = UndoManager()
     
     private var _originalText: String = ""
+    /// Authoritative O(1) dirty bit. Set by storage character edits (typing and
+    /// programmatic replaces), cleared by save/reload. Undo/redo reconcile it
+    /// against the baseline; session save gets a cheap repair check.
+    private var _isDirty = false
+    private var dirtyObservers: [NSObjectProtocol] = []
     private var savedModificationDate: Date?
     private var _encoding: String = "UTF-8"
     /// The encoding the next save writes. `nil` means "same as `encoding`".
@@ -163,6 +170,59 @@ public final class DocumentModel: Identifiable, ObservableObject {
                 self.savedModificationDate = try FileManager.default.attributesOfItem(atPath: filePath.path)[.modificationDate] as? Date
             } catch {}
         }
+        startDirtyObservation()
+    }
+
+    deinit {
+        dirtyObservers.forEach { NotificationCenter.default.removeObserver($0) }
+    }
+
+    // MARK: - Dirty state
+
+    /// Follows the shared storage so typing (which bypasses the model's
+    /// replace methods) and every programmatic mutation flip the O(1) flag.
+    /// Undo/redo are the one case where the flag can become stale in the clean
+    /// direction, so they reconcile against the baseline (user-paced, rare).
+    private func startDirtyObservation() {
+        let center = NotificationCenter.default
+        dirtyObservers.append(center.addObserver(
+            forName: NSTextStorage.didProcessEditingNotification,
+            object: textStorage,
+            queue: nil
+        ) { [weak self] notification in
+            guard let self,
+                  let storage = notification.object as? NSTextStorage,
+                  storage === self.textStorage,
+                  storage.editedMask.contains(.editedCharacters) else { return }
+            self._isDirty = true
+        })
+        for name in [Notification.Name("NSUndoManagerDidUndoChangeNotification"),
+                     Notification.Name("NSUndoManagerDidRedoChangeNotification")] {
+            dirtyObservers.append(center.addObserver(
+                forName: name,
+                object: undoManager,
+                queue: nil
+            ) { [weak self] _ in
+                self?.reconcileDirtyStateFully()
+            })
+        }
+    }
+
+    /// Cheap on-demand repair for callers that persist state (session save):
+    /// catches a missed dirty transition without ever comparing full text on a
+    /// keystroke path. A length change from the saved baseline can only mean
+    /// dirty, so it is safe to promote false -> true here.
+    public func reconcileDirtyState() {
+        guard !_isDirty else { return }
+        if textStorage.length != (_originalText as NSString).length {
+            _isDirty = true
+        }
+    }
+
+    /// Full comparison, reserved for undo/redo where the text can return
+    /// exactly to the saved baseline. Not on any typing path.
+    private func reconcileDirtyStateFully() {
+        _isDirty = text != _originalText
     }
 
     // MARK: - Text mutation
@@ -188,6 +248,7 @@ public final class DocumentModel: Identifiable, ObservableObject {
                                   with: oldText)
         }
         textStorage.replaceCharacters(in: range, with: replacement)
+        _isDirty = true
         NotificationCenter.default.post(name: Self.textDidChangeNotification, object: self)
     }
 
@@ -205,16 +266,22 @@ public final class DocumentModel: Identifiable, ObservableObject {
         _saveConversionPending = false
         hasExternalChange = false
         replaceAllText(with: newText)
+        // replaceAllText marks the buffer dirty through the storage observer;
+        // the on-disk text it just loaded is the clean baseline.
+        _isDirty = false
     }
     
     public func setModified(_ modified: Bool) {
-        if !modified {
-            self._originalText = self.text
-            self._saveConversionPending = false
-            self.hasExternalChange = false
-            if let filePath {
-                self.savedModificationDate = try? FileManager.default.attributesOfItem(atPath: filePath.path)[.modificationDate] as? Date
-            }
+        if modified {
+            _isDirty = true
+            return
+        }
+        self._originalText = self.text
+        _isDirty = false
+        self._saveConversionPending = false
+        self.hasExternalChange = false
+        if let filePath {
+            self.savedModificationDate = try? FileManager.default.attributesOfItem(atPath: filePath.path)[.modificationDate] as? Date
         }
     }
 
@@ -324,6 +391,9 @@ public final class DocumentModel: Identifiable, ObservableObject {
     }
     
     public func toSessionData() -> [String: Any] {
+        // Cheap repair before persisting: length-vs-baseline catches a missed
+        // dirty transition without the old full-text comparison on every key.
+        reconcileDirtyState()
         var data: [String: Any] = [
             "id": self.id.uuidString,
             "text": self.text,
@@ -408,6 +478,7 @@ public final class DocumentModel: Identifiable, ObservableObject {
         // to survive the restore.
         doc._saveEncoding = saveEncoding
         doc._saveConversionPending = pendingConversion
+        doc._isDirty = isModified
         return doc
     }
 }

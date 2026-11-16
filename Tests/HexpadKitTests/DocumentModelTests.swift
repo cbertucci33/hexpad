@@ -1012,4 +1012,47 @@ final class DocumentModelTests: XCTestCase {
         XCTAssertEqual(restored.documents[1].bookmarkState.lines, [4])
         XCTAssertEqual(restored.documents[1].bookmarkState.note(forLine: 4), "second tab")
     }
+
+    // MARK: - O(1) dirty flag
+
+    func testDirtyFlagFlipsOnEditsAndClearsOnSaveAndReload() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hexpad-dirty-flag-\(UUID().uuidString).txt")
+        try "baseline".write(to: url, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let doc = DocumentModel(text: "baseline", filePath: url)
+        XCTAssertFalse(doc.unsavedChanges)
+
+        doc.text = "baseline edited"
+        XCTAssertTrue(doc.unsavedChanges)
+
+        try doc.save()
+        XCTAssertFalse(doc.unsavedChanges, "save establishes a new clean baseline")
+
+        doc.replaceCharacters(in: NSRange(location: 0, length: 8), with: "again")
+        XCTAssertTrue(doc.unsavedChanges, "programmatic replace dirties like typing")
+
+        doc.reloadText("baseline")
+        XCTAssertFalse(doc.unsavedChanges, "reload replaces the baseline and clears dirty")
+    }
+
+    func testDirtyFlagTracksProgrammaticReplaceAndUndoRedo() {
+        let doc = DocumentModel(text: "alpha")
+        XCTAssertFalse(doc.unsavedChanges)
+
+        doc.replaceAllText(with: "beta")
+        XCTAssertTrue(doc.unsavedChanges)
+
+        doc.undoManager.undo()
+        XCTAssertEqual(doc.text, "alpha")
+        XCTAssertFalse(doc.unsavedChanges, "undo back to the baseline is clean")
+
+        doc.undoManager.redo()
+        XCTAssertEqual(doc.text, "beta")
+        XCTAssertTrue(doc.unsavedChanges)
+
+        doc.setModified(false)
+        XCTAssertFalse(doc.unsavedChanges)
+    }
 }

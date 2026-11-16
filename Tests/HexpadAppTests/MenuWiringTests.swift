@@ -359,4 +359,27 @@ final class MenuWiringTests: XCTestCase {
         XCTAssertFalse(controller.validateMenuItem(encodeUTF8))
         XCTAssertFalse(controller.validateMenuItem(convertUTF8))
     }
+
+    func testTabDragPreviewCommitsOnceAcrossSlots() {
+        let store = TabStore()
+        for text in ["a", "b", "c", "d"] {
+            store.addDocument(DocumentModel(text: text))
+        }
+        let bar = TabBarView(tabStore: store)
+        bar.frame = NSRect(x: 0, y: 0, width: 600, height: 32)
+        bar.reloadTabs()
+
+        var changes = 0
+        bar.onChange = { changes += 1 }
+
+        bar.beginDragPreview(from: 0)
+        bar.previewDrag(to: 1)
+        bar.previewDrag(to: 2)
+        bar.previewDrag(to: 3)
+        XCTAssertEqual(changes, 0, "previewing must not mutate or notify")
+
+        bar.commitDragPreview()
+        XCTAssertEqual(changes, 1, "one commit on mouseUp, not one per slot")
+        XCTAssertEqual(store.documents.map(\.text), ["b", "c", "d", "a"])
+    }
 }

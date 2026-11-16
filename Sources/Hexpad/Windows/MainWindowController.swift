@@ -12,6 +12,11 @@ class MainWindowController: NSViewController {
     private var secondaryPane: TabGroupPane?
     private(set) var focusedGroup: TabGroup = .primary
 
+    /// First-bind state per group. A fresh empty pane still needs its theme and
+    /// preferences applied once even when its document id is nil.
+    private var hasBoundPrimaryPane = false
+    private var hasBoundSecondaryPane = false
+
     /// The focused group's store. With the split closed this is group 1, which
     /// is exactly the old single-store behaviour.
     var tabStore: TabStore { activePane.tabStore }
@@ -319,7 +324,7 @@ class MainWindowController: NSViewController {
         // SessionStore coalesces bursts into one write, so this is not a
         // write per change.
         scheduleSessionSave()
-        refreshTabBar()
+        refreshDirtyIndicators()
         updateStatusBar()
         updateWindowTitle()
     }
@@ -563,7 +568,7 @@ class MainWindowController: NSViewController {
                 // the new text even when the tab was already selected (selectTab
                 // early-returns in that case and would skip the refresh).
                 refreshTabBar()
-                updateEditor()
+                updateEditor(forceRebind: true)
                 updateStatusBar()
             }
             recentFilesManager?.addRecent(url.path)
@@ -915,15 +920,68 @@ class MainWindowController: NSViewController {
         allPanes.forEach { $0.tabBar.reloadTabs() }
     }
     
-    func updateEditor() {
-        // Bind both groups. The focused editor is highlighted last so the
-        // shared incremental-highlighting state (token cache + last painted
-        // range) belongs to the editor that can actually receive keystrokes.
-        // The other group keeps the colours already in its document storage
-        // until it is clicked.
+    func updateEditor(forceRebind: Bool = false) {
+        bindChangedPanes(force: forceRebind)
+        refreshChrome()
+    }
+
+    /// Binds only panes whose selected document actually changed. Focus
+    /// changes and chrome refreshes therefore never rescan unchanged buffers.
+    private func bindChangedPanes(force: Bool) {
         for pane in allPanes {
-            bind(pane, highlight: pane.group == focusedGroup)
+            let doc = pane.tabStore.selectedDocument
+            let everBound = pane.group == .primary ? hasBoundPrimaryPane : hasBoundSecondaryPane
+            let languageChanged = pane.editor.boundLanguage != doc?.language
+            if force || !everBound || pane.boundDocument?.id != doc?.id || languageChanged {
+                bind(pane, force: force)
+            }
         }
+    }
+
+    /// Binds one group's editor to its store's selected document. The document
+    /// owns the storage, undo stack and editor state, so two panes never share
+    /// selection, scroll, dirty state or text.
+    private func bind(_ pane: TabGroupPane, force: Bool) {
+        if pane.group == .primary {
+            hasBoundPrimaryPane = true
+        } else {
+            hasBoundSecondaryPane = true
+        }
+        if let doc = pane.tabStore.selectedDocument {
+            pane.boundDocument = doc
+            // bind() captures the outgoing document's caret/scroll/wrap/zoom
+            // and applies the incoming document's state. Same-document binds
+            // are skipped inside the container unless `force` asks for a real
+            // re-adoption (language change, reload).
+            pane.editor.bind(to: doc, force: force)
+            // Font is a global preference; wrap comes from the document once
+            // it exists. bind() has already restored the caret, so nothing
+            // here can clobber a restored selection.
+            applyPreferences(to: pane.editor, for: doc)
+            pane.editor.apply(theme: theme(for: pane.editor))
+        } else {
+            pane.boundDocument = nil
+            pane.editor.bind(to: nil, force: force)
+            applyPreferences(to: pane.editor, for: nil)
+            pane.editor.apply(theme: theme(for: pane.editor))
+        }
+    }
+
+    /// Updates the shared chrome and repaints the focused pane's visible band.
+    /// Does no document binding, so focus changes stay O(visible).
+    private func refreshChrome() {
+        let pane = activePane
+        findBar?.tabStoreRef = pane.tabStore
+        findBar?.editorRef = pane.editor
+
+        if let doc = pane.tabStore.selectedDocument {
+            applySyntaxHighlighting(to: pane.editor, for: doc, forceReset: true)
+        } else {
+            highlightedDoc = nil
+            syntaxStore.reset()
+            lastHighlightedRange = NSRange(location: 0, length: 0)
+        }
+
         updateStatusBar()
         updateWindowTitle()
         // Tab/language changes replace the outline rather than editing it, so
@@ -931,40 +989,10 @@ class MainWindowController: NSViewController {
         refreshFunctionListImmediately()
     }
 
-    /// Binds one group's editor to its store's selected document. The document
-    /// owns the storage, undo stack and editor state, so two panes never share
-    /// selection, scroll, dirty state or text.
-    private func bind(_ pane: TabGroupPane, highlight: Bool) {
-        if let doc = pane.tabStore.selectedDocument {
-            pane.boundDocument = doc
-            // bind() captures the outgoing document's caret/scroll/wrap/zoom
-            // and applies the incoming document's state.
-            pane.editor.bind(to: doc)
-            // Font is a global preference; wrap comes from the document once
-            // it exists. bind() has already restored the caret, so nothing
-            // here can clobber a restored selection.
-            applyPreferences(to: pane.editor, for: doc)
-            pane.editor.apply(theme: theme(for: pane.editor))
-            if highlight {
-                applySyntaxHighlighting(to: pane.editor, for: doc, forceReset: true)
-            }
-        } else {
-            pane.boundDocument = nil
-            pane.editor.bind(to: nil)
-            applyPreferences(to: pane.editor, for: nil)
-            pane.editor.apply(theme: theme(for: pane.editor))
-            if highlight {
-                highlightedDoc = nil
-                syntaxStore.reset()
-                lastHighlightedRange = NSRange(location: 0, length: 0)
-            }
-        }
-    }
-
     /// Refreshes after a tab bar mutates its own store (click, reorder, or a
-    /// cross-group drag).
+    /// cross-group drag). The bar has already reloaded itself; only the
+    /// changed pane needs binding.
     private func handlePaneTabChange() {
-        refreshTabBar()
         updateEditor()
     }
 
@@ -975,13 +1003,16 @@ class MainWindowController: NSViewController {
         if group == .secondary && secondaryPane == nil { return }
         guard group != focusedGroup else { return }
         focusedGroup = group
-        let pane = activePane
-        findBar?.tabStoreRef = pane.tabStore
-        findBar?.editorRef = pane.editor
-        updateEditor()
+        refreshChrome()
         if findBar?.isVisible == true {
             findBar?.performFind()
         }
+    }
+
+    /// Typing: update only existing dirty dots. No reload, no full-text
+    /// comparison per tab.
+    private func refreshDirtyIndicators() {
+        allPanes.forEach { $0.tabBar.updateDirtyIndicators() }
     }
 
     /// The pane whose editor owns `textView`. Used by undo routing so a text
@@ -1644,7 +1675,7 @@ class MainWindowController: NSViewController {
             guard FileManager.default.fileExists(atPath: path) else { continue }
             guard reloadDocument(doc, from: doc.filePath!) else { continue }
             if allPanes.contains(where: { $0.tabStore.selectedDocument === doc }) {
-                updateEditor()
+                updateEditor(forceRebind: true)
             }
         }
     }
@@ -1715,7 +1746,7 @@ class MainWindowController: NSViewController {
             showError("This file's bytes are not valid \(encoding).")
             return
         }
-        updateEditor()
+        updateEditor(forceRebind: true)
         refreshTabBar()
         updateStatusBar()
     }
@@ -1764,7 +1795,7 @@ class MainWindowController: NSViewController {
             doc.keepsBOM = EncodingDetective.detectBOM(of: data) != nil
             doc.text = text
             doc.setModified(true)
-            updateEditor()
+            updateEditor(forceRebind: true)
         }
         updateStatusBar()
     }
@@ -2251,7 +2282,7 @@ class MainWindowController: NSViewController {
             // linger outside the viewport.
             docThemeNames.removeValue(forKey: doc.id)
         }
-        updateEditor()
+        updateEditor(forceRebind: true)
     }
     
     // MARK: - Session
@@ -2459,8 +2490,10 @@ extension MainWindowController: NSTextViewDelegate {
         let editedRange = pendingEditRange
         pendingEditRange = nil
         // NSTextView wrote straight into doc.textStorage; dirty state is
-        // derived from that buffer, so only the derived UI needs refreshing.
-        refreshTabBar()
+        // derived from that buffer, so only the affected tab dots need
+        // refreshing. No reload: that used to rebuild every tab button and
+        // compare every document's full text on each keystroke.
+        refreshDirtyIndicators()
         updateStatusBar()
         applySyntaxHighlighting(to: editor,
                                 for: doc,

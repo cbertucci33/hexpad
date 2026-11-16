@@ -15,6 +15,12 @@ class TabBarView: NSView {
     /// Called after a tab selection/reorder/transfer so the controller can
     /// rebind the affected editors.
     var onChange: (() -> Void)?
+
+    /// Live drag-reorder preview. The store is not mutated until mouseUp; the
+    /// buttons are only re-slotted for visual feedback.
+    private var previewOrder: [TabButton]?
+    private var previewDraggedButton: TabButton?
+    private var previewMonitor: Any?
     
     init(tabStore: TabStore) {
         self.tabStore = tabStore
@@ -31,6 +37,9 @@ class TabBarView: NSView {
     }
     
     deinit {
+        if let previewMonitor {
+            NSEvent.removeMonitor(previewMonitor)
+        }
         NotificationCenter.default.removeObserver(self)
     }
     
@@ -41,6 +50,7 @@ class TabBarView: NSView {
     }
 
     func reloadTabs() {
+        finishDragPreview()
         tabButtons.forEach { $0.removeFromSuperview() }
         tabButtons.removeAll()
         
@@ -70,6 +80,77 @@ class TabBarView: NSView {
         reloadTabs()
         NotificationCenter.default.post(name: NSNotification.Name("TabStoreSelectedIndexDidChange"), object: nil)
         onChange?()
+    }
+
+    // MARK: - Drag preview
+
+    /// Starts a same-bar drag. The store is untouched until `commitDragPreview`
+    /// so crossing many slots costs only frame changes, not a full controller
+    /// rebind and tab reload per event.
+    func beginDragPreview(from index: Int) {
+        guard previewOrder == nil,
+              let button = tabButtons.first(where: { $0.index == index }) else { return }
+        previewOrder = tabButtons
+        previewDraggedButton = button
+        previewMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { [weak self] event in
+            self?.commitDragPreview()
+            return event
+        }
+    }
+
+    /// Moves the dragged button to a visual slot without touching the store.
+    func previewDrag(to index: Int) {
+        guard var order = previewOrder,
+              let dragged = previewDraggedButton,
+              let from = order.firstIndex(where: { $0 === dragged }) else { return }
+        let target = min(max(0, index), order.count - 1)
+        guard target != from else { return }
+        order.remove(at: from)
+        order.insert(dragged, at: target)
+        previewOrder = order
+        layoutPreview(order)
+    }
+
+    /// Commits the previewed order once, on mouseUp. Calls `onChange` exactly
+    /// once through `moveTab`; a drag that ends where it started does not.
+    func commitDragPreview() {
+        guard let order = previewOrder, let dragged = previewDraggedButton else { return }
+        let destination = order.firstIndex(where: { $0 === dragged }) ?? dragged.index
+        let source = dragged.index
+        finishDragPreview()
+        if source != destination {
+            moveTab(from: source, to: destination)
+        } else {
+            reloadTabs()
+        }
+    }
+
+    /// Drops a pending preview when a drag turns into a cross-group transfer.
+    func discardDragPreview() {
+        finishDragPreview()
+    }
+
+    private func finishDragPreview() {
+        if let previewMonitor {
+            NSEvent.removeMonitor(previewMonitor)
+        }
+        previewMonitor = nil
+        previewOrder = nil
+        previewDraggedButton = nil
+    }
+
+    private func layoutPreview(_ order: [TabButton]) {
+        let tabWidth: CGFloat = 140
+        let spacing: CGFloat = 2
+        for (slot, button) in order.enumerated() {
+            button.frame.origin = NSPoint(x: CGFloat(slot) * (tabWidth + spacing), y: 0)
+        }
+    }
+
+    /// Updates only the existing dirty dots; no view or store churn. Typing
+    /// uses this instead of `reloadTabs()`.
+    func updateDirtyIndicators() {
+        tabButtons.forEach { $0.refreshDirtyIndicator() }
     }
 
     /// Index whose slot contains the given point in bar coordinates.
@@ -111,7 +192,9 @@ class TabBarView: NSView {
     @objc private func tabClicked(_ sender: TabButton) {
         onFocus?()
         tabStore.selectedIndex = sender.index
-        reloadTabs()
+        for (i, btn) in tabButtons.enumerated() {
+            btn.isSelected = i == tabStore.selectedIndex
+        }
         NotificationCenter.default.post(name: NSNotification.Name("TabStoreSelectedIndexDidChange"), object: nil)
         onChange?()
     }
@@ -153,7 +236,11 @@ class TabButton: NSButton {
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
-    
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
     private func setupUI() {
         bezelStyle = .regularSquare
         sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -227,6 +314,7 @@ class TabButton: NSButton {
             let inSibling = sibling.convert(event.locationInWindow, from: nil)
             if sibling.bounds.contains(inSibling) {
                 sibling.onFocus?()
+                bar.discardDragPreview()
                 bar.transferTab(at: index, doc: doc, to: sibling,
                                 at: sibling.dropIndex(at: inSibling))
                 return
@@ -234,9 +322,20 @@ class TabButton: NSButton {
         }
 
         let inBar = bar.convert(event.locationInWindow, from: nil)
-        if let target = bar.tabIndex(at: inBar), target != index {
-            bar.moveTab(from: index, to: target)
+        if let target = bar.tabIndex(at: inBar) {
+            bar.beginDragPreview(from: index)
+            bar.previewDrag(to: target)
         }
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        reorderDelegate?.commitDragPreview()
+        super.mouseUp(with: event)
+    }
+    
+    /// Updates this button's dot without rebuilding the bar. Called on typing.
+    func refreshDirtyIndicator() {
+        dirtyIndicator?.isHidden = !doc.unsavedChanges
     }
     
     @objc private func modifiedDidChange() {

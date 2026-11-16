@@ -28,6 +28,22 @@ class EditorContainer: NSView {
 
     /// The document backing the shared text storage, used for undoable edits.
     private weak var boundDocument: DocumentModel?
+    /// Language the models were last built for. A same-document rebind with a
+    /// new language must still rebuild folds/bookmarks/minimap.
+    private(set) var boundLanguage: String?
+
+    /// Test/diagnostic hook: number of full bookmark-model builds. Same-document
+    /// binds must not increment this.
+    private(set) var bookmarkBindCount = 0
+
+    /// True when this container already owns `document`'s models for the
+    /// current language. Compared by identity, never by text.
+    private func isBound(to document: DocumentModel?) -> Bool {
+        guard let current = boundDocument, let document else {
+            return boundDocument == nil && document == nil
+        }
+        return current === document && boundLanguage == document.language
+    }
 
     private var selectionObserver: NSObjectProtocol?
     private var foldEditObserver: NSObjectProtocol?
@@ -188,7 +204,13 @@ class EditorContainer: NSView {
     /// Points the editor at the document's shared buffer. The text view never
     /// receives a copy of the text: switching tabs swaps the storage under the
     /// layout manager, so the model and the visible editor are one buffer.
-    func bind(to document: DocumentModel?) {
+    ///
+    /// Rebinding the same document (focus changes, chrome refreshes) is a
+    /// no-op: fold/bookmark models and the minimap already track that buffer
+    /// incrementally. Pass `force` for a real re-adoption (language change,
+    /// reload) that must rebuild them.
+    func bind(to document: DocumentModel?, force: Bool = false) {
+        if !force, isBound(to: document) { return }
         // Persist the outgoing document's live caret/scroll/wrap/zoom before
         // the pointer moves to the new document, so switching tabs neither
         // discards the old tab's state nor leaks it into the new tab.
@@ -200,7 +222,8 @@ class EditorContainer: NSView {
         flushBookmarkState()
         let storage = document?.textStorage ?? unboundStorage
         boundDocument = document
-        minimap.bind(to: document)
+        boundLanguage = document?.language
+        minimap.bind(to: document, force: force)
         needsLayout = true
         layoutEditorSubviews()
         guard let layoutManager = textView.layoutManager else {
@@ -973,6 +996,7 @@ class EditorContainer: NSView {
         }
         let state = bookmarkStates[document.id] ?? document.bookmarkState
         let model = BookmarkModel(text: document.text, bookmarkState: state)
+        bookmarkBindCount += 1
         bookmarkStates[document.id] = model.bookmarkState
         document.bookmarkState = model.bookmarkState
         bookmarkModel = model

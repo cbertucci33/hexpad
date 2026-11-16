@@ -213,4 +213,28 @@ final class EditorStatePersistenceTests: XCTestCase {
         XCTAssertEqual(restoredDocument.caretRange, NSRange(location: 50, length: 0),
                        "saving must flush the live editor state before writing")
     }
+
+    func testRebindingSameDocumentDoesNotRebuildFoldOrBookmarkModels() {
+        let document = DocumentModel(text: "func f() {\n    let x = 1\n}\n")
+        document.setLanguage(Language.swift.rawValue)
+        let editor = EditorContainer()
+        editor.bind(to: document)
+
+        let foldBuilds = editor.foldModelRebuildCount
+        let bookmarkBuilds = editor.bookmarkBindCount
+        XCTAssertGreaterThan(foldBuilds, 0)
+        XCTAssertGreaterThan(bookmarkBuilds, 0)
+
+        editor.bind(to: document)
+        XCTAssertEqual(editor.foldModelRebuildCount, foldBuilds,
+                       "same-document bind must not rediscover folds")
+        XCTAssertEqual(editor.bookmarkBindCount, bookmarkBuilds,
+                       "same-document bind must not rebuild the bookmark model")
+
+        // A language change is a real re-adoption: models must rebuild once.
+        document.setLanguage(Language.plain.rawValue)
+        editor.bind(to: document)
+        XCTAssertGreaterThan(editor.foldModelRebuildCount, foldBuilds)
+        XCTAssertGreaterThan(editor.bookmarkBindCount, bookmarkBuilds)
+    }
 }

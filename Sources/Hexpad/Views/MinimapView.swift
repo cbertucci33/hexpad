@@ -476,9 +476,28 @@ final class MinimapView: NSView {
 
     // MARK: - Binding
 
+    /// Same-document identity plus the model's current language and staleness.
+    /// `modelNeedsRebuild`/`pendingEditBand` mean an observed edit has not yet
+    /// been folded into the cache, so skipping would lose it.
+    private func isBoundTo(_ document: DocumentModel?) -> Bool {
+        guard let current = self.document, let document else {
+            return self.document == nil && document == nil
+        }
+        guard current === document else { return false }
+        guard !modelNeedsRebuild, pendingEditBand == nil else { return false }
+        let language = Language(rawValue: document.language) ?? .plain
+        return lineModel?.language == language
+    }
+
     /// Points the minimap at a document. Passing `nil` hides the view, which is
     /// also how the editor container avoids reserving width for an empty tab.
-    func bind(to document: DocumentModel?) {
+    ///
+    /// Re-binding the same document is skipped unless its language changed or
+    /// an edit is still waiting to be folded into the cached model; the model
+    /// observes that buffer incrementally, so a full rebuild would be pure
+    /// duplicate work.
+    func bind(to document: DocumentModel?, force: Bool = false) {
+        if !force, isBoundTo(document) { return }
         if let storageObserver {
             NotificationCenter.default.removeObserver(storageObserver)
             self.storageObserver = nil
