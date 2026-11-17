@@ -36,6 +36,24 @@ extension HexpadAppDelegate {
         searchMenu.addItem(findInFilesItem)
         searchMenu.addItem(.separator())
 
+        // N++ F4 / Shift+F4 walk the results window. Nil-targeted so the
+        // focused window's controller handles them: the results window itself
+        // while it is key, MainWindowController as a passthrough otherwise.
+        // Bare function keys need an empty mask; the default is Command.
+        let nextResultItem = NSMenuItem(title: "Next Result",
+                                        action: #selector(MainWindowController.nextSearchResult(_:)),
+                                        keyEquivalent: "\u{F707}")
+        nextResultItem.keyEquivalentModifierMask = []
+        nextResultItem.target = nil
+        let previousResultItem = NSMenuItem(title: "Previous Result",
+                                            action: #selector(MainWindowController.previousSearchResult(_:)),
+                                            keyEquivalent: "\u{F707}")
+        previousResultItem.keyEquivalentModifierMask = [.shift]
+        previousResultItem.target = nil
+        searchMenu.addItem(nextResultItem)
+        searchMenu.addItem(previousResultItem)
+        searchMenu.addItem(.separator())
+
         // Search > Bookmark mirrors the registry's bookmark group. The group
         // already owns key chords through the Text menu, so these items carry
         // no duplicate equivalents; validation still runs through the

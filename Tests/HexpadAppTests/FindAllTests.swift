@@ -236,4 +236,162 @@ final class FindAllTests: XCTestCase {
         XCTAssertNil(controller.searchResultsController)
         XCTAssertEqual(controller.view.window?.firstResponder, bar.searchField.currentEditor())
     }
+
+    // MARK: - Result navigation (F4 / Shift+F4)
+
+    /// Builds a two-file document result set (three matches) and returns the
+    /// controller plus its results window.
+    private func makeResultsWithTwoFiles()
+        throws -> (controller: MainWindowController, results: FindInFilesWindowController,
+                   first: DocumentModel, second: DocumentModel) {
+        let (controller, _) = makeController()
+        let first = try XCTUnwrap(controller.tabStore.selectedDocument)
+        first.text = "one two\none three"
+        controller.addNewTab()
+        let second = try XCTUnwrap(controller.tabStore.selectedDocument)
+        second.text = "one four"
+        _ = try setQuery("one", on: controller)
+        controller.findAllInAllOpenedDocuments(nil)
+        let results = try XCTUnwrap(controller.searchResultsController)
+        return (controller, results, first, second)
+    }
+
+    func testNextResultWalksGroupsAndWraps() throws {
+        let (controller, results, first, second) = try makeResultsWithTwoFiles()
+        XCTAssertEqual(results.navigableResultCount, 3)
+        XCTAssertEqual(results.currentResultIndex, -1)
+
+        // First F4: first match of the first file. The group header sits on
+        // table row 0, so the selected row must be 1.
+        results.nextResult()
+        XCTAssertEqual(results.currentResultIndex, 0)
+        XCTAssertEqual(results.selectedResultsRow, 1)
+        XCTAssertTrue(controller.tabStore.selectedDocument === first)
+        XCTAssertEqual(controller.editorTextView?.selectedRange,
+                       (first.text as NSString).range(of: "one"))
+        XCTAssertEqual(results.statusText, "Result 1 of 3")
+
+        // Second match in the same file.
+        let secondHit = (first.text as NSString).range(of: "one",
+                                                       options: [], range: NSRange(location: 4,
+                                                                                    length: (first.text as NSString).length - 4))
+        results.nextResult()
+        XCTAssertEqual(results.currentResultIndex, 1)
+        XCTAssertTrue(controller.tabStore.selectedDocument === first)
+        XCTAssertEqual(controller.editorTextView?.selectedRange, secondHit)
+        XCTAssertEqual(results.statusText, "Result 2 of 3")
+
+        // Crosses into the second file's group.
+        results.nextResult()
+        XCTAssertEqual(results.currentResultIndex, 2)
+        XCTAssertEqual(results.selectedResultsRow, 4)
+        XCTAssertTrue(controller.tabStore.selectedDocument === second)
+        XCTAssertEqual(controller.editorTextView?.selectedRange, NSRange(location: 0, length: 3))
+        XCTAssertEqual(results.statusText, "Result 3 of 3")
+
+        // Wrap at the end back to the first result.
+        results.nextResult()
+        XCTAssertEqual(results.currentResultIndex, 0)
+        XCTAssertEqual(results.selectedResultsRow, 1)
+        XCTAssertTrue(controller.tabStore.selectedDocument === first)
+        XCTAssertEqual(results.statusText, "Result 1 of 3")
+    }
+
+    func testPreviousResultWrapsBackwardsAcrossFiles() throws {
+        let (controller, results, first, second) = try makeResultsWithTwoFiles()
+
+        // No cursor yet: previous starts at the last result, not the first.
+        results.previousResult()
+        XCTAssertEqual(results.currentResultIndex, 2)
+        XCTAssertTrue(controller.tabStore.selectedDocument === second)
+        XCTAssertEqual(results.statusText, "Result 3 of 3")
+
+        results.previousResult()
+        XCTAssertEqual(results.currentResultIndex, 1)
+        XCTAssertTrue(controller.tabStore.selectedDocument === first)
+        XCTAssertEqual(results.statusText, "Result 2 of 3")
+
+        results.previousResult()
+        XCTAssertEqual(results.currentResultIndex, 0)
+        XCTAssertEqual(results.statusText, "Result 1 of 3")
+
+        // Wrap at the start back to the last result.
+        results.previousResult()
+        XCTAssertEqual(results.currentResultIndex, 2)
+        XCTAssertTrue(controller.tabStore.selectedDocument === second)
+        XCTAssertEqual(results.selectedResultsRow, 4)
+        XCTAssertEqual(results.statusText, "Result 3 of 3")
+    }
+
+    func testFindAllRebuildsNavigationCursor() throws {
+        let (_, results, _, _) = try makeResultsWithTwoFiles()
+        results.nextResult()
+        XCTAssertEqual(results.currentResultIndex, 0)
+
+        // A fresh search must not leave a stale index pointing into the old
+        // row list.
+        results.showDocumentResults(groups: results.documentGroups, searchDescription: "\"one\"")
+        XCTAssertEqual(results.currentResultIndex, -1)
+        XCTAssertEqual(results.selectedResultsRow, -1)
+    }
+
+    func testResultNavigationNoOpsWhenResultsWindowIsAbsent() throws {
+        let (controller, _) = makeController()
+        controller.nextSearchResult(nil)
+        controller.previousSearchResult(nil)
+        XCTAssertNil(controller.searchResultsController,
+                     "navigation must not create the results window")
+    }
+
+    func testResultPassthroughForwardsWhileResultsWindowIsVisible() throws {
+        let (controller, results, _, second) = try makeResultsWithTwoFiles()
+        XCTAssertTrue(results.window?.isVisible == true)
+
+        controller.nextSearchResult(nil)
+        XCTAssertEqual(results.currentResultIndex, 0)
+
+        controller.nextSearchResult(nil)
+        controller.nextSearchResult(nil)
+        XCTAssertEqual(results.currentResultIndex, 2)
+        XCTAssertTrue(controller.tabStore.selectedDocument === second)
+
+        controller.previousSearchResult(nil)
+        XCTAssertEqual(results.currentResultIndex, 1)
+    }
+
+    func testSearchMenuHasResultNavigationItems() throws {
+        let menu = HexpadAppDelegate().buildMainMenu()
+        let searchMenu = try XCTUnwrap(menu.item(withTitle: "Search")?.submenu)
+
+        let next = try XCTUnwrap(searchMenu.items.first {
+            $0.action == #selector(MainWindowController.nextSearchResult(_:))
+        })
+        XCTAssertEqual(next.title, "Next Result")
+        XCTAssertEqual(next.keyEquivalent, "\u{F707}", "F4, per the Run menu's function-key convention")
+        XCTAssertEqual(next.keyEquivalentModifierMask, [])
+        XCTAssertNil(next.target, "nil target routes to the focused window's controller")
+
+        let previous = try XCTUnwrap(searchMenu.items.first {
+            $0.action == #selector(MainWindowController.previousSearchResult(_:))
+        })
+        XCTAssertEqual(previous.title, "Previous Result")
+        XCTAssertEqual(previous.keyEquivalent, "\u{F707}")
+        XCTAssertEqual(previous.keyEquivalentModifierMask, [.shift])
+        XCTAssertNil(previous.target)
+    }
+
+    func testResultNavigationValidationTracksResultsWindowVisibility() throws {
+        let (controller, _) = makeController()
+        let item = NSMenuItem(title: "Next Result",
+                              action: #selector(MainWindowController.nextSearchResult(_:)),
+                              keyEquivalent: "")
+        XCTAssertFalse(controller.validateMenuItem(item))
+
+        try XCTUnwrap(controller.tabStore.selectedDocument).text = "text"
+        _ = try setQuery("text", on: controller)
+        controller.findAllInCurrentDocument(nil)
+        let results = try XCTUnwrap(controller.searchResultsController)
+        results.showWindow(nil)
+        XCTAssertTrue(controller.validateMenuItem(item))
+    }
 }

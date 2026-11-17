@@ -58,6 +58,13 @@ final class FindInFilesWindowController: NSWindowController {
     private(set) var documentGroups: [DocumentSearchGroup] = []
     private var documentRows: [DocumentRow] = []
 
+    /// Table row indices in navigation order: every file row in files mode,
+    /// every match row (headers excluded) in documents mode. F4 / Shift+F4
+    /// walk this flat list, so "next result" crosses file-group boundaries.
+    private var resultRows: [Int] = []
+    /// Index into `resultRows`, or -1 before the first jump / after a rebuild.
+    private(set) var currentResultIndex = -1
+
     /// Called with the file URL and the match range to jump to in that file.
     var onOpenMatch: ((URL, NSRange) -> Void)?
     /// Called with the owning document and the exact match range for document
@@ -175,6 +182,7 @@ final class FindInFilesWindowController: NSWindowController {
         mode = .files
         window?.title = "Find in Files"
         setFileInputsVisible(true)
+        rebuildResultRows()
         resultsTable.reloadData()
     }
 
@@ -194,6 +202,7 @@ final class FindInFilesWindowController: NSWindowController {
                 documentRows.append(.match(group: groupIndex, index: matchIndex))
             }
         }
+        rebuildResultRows()
         resultsTable.reloadData()
 
         let matchCount = groups.reduce(0) { $0 + $1.matches.count }
@@ -207,6 +216,73 @@ final class FindInFilesWindowController: NSWindowController {
     /// Total hits currently listed in document mode. Used by app tests.
     var documentResultCount: Int {
         documentGroups.reduce(0) { $0 + $1.matches.count }
+    }
+
+    /// Number of rows F4 / Shift+F4 can visit. Used by app tests.
+    var navigableResultCount: Int { resultRows.count }
+
+    /// Currently highlighted table row, or -1. Used by app tests.
+    var selectedResultsRow: Int { resultsTable.selectedRow }
+
+    /// Status line text. Used by app tests.
+    var statusText: String { statusLabel.stringValue }
+
+    // MARK: - Result navigation
+
+    /// Rebuilds the flat navigation order for the current mode and clears the
+    /// cursor. Files mode lists each file once (its first hit is the target);
+    /// documents mode lists each match row and skips group headers.
+    private func rebuildResultRows() {
+        switch mode {
+        case .files:
+            resultRows = results.indices.filter { !results[$0].1.isEmpty }
+        case .documents:
+            resultRows = documentRows.indices.filter { row in
+                if case .match = documentRows[row] { return true }
+                return false
+            }
+        }
+        currentResultIndex = -1
+        resultsTable.deselectAll(nil)
+    }
+
+    /// Search > Next Result (F4). Moves to the next row in navigation order,
+    /// wrapping from the last result back to the first.
+    func nextResult() {
+        guard !resultRows.isEmpty else { return }
+        if currentResultIndex < 0 {
+            currentResultIndex = 0
+        } else {
+            currentResultIndex = (currentResultIndex + 1) % resultRows.count
+        }
+        jumpToCurrentResult()
+    }
+
+    /// Search > Previous Result (Shift+F4). Wrapping mirrors `nextResult`;
+    /// with no cursor yet it starts at the last result, N++ style.
+    func previousResult() {
+        guard !resultRows.isEmpty else { return }
+        if currentResultIndex < 0 {
+            currentResultIndex = resultRows.count - 1
+        } else {
+            currentResultIndex = (currentResultIndex - 1 + resultRows.count) % resultRows.count
+        }
+        jumpToCurrentResult()
+    }
+
+    /// Same action names as the main window's passthroughs. The results
+    /// window is its own responder chain root, so its menu items stay live
+    /// while it is key.
+    @objc func nextSearchResult(_ sender: Any?) { nextResult() }
+    @objc func previousSearchResult(_ sender: Any?) { previousResult() }
+
+    private func jumpToCurrentResult() {
+        guard resultRows.indices.contains(currentResultIndex) else { return }
+        let row = resultRows[currentResultIndex]
+        resultsTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        resultsTable.scrollRowToVisible(row)
+        statusLabel.stringValue = "Result \(currentResultIndex + 1) of \(resultRows.count)"
+        openRow(row)
     }
 
     @objc private func chooseFolder() {
@@ -243,6 +319,7 @@ final class FindInFilesWindowController: NSWindowController {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.results = hits
+                self.rebuildResultRows()
                 self.resultsTable.reloadData()
                 self.searchButton.isEnabled = true
                 self.replaceAllButton.isEnabled = true
@@ -291,6 +368,7 @@ final class FindInFilesWindowController: NSWindowController {
                     self.results.append((url, []))
                     knownURLs.insert(url)
                 }
+                self.rebuildResultRows()
                 self.resultsTable.reloadData()
 
                 let total = replaced.reduce(0) { $0 + $1.1 }
@@ -302,7 +380,12 @@ final class FindInFilesWindowController: NSWindowController {
     }
 
     @objc private func openSelected() {
-        let row = resultsTable.clickedRow
+        openRow(resultsTable.clickedRow)
+    }
+
+    /// Jumps to the result on `row`, using the mode's existing path. Shared by
+    /// double-click and keyboard result navigation.
+    private func openRow(_ row: Int) {
         switch mode {
         case .files:
             guard row >= 0, row < results.count else { return }

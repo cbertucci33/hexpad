@@ -1790,6 +1790,22 @@ class MainWindowController: NSViewController {
         return controller
     }
 
+    // MARK: - Search result navigation
+
+    /// Search > Next Result (F4). The results window owns the flat row model;
+    /// this passthrough lets the menu item work from the main window too.
+    /// Hidden or absent results window: no-op.
+    @objc func nextSearchResult(_ sender: Any?) {
+        guard searchResultsController?.window?.isVisible == true else { return }
+        searchResultsController?.nextResult()
+    }
+
+    /// Search > Previous Result (Shift+F4). See `nextSearchResult`.
+    @objc func previousSearchResult(_ sender: Any?) {
+        guard searchResultsController?.window?.isVisible == true else { return }
+        searchResultsController?.previousResult()
+    }
+
     /// Jumps to a document-search hit: activate the owning tab/group first (the
     /// hit may be in the unfocused split group), reveal folded regions, then
     /// select and scroll the exact match range.
@@ -2781,6 +2797,10 @@ extension MainWindowController: NSMenuItemValidation {
         }
         if menuItem.action == #selector(MainWindowController.selectTabByNumber(_:)) {
             return menuItem.tag >= 1 && menuItem.tag <= tabStore.count
+        }
+        if menuItem.action == #selector(MainWindowController.nextSearchResult(_:))
+            || menuItem.action == #selector(MainWindowController.previousSearchResult(_:)) {
+            return searchResultsController?.window?.isVisible == true
         }
         if menuItem.action == #selector(MainWindowController.encodeIn(_:)) {
             guard let encoding = menuItem.representedObject as? String else { return false }
