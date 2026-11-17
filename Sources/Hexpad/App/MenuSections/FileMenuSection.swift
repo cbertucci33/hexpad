@@ -10,6 +10,30 @@ extension HexpadAppDelegate {
         newItem.target = self
         let openItem = NSMenuItem(title: "Open...", action: #selector(openFile), keyEquivalent: "o")
         openItem.target = self
+        // Notepad++'s File > Open Containing Folder. Both leaves are
+        // nil-targeted so the delegate's NSMenuItemValidation disables them for
+        // untitled buffers, like View > View Current File In.
+        let openContainingFolderItem = NSMenuItem(title: "Open Containing Folder",
+                                                  action: nil,
+                                                  keyEquivalent: "")
+        let openContainingFolderMenu = NSMenu(title: "Open Containing Folder")
+        let revealInFinderItem = NSMenuItem(title: "Finder",
+                                            action: #selector(HexpadAppDelegate.openContainingFolderInFinder(_:)),
+                                            keyEquivalent: "")
+        revealInFinderItem.target = nil
+        let openInTerminalItem = NSMenuItem(title: "Terminal",
+                                            action: #selector(HexpadAppDelegate.openContainingFolderInTerminal(_:)),
+                                            keyEquivalent: "")
+        openInTerminalItem.target = nil
+        openContainingFolderMenu.addItem(revealInFinderItem)
+        openContainingFolderMenu.addItem(openInTerminalItem)
+        openContainingFolderItem.submenu = openContainingFolderMenu
+        // Notepad++'s Open in Default Viewer sits at the end of the open group;
+        // nil-targeted for the same file-backed-document validation.
+        let openInDefaultViewerItem = NSMenuItem(title: "Open in Default Viewer",
+                                                 action: #selector(HexpadAppDelegate.openInDefaultViewer(_:)),
+                                                 keyEquivalent: "")
+        openInDefaultViewerItem.target = nil
         let openFolderItem = NSMenuItem(title: "Open Folder as Workspace…",
                                         action: #selector(openFolderAsWorkspace),
                                         keyEquivalent: "")
@@ -81,8 +105,10 @@ extension HexpadAppDelegate {
         fileMenu.addItem(newWindowItem)
         fileMenu.addItem(newItem)
         fileMenu.addItem(openItem)
+        fileMenu.addItem(openContainingFolderItem)
         fileMenu.addItem(openRecentItem)
         fileMenu.addItem(openFolderItem)
+        fileMenu.addItem(openInDefaultViewerItem)
         fileMenu.addItem(saveItem)
         fileMenu.addItem(saveAsItem)
         fileMenu.addItem(saveAllItem)

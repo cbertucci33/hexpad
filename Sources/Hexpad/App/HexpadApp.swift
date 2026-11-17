@@ -338,6 +338,54 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
               let url = controller.tabStore.selectedDocument?.filePath else { return }
         NSWorkspace.shared.open(url)
     }
+
+    // MARK: - Open Containing Folder / Default Viewer
+
+    /// File-backed focused document, or nil for an untitled buffer. Shared by
+    /// the File-menu commands that hand the document to another application.
+    func selectedFileURL() -> URL? {
+        activeController?.tabStore.selectedDocument?.filePath
+    }
+
+    /// File > Open in Default Viewer. Same Launch Services hand-off as
+    /// View > View Current File In, but the handler is left to the file type.
+    @objc func openInDefaultViewer(_ sender: NSMenuItem) {
+        guard let url = selectedFileURL() else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// File > Open Containing Folder > Finder. Notepad++ opens the folder;
+    /// revealing the file with it selected keeps the user oriented and is the
+    /// macOS convention for "show me this file".
+    @objc func openContainingFolderInFinder(_ sender: NSMenuItem) {
+        guard let url = selectedFileURL() else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    /// File > Open Containing Folder > Terminal. Handing the directory to
+    /// NSWorkspace only starts a shell in $HOME; `open -a Terminal <dir>` makes
+    /// Terminal itself chdir into the folder.
+    @objc func openContainingFolderInTerminal(_ sender: NSMenuItem) {
+        guard let url = selectedFileURL() else { return }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = ["-a", "Terminal", url.deletingLastPathComponent().path]
+        try? process.run()
+    }
+
+    /// Notepad++ grays out Open in Default Viewer when the file's handler is
+    /// the editor itself, since re-opening the already-focused buffer is a
+    /// no-op. Split out from the menu validation (and given an explicit
+    /// self-application) so the policy is testable without Launch Services. A
+    /// nil handler keeps the item enabled so the system can report the failure.
+    static func canOpenInDefaultViewer(fileURL: URL?,
+                                       defaultApplication: URL?,
+                                       selfApplication: URL) -> Bool {
+        guard fileURL != nil else { return false }
+        guard let defaultApplication else { return true }
+        return defaultApplication.resolvingSymlinksInPath().standardizedFileURL.path
+            != selfApplication.resolvingSymlinksInPath().standardizedFileURL.path
+    }
     
     @objc func zoomIn() {
         activeController?.zoomIn()
@@ -611,6 +659,20 @@ extension HexpadAppDelegate: NSMenuItemValidation {
         if menuItem.action == #selector(HexpadAppDelegate.viewCurrentFileInBrowser(_:)) {
             // Untitled buffers have no file to hand to the browser.
             return activeController?.tabStore.selectedDocument?.filePath != nil
+        }
+        if menuItem.action == #selector(HexpadAppDelegate.openContainingFolderInFinder(_:))
+            || menuItem.action == #selector(HexpadAppDelegate.openContainingFolderInTerminal(_:)) {
+            // Untitled buffers have no folder to reveal or cd into.
+            return selectedFileURL() != nil
+        }
+        if menuItem.action == #selector(HexpadAppDelegate.openInDefaultViewer(_:)) {
+            guard let url = selectedFileURL() else { return false }
+            return Self.canOpenInDefaultViewer(
+                fileURL: url,
+                // Synchronous Launch Services lookup: returns nil when no app
+                // (or no file) is found, in which case the item stays enabled.
+                defaultApplication: NSWorkspace.shared.urlForApplication(toOpen: url),
+                selfApplication: Bundle.main.bundleURL)
         }
         if menuItem.action == #selector(HexpadAppDelegate.restoreRecentClosedFile)
             || menuItem.action == #selector(HexpadAppDelegate.openAllRecentFiles)

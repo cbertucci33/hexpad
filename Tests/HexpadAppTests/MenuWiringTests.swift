@@ -674,4 +674,239 @@ final class MenuWiringTests: XCTestCase {
             XCTAssertNil(manager.mostRecentClosedFile(openPaths: Set(manager.recents)))
         }
     }
+
+    // MARK: - File > Open Containing Folder / Open in Default Viewer
+
+    /// Both hand-offs are nil-targeted delegate actions placed in N++'s order:
+    /// the submenu right after Open..., the viewer item at the end of the open
+    /// group, ahead of Save.
+    func testFileMenuHasOpenContainingFolderAndDefaultViewerItems() throws {
+        let delegate = HexpadAppDelegate()
+        let fileMenu = delegate.makeFileMenu()
+
+        XCTAssertEqual(Array(fileMenu.items.prefix(10).map(\.title)),
+                       ["New Window", "New Tab", "Open...", "Open Containing Folder",
+                        "Open Recent", "Open Folder as Workspace…", "Open in Default Viewer",
+                        "Save", "Save As...", "Save All"])
+
+        let containingItem = try XCTUnwrap(fileMenu.item(withTitle: "Open Containing Folder"))
+        let containingMenu = try XCTUnwrap(containingItem.submenu)
+
+        XCTAssertEqual(containingMenu.items.map(\.title), ["Finder", "Terminal"])
+
+        let finder = try XCTUnwrap(containingMenu.item(withTitle: "Finder"))
+        XCTAssertEqual(finder.action, #selector(HexpadAppDelegate.openContainingFolderInFinder(_:)))
+        XCTAssertNil(finder.target, "validation reaches the delegate through the responder chain")
+        XCTAssertEqual(finder.keyEquivalent, "")
+
+        let terminal = try XCTUnwrap(containingMenu.item(withTitle: "Terminal"))
+        XCTAssertEqual(terminal.action, #selector(HexpadAppDelegate.openContainingFolderInTerminal(_:)))
+        XCTAssertNil(terminal.target)
+        XCTAssertEqual(terminal.keyEquivalent, "")
+
+        let viewer = try XCTUnwrap(fileMenu.item(withTitle: "Open in Default Viewer"))
+        XCTAssertEqual(viewer.action, #selector(HexpadAppDelegate.openInDefaultViewer(_:)))
+        XCTAssertNil(viewer.target)
+        XCTAssertNil(viewer.submenu)
+        XCTAssertEqual(viewer.keyEquivalent, "")
+    }
+
+    /// The shared gate behind all three commands: no file, no menu item. With
+    /// no window at all (no focused document) both containing-folder leaves
+    /// validate as disabled, exactly like the untitled case.
+    func testExternallyOpeningCommandsValidateFalseWithoutAFile() {
+        let delegate = HexpadAppDelegate()
+        XCTAssertNil(delegate.selectedFileURL())
+
+        let finder = NSMenuItem(title: "Finder",
+                                action: #selector(HexpadAppDelegate.openContainingFolderInFinder(_:)),
+                                keyEquivalent: "")
+        let terminal = NSMenuItem(title: "Terminal",
+                                  action: #selector(HexpadAppDelegate.openContainingFolderInTerminal(_:)),
+                                  keyEquivalent: "")
+        XCTAssertFalse(delegate.validateMenuItem(finder))
+        XCTAssertFalse(delegate.validateMenuItem(terminal))
+    }
+
+    /// Open in Default Viewer follows Notepad++ and disables itself when Launch
+    /// Services resolves the file back to Hexpad. The policy takes both apps as
+    /// arguments, so no NSWorkspace call happens here.
+    func testOpenInDefaultViewerPredicateSkipsUntitledAndSelfHandler() {
+        let selfApp = URL(fileURLWithPath: "/Applications/Hexpad.app")
+        let otherApp = URL(fileURLWithPath: "/System/Applications/TextEdit.app")
+        let file = URL(fileURLWithPath: "/tmp/hexpad-notes.txt")
+
+        XCTAssertFalse(HexpadAppDelegate.canOpenInDefaultViewer(fileURL: nil,
+                                                               defaultApplication: otherApp,
+                                                               selfApplication: selfApp),
+                       "untitled buffers have no file to hand to Launch Services")
+        XCTAssertFalse(HexpadAppDelegate.canOpenInDefaultViewer(fileURL: nil,
+                                                               defaultApplication: selfApp,
+                                                               selfApplication: selfApp))
+
+        XCTAssertTrue(HexpadAppDelegate.canOpenInDefaultViewer(fileURL: file,
+                                                              defaultApplication: otherApp,
+                                                              selfApplication: selfApp))
+
+        XCTAssertFalse(HexpadAppDelegate.canOpenInDefaultViewer(fileURL: file,
+                                                               defaultApplication: selfApp,
+                                                               selfApplication: selfApp),
+                       "re-opening the focused file in Hexpad is a no-op")
+
+        // Trailing-slash and symlinked spellings of the same bundle still count.
+        XCTAssertFalse(HexpadAppDelegate.canOpenInDefaultViewer(
+            fileURL: file,
+            defaultApplication: URL(fileURLWithPath: "/Applications/Hexpad.app/"),
+            selfApplication: selfApp))
+
+        XCTAssertTrue(HexpadAppDelegate.canOpenInDefaultViewer(fileURL: file,
+                                                               defaultApplication: nil,
+                                                               selfApplication: selfApp),
+                      "an unknown handler stays enabled so the system can report it")
+    }
+}
+
+// MARK: - View > Tab
+
+/// V19j: Notepad++'s View > Tab navigation. Window keeps Cmd+1..9 for its
+/// Tab 1..9 items, so the View leaves are menu-only and the numbered items here
+/// must not carry a second copy of those chords.
+extension MenuWiringTests {
+
+    private func viewTabMenu() throws -> NSMenu {
+        let menu = HexpadAppDelegate().buildMainMenu()
+        let viewMenu = try XCTUnwrap(menu.item(withTitle: "View")?.submenu)
+        let tabItem = try XCTUnwrap(viewMenu.item(withTitle: "Tab"))
+        return try XCTUnwrap(tabItem.submenu)
+    }
+
+    func testViewMenuTabSubmenuContainsNavigationAndReorderItems() throws {
+        let tabMenu = try viewTabMenu()
+        let titles = tabMenu.items.filter { !$0.isSeparatorItem }.map(\.title)
+
+        XCTAssertEqual(titles, [
+            "1st Tab", "2nd Tab", "3rd Tab", "4th Tab", "5th Tab",
+            "6th Tab", "7th Tab", "8th Tab", "9th Tab",
+            "First Tab", "Last Tab",
+            "Move Tab to Start", "Move Tab to End",
+        ])
+
+        for (offset, number) in (1...9).enumerated() {
+            let item = tabMenu.items[offset]
+            XCTAssertEqual(item.tag, number)
+            XCTAssertNil(item.target)
+            XCTAssertEqual(item.action, #selector(MainWindowController.selectNthTabFromMenu(_:)))
+            XCTAssertEqual(item.keyEquivalent, "",
+                           "Cmd+\(number) already belongs to Window > Tab \(number)")
+        }
+
+        let numbered = tabMenu.items.prefix(9).map(\.tag)
+        XCTAssertEqual(numbered, Array(1...9))
+
+        let first = try XCTUnwrap(tabMenu.item(withTitle: "First Tab"))
+        XCTAssertEqual(first.action, #selector(MainWindowController.selectFirstTab(_:)))
+        XCTAssertNil(first.target)
+        let last = try XCTUnwrap(tabMenu.item(withTitle: "Last Tab"))
+        XCTAssertEqual(last.action, #selector(MainWindowController.selectLastTab(_:)))
+        XCTAssertNil(last.target)
+
+        let moveToStart = try XCTUnwrap(tabMenu.item(withTitle: "Move Tab to Start"))
+        XCTAssertEqual(moveToStart.action, #selector(MainWindowController.moveTabToStart(_:)))
+        XCTAssertNil(moveToStart.target)
+        let moveToEnd = try XCTUnwrap(tabMenu.item(withTitle: "Move Tab to End"))
+        XCTAssertEqual(moveToEnd.action, #selector(MainWindowController.moveTabToEnd(_:)))
+        XCTAssertNil(moveToEnd.target)
+    }
+
+    func testSelectNthTabSelectsTheRightTab() throws {
+        let (controller, _) = makeController()
+        controller.addNewTab()
+        controller.addNewTab()
+        XCTAssertEqual(controller.tabStore.count, 3)
+        let docs = controller.tabStore.documents
+
+        controller.selectNthTab(0)
+        XCTAssertTrue(controller.tabStore.selectedDocument === docs[0])
+
+        controller.selectNthTab(2)
+        XCTAssertTrue(controller.tabStore.selectedDocument === docs[2])
+
+        controller.selectNthTab(1)
+        XCTAssertTrue(controller.tabStore.selectedDocument === docs[1])
+
+        // Out of range is a no-op, not a crash or a clamp.
+        controller.selectNthTab(9)
+        XCTAssertTrue(controller.tabStore.selectedDocument === docs[1])
+
+        // The action path reads the 1-based tag, like Window > Tab 1..9.
+        let item = NSMenuItem(title: "3rd Tab",
+                              action: #selector(MainWindowController.selectNthTabFromMenu(_:)),
+                              keyEquivalent: "")
+        item.tag = 3
+        controller.selectNthTabFromMenu(item)
+        XCTAssertTrue(controller.tabStore.selectedDocument === docs[2])
+    }
+
+    func testMoveTabToStartAndEndReorderTheFocusedStore() throws {
+        let (controller, _) = makeController()
+        controller.addNewTab()
+        controller.addNewTab()
+        let docs = controller.tabStore.documents
+
+        controller.selectNthTab(2)
+        controller.moveTabToStart(nil)
+        XCTAssertEqual(controller.tabStore.documents.map(ObjectIdentifier.init),
+                       [docs[2], docs[0], docs[1]].map(ObjectIdentifier.init))
+        XCTAssertEqual(controller.tabStore.selectedIndex, 0,
+                       "the moved tab stays selected at its new slot")
+        XCTAssertTrue(controller.tabStore.selectedDocument === docs[2])
+
+        // Already first: enabled in the menu, but a no-op here.
+        controller.moveTabToStart(nil)
+        XCTAssertEqual(controller.tabStore.documents.map(ObjectIdentifier.init),
+                       [docs[2], docs[0], docs[1]].map(ObjectIdentifier.init))
+
+        controller.moveTabToEnd(nil)
+        XCTAssertEqual(controller.tabStore.documents.map(ObjectIdentifier.init),
+                       [docs[0], docs[1], docs[2]].map(ObjectIdentifier.init))
+        XCTAssertEqual(controller.tabStore.selectedIndex, 2)
+        XCTAssertTrue(controller.tabStore.selectedDocument === docs[2])
+
+        controller.moveTabToEnd(nil)
+        XCTAssertEqual(controller.tabStore.documents.map(ObjectIdentifier.init),
+                       [docs[0], docs[1], docs[2]].map(ObjectIdentifier.init))
+    }
+
+    func testViewTabMenuValidationTracksTabCount() throws {
+        let (controller, _) = makeController()
+
+        func item(_ action: Selector, tag: Int = 0) -> NSMenuItem {
+            let created = NSMenuItem(title: "", action: action, keyEquivalent: "")
+            created.tag = tag
+            return created
+        }
+        let nth = { (tag: Int) in item(#selector(MainWindowController.selectNthTabFromMenu(_:)), tag: tag) }
+        let first = item(#selector(MainWindowController.selectFirstTab(_:)))
+        let last = item(#selector(MainWindowController.selectLastTab(_:)))
+        let moveToStart = item(#selector(MainWindowController.moveTabToStart(_:)))
+        let moveToEnd = item(#selector(MainWindowController.moveTabToEnd(_:)))
+
+        XCTAssertTrue(controller.validateMenuItem(nth(1)))
+        XCTAssertFalse(controller.validateMenuItem(nth(2)), "one tab has no second tab")
+        XCTAssertFalse(controller.validateMenuItem(nth(9)))
+        XCTAssertFalse(controller.validateMenuItem(first))
+        XCTAssertFalse(controller.validateMenuItem(last))
+        XCTAssertFalse(controller.validateMenuItem(moveToStart))
+        XCTAssertFalse(controller.validateMenuItem(moveToEnd))
+
+        controller.addNewTab()
+        XCTAssertTrue(controller.validateMenuItem(nth(2)))
+        XCTAssertFalse(controller.validateMenuItem(nth(3)))
+        XCTAssertTrue(controller.validateMenuItem(first))
+        XCTAssertTrue(controller.validateMenuItem(last))
+        // Enabled even though the focused tab may already sit at either edge:
+        // the items are applicable, the action is just a no-op.
+        XCTAssertTrue(controller.validateMenuItem(moveToStart))
+        XCTAssertTrue(controller.validateMenuItem(moveToEnd))
+    }
 }
