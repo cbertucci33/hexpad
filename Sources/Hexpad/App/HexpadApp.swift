@@ -333,6 +333,12 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         activeController?.toggleDocumentMap()
     }
     
+    @objc func viewCurrentFileInBrowser(_ sender: NSMenuItem) {
+        guard let controller = activeController,
+              let url = controller.tabStore.selectedDocument?.filePath else { return }
+        NSWorkspace.shared.open(url)
+    }
+    
     @objc func zoomIn() {
         activeController?.zoomIn()
     }
@@ -452,6 +458,32 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         activeController?.openFile(atPath: path)
     }
 
+    /// Reopen the newest recent entry that is not currently open.
+    @objc func restoreRecentClosedFile() {
+        guard let controller = activeController else { return }
+        let openPaths = Set(controller.tabStore.documents.compactMap { $0.filePath?.path })
+        guard let url = recentFilesManager.mostRecentClosedFile(openPaths: openPaths) else { return }
+        controller.openFile(atPath: url.path)
+    }
+
+    /// Reopen every recent file. The controller's dedupe-on-reopen behavior
+    /// focuses an already-open tab instead of opening a second one.
+    @objc func openAllRecentFiles() {
+        guard let controller = activeController else { return }
+        for path in recentFilesManager.recents {
+            controller.openFile(atPath: path)
+        }
+    }
+
+    /// Clear the list and rebuild the submenu in place. The submenu is on
+    /// screen while this runs, so menuNeedsUpdate will not fire again for it.
+    @objc func emptyRecentFilesList() {
+        recentFilesManager.removeAll()
+        if let openRecentMenu {
+            menuNeedsUpdate(openRecentMenu)
+        }
+    }
+
     // MARK: - External open (Finder, `open`, drag onto dock icon)
 
     /// Files handed to us by Launch Services. Without this the bundle has no
@@ -519,6 +551,9 @@ extension HexpadAppDelegate: NSMenuDelegate {
             let emptyItem = NSMenuItem(title: "No Recent Files", action: nil, keyEquivalent: "")
             emptyItem.isEnabled = false
             menu.addItem(emptyItem)
+            for item in makeRecentFileCommandItems() {
+                menu.addItem(item)
+            }
             return
         }
         
@@ -531,6 +566,9 @@ extension HexpadAppDelegate: NSMenuDelegate {
             if !FileManager.default.fileExists(atPath: path) {
                 item.isEnabled = false
             }
+            menu.addItem(item)
+        }
+        for item in makeRecentFileCommandItems() {
             menu.addItem(item)
         }
     }
@@ -569,6 +607,15 @@ extension HexpadAppDelegate: NSMenuItemValidation {
             if variant.isCurrent {
                 return activeController?.tabStore.selectedDocument?.filePath != nil
             }
+        }
+        if menuItem.action == #selector(HexpadAppDelegate.viewCurrentFileInBrowser(_:)) {
+            // Untitled buffers have no file to hand to the browser.
+            return activeController?.tabStore.selectedDocument?.filePath != nil
+        }
+        if menuItem.action == #selector(HexpadAppDelegate.restoreRecentClosedFile)
+            || menuItem.action == #selector(HexpadAppDelegate.openAllRecentFiles)
+            || menuItem.action == #selector(HexpadAppDelegate.emptyRecentFilesList) {
+            return !recentFilesManager.recents.isEmpty
         }
         return true
     }

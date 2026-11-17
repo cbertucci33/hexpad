@@ -74,6 +74,9 @@ extension HexpadAppDelegate {
         openRecentMenu.delegate = self
         openRecentItem.submenu = openRecentMenu
         self.openRecentMenu = openRecentMenu
+        for item in makeRecentFileCommandItems() {
+            openRecentMenu.addItem(item)
+        }
         
         fileMenu.addItem(newWindowItem)
         fileMenu.addItem(newItem)
@@ -90,5 +93,24 @@ extension HexpadAppDelegate {
         fileMenu.addItem(closeAllItem)
         fileMenu.addItem(closeMultipleItem)
         return fileMenu
+    }
+
+    /// Tail of the File > Open Recent submenu: N++'s three commands after the
+    /// file list. Shared by the initial menu build and the per-open rebuild in
+    /// `menuNeedsUpdate`, which would otherwise discard statically added items.
+    func makeRecentFileCommandItems() -> [NSMenuItem] {
+        let restoreItem = NSMenuItem(title: "Restore Recent Closed File",
+                                     action: #selector(restoreRecentClosedFile),
+                                     keyEquivalent: "")
+        restoreItem.target = self
+        let openAllItem = NSMenuItem(title: "Open All Recent Files",
+                                     action: #selector(openAllRecentFiles),
+                                     keyEquivalent: "")
+        openAllItem.target = self
+        let emptyItem = NSMenuItem(title: "Empty Recent Files List",
+                                   action: #selector(emptyRecentFilesList),
+                                   keyEquivalent: "")
+        emptyItem.target = self
+        return [.separator(), restoreItem, openAllItem, emptyItem]
     }
 }

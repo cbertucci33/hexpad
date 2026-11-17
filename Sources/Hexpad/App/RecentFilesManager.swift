@@ -29,6 +29,26 @@ final class RecentFilesManager: NSObject {
         NotificationCenter.default.post(name: Self.didChange, object: nil)
     }
     
+    /// The newest recent entry that is not currently open.
+    ///
+    /// This manager keeps a single newest-first list of every file opened; it
+    /// does not track closed files separately. "Most recent closed" therefore
+    /// means the newest entry whose path is not among `openPaths` — the caller
+    /// supplies the paths its tabs currently hold. Callers without open-file
+    /// knowledge can omit the argument and get the newest entry.
+    func mostRecentClosedFile(openPaths: Set<String> = []) -> URL? {
+        guard let path = recents.first(where: { !openPaths.contains($0) }) else { return nil }
+        return URL(fileURLWithPath: path)
+    }
+
+    /// Empty the list (File > Empty Recent Files List).
+    func removeAll() {
+        guard !recents.isEmpty else { return }
+        recents = []
+        persist()
+        NotificationCenter.default.post(name: Self.didChange, object: nil)
+    }
+
     /// Replace an old path with a new one (used on Save As).
     func replaceRecent(oldPath: String?, newPath: String) {
         guard !newPath.isEmpty else { return }

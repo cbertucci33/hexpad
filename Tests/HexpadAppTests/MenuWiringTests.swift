@@ -540,6 +540,21 @@ final class MenuWiringTests: XCTestCase {
         XCTAssertEqual(bar.matchCountLabel.stringValue, "1 of 2")
     }
 
+    // MARK: - View > View Current File In
+
+    func testViewMenuHasViewCurrentFileInDefaultBrowser() throws {
+        let delegate = HexpadAppDelegate()
+        let menu = delegate.buildMainMenu()
+        let viewMenu = try XCTUnwrap(menu.item(withTitle: "View")?.submenu)
+        let viewCurrentItem = try XCTUnwrap(viewMenu.item(withTitle: "View Current File In"))
+        let viewCurrentMenu = try XCTUnwrap(viewCurrentItem.submenu)
+
+        let defaultBrowser = try XCTUnwrap(viewCurrentMenu.items.first { $0.title == "Default Browser" })
+        XCTAssertEqual(defaultBrowser.action, #selector(HexpadAppDelegate.viewCurrentFileInBrowser(_:)))
+        XCTAssertNil(defaultBrowser.target, "validation reaches the delegate through the responder chain")
+        XCTAssertEqual(defaultBrowser.keyEquivalent, "")
+    }
+
     // MARK: - Help menu
 
     /// Help carries the two N++-parity links after About, and each item holds a
@@ -565,6 +580,98 @@ final class MenuWiringTests: XCTestCase {
             XCTAssertEqual(item.action, #selector(HexpadAppDelegate.openHelpLink(_:)))
             XCTAssertTrue(item.target is HexpadAppDelegate)
             XCTAssertTrue(item.isEnabled, "a parsed URL keeps the link enabled")
+        }
+    }
+
+    // MARK: - File > Open Recent commands
+
+    /// Points SessionStore at a throwaway directory so recents tests never read
+    /// or write the real session file, then hands back a fresh manager.
+    private func withIsolatedRecents(_ body: (RecentFilesManager) throws -> Void) throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hexpad-recents-tests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        SessionStore.overrideDirectory = directory
+        defer {
+            SessionStore.overrideDirectory = nil
+            try? FileManager.default.removeItem(at: directory)
+        }
+        try body(RecentFilesManager())
+    }
+
+    /// The submenu carries N++'s three commands after the file list; the
+    /// initial build must include them, since only menuNeedsUpdate adds files.
+    func testOpenRecentSubmenuHasTheThreeRecentFileCommands() throws {
+        let delegate = HexpadAppDelegate()
+        let openRecent = try XCTUnwrap(delegate.makeFileMenu().item(withTitle: "Open Recent")?.submenu)
+
+        XCTAssertEqual(Array(openRecent.items.map(\.title).suffix(3)),
+                       ["Restore Recent Closed File", "Open All Recent Files", "Empty Recent Files List"])
+
+        let restore = try XCTUnwrap(openRecent.item(withTitle: "Restore Recent Closed File"))
+        XCTAssertEqual(restore.action, #selector(HexpadAppDelegate.restoreRecentClosedFile))
+        XCTAssertTrue(restore.target is HexpadAppDelegate)
+
+        let openAll = try XCTUnwrap(openRecent.item(withTitle: "Open All Recent Files"))
+        XCTAssertEqual(openAll.action, #selector(HexpadAppDelegate.openAllRecentFiles))
+        XCTAssertTrue(openAll.target is HexpadAppDelegate)
+
+        let empty = try XCTUnwrap(openRecent.item(withTitle: "Empty Recent Files List"))
+        XCTAssertEqual(empty.action, #selector(HexpadAppDelegate.emptyRecentFilesList))
+        XCTAssertTrue(empty.target is HexpadAppDelegate)
+    }
+
+    /// Rebuilding for display keeps the three commands, and with no recents
+    /// they validate as disabled.
+    func testOpenRecentCommandsSurviveMenuRebuildAndValidateOnEmptyList() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hexpad-recents-menu-tests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        SessionStore.overrideDirectory = directory
+        defer {
+            SessionStore.overrideDirectory = nil
+            try? FileManager.default.removeItem(at: directory)
+        }
+
+        let delegate = HexpadAppDelegate()
+        let openRecent = try XCTUnwrap(delegate.makeFileMenu().item(withTitle: "Open Recent")?.submenu)
+        delegate.menuNeedsUpdate(openRecent)
+
+        let restore = try XCTUnwrap(openRecent.item(withTitle: "Restore Recent Closed File"))
+        let openAll = try XCTUnwrap(openRecent.item(withTitle: "Open All Recent Files"))
+        let empty = try XCTUnwrap(openRecent.item(withTitle: "Empty Recent Files List"))
+        XCTAssertEqual(openRecent.items.map(\.title),
+                       ["No Recent Files", "", "Restore Recent Closed File",
+                        "Open All Recent Files", "Empty Recent Files List"])
+        XCTAssertFalse(delegate.validateMenuItem(restore))
+        XCTAssertFalse(delegate.validateMenuItem(openAll))
+        XCTAssertFalse(delegate.validateMenuItem(empty))
+    }
+
+    func testRecentFilesManagerRemoveAllClearsList() throws {
+        try withIsolatedRecents { manager in
+            manager.addRecent("/tmp/hexpad-recents-a.txt")
+            manager.addRecent("/tmp/hexpad-recents-b.txt")
+            XCTAssertFalse(manager.recents.isEmpty)
+
+            manager.removeAll()
+
+            XCTAssertTrue(manager.recents.isEmpty)
+            XCTAssertNil(manager.mostRecentClosedFile())
+        }
+    }
+
+    /// "Most recent closed" is the newest entry not currently open: the manager
+    /// has no separate closed history, so open tabs are the exclusion signal.
+    func testMostRecentClosedFileSkipsCurrentlyOpenEntries() throws {
+        try withIsolatedRecents { manager in
+            manager.addRecent("/tmp/hexpad-recents-b.txt")
+            manager.addRecent("/tmp/hexpad-recents-a.txt") // newest
+
+            XCTAssertEqual(manager.mostRecentClosedFile()?.path, "/tmp/hexpad-recents-a.txt")
+            XCTAssertEqual(manager.mostRecentClosedFile(openPaths: ["/tmp/hexpad-recents-a.txt"])?.path,
+                           "/tmp/hexpad-recents-b.txt")
+            XCTAssertNil(manager.mostRecentClosedFile(openPaths: Set(manager.recents)))
         }
     }
 }

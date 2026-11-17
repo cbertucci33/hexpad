@@ -130,6 +130,19 @@ extension HexpadAppDelegate {
         documentSwitcherBackItem.isHidden = true
         documentSwitcherBackItem.allowsKeyEquivalentWhenHidden = true
         viewMenu.addItem(documentSwitcherBackItem)
+        // View > View Current File In > Default Browser: hand the selected
+        // document to the system browser via Launch Services. The section
+        // parent is actionless; the Default Browser leaf owns the selector and
+        // is nil-targeted so validation can disable it for untitled docs.
+        let viewCurrentFileInItem = NSMenuItem(title: "View Current File In", action: nil, keyEquivalent: "")
+        let viewCurrentFileInMenu = NSMenu(title: "View Current File In")
+        let defaultBrowserItem = NSMenuItem(title: "Default Browser",
+                                             action: #selector(HexpadAppDelegate.viewCurrentFileInBrowser(_:)),
+                                             keyEquivalent: "")
+        defaultBrowserItem.target = nil
+        viewCurrentFileInMenu.addItem(defaultBrowserItem)
+        viewCurrentFileInItem.submenu = viewCurrentFileInMenu
+        viewMenu.addItem(viewCurrentFileInItem)
         viewMenu.addItem(.separator())
         viewMenu.addItem(appearanceItem)
         return viewMenu
