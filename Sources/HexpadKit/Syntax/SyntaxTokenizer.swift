@@ -56,6 +56,13 @@ public enum Language: String, CaseIterable, Identifiable {
     case ini = "INI"
     case lua = "Lua"
     case r = "R"
+    // Additional grammar breadth (appended in declaration order; earlier
+    // cases keep their raw values and positions).
+    case perl = "Perl"
+    case matlab = "MATLAB"
+    case haskell = "Haskell"
+    case scala = "Scala"
+    case clojure = "Clojure"
     
     public var id: String { rawValue }
     
@@ -89,6 +96,15 @@ public enum Language: String, CaseIterable, Identifiable {
             || x.hasSuffix(".conf"): return .ini
         case let x where x.hasSuffix(".lua"): return .lua
         case let x where x.hasSuffix(".r"): return .r
+        // `.m` is shared with Objective-C, which has no extension mapping in
+        // this table, so MATLAB takes it. A disambiguating sniff would be
+        // needed to hand `.m` back to Objective-C.
+        case let x where x.hasSuffix(".m") || x.hasSuffix(".matlab"): return .matlab
+        case let x where x.hasSuffix(".pl") || x.hasSuffix(".pm"): return .perl
+        case let x where x.hasSuffix(".hs") || x.hasSuffix(".lhs"): return .haskell
+        case let x where x.hasSuffix(".scala") || x.hasSuffix(".sc"): return .scala
+        case let x where x.hasSuffix(".clj") || x.hasSuffix(".cljs")
+            || x.hasSuffix(".cljc"): return .clojure
         default: return .plain
         }
     }

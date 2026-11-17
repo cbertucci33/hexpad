@@ -36,7 +36,12 @@ final class LexerDefinitionMetadataTests: XCTestCase {
         .toml: .init(linePrefix: "#"),
         .ini: .init(linePrefix: ";"),
         .lua: .init(linePrefix: "--", blockStart: "--[[", blockEnd: "]]"),
-        .r: .init(linePrefix: "#")
+        .r: .init(linePrefix: "#"),
+        .perl: .init(linePrefix: "#", blockStart: "=pod", blockEnd: "=cut"),
+        .matlab: .init(linePrefix: "%", blockStart: "%{", blockEnd: "%}"),
+        .haskell: .init(linePrefix: "--", blockStart: "{-", blockEnd: "-}"),
+        .scala: .init(linePrefix: "//", blockStart: "/*", blockEnd: "*/"),
+        .clojure: .init(linePrefix: ";")
     ]
 
     private let curly = LexerDefinition.BracketPair(open: "{", close: "}")
@@ -149,7 +154,12 @@ final class LexerDefinitionMetadataTests: XCTestCase {
             .toml: [curly, square],
             .ini: [square],
             .lua: allThree,
-            .r: allThree
+            .r: allThree,
+            .perl: allThree,
+            .matlab: allThree,
+            .haskell: allThree,
+            .scala: allThree,
+            .clojure: allThree
         ]
 
         XCTAssertEqual(Set(expected.keys), Set(Language.allCases.filter { $0 != .plain }))
