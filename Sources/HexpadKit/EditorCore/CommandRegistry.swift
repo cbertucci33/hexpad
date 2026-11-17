@@ -214,11 +214,12 @@ public struct EditorCommand {
 ///
 /// The default registry contains the line-editing commands from `LineOps` in
 /// ``commands``, the bookmark commands in ``bookmarkCommands``, the
-/// Tools/Line Ops commands in ``toolCommands`` and ``lineOpCommands``, and the
-/// view-only fold/wrap commands in ``viewCommands``. All groups share identifier
-/// lookup and the ``execute(_:on:)`` state-aware path. Menu and keybinding
-/// wiring is intentionally left to a later layer: this type only describes and
-/// runs the commands.
+/// Tools/Line Ops commands in ``toolCommands`` and ``lineOpCommands``, the
+/// Edit > Convert Case to commands in ``caseCommands``, and the view-only
+/// fold/wrap commands in ``viewCommands``. All groups share identifier lookup
+/// and the ``execute(_:on:)`` state-aware path. Menu and keybinding wiring is
+/// intentionally left to a later layer: this type only describes and runs the
+/// commands.
 public struct CommandRegistry {
 
     /// The line-editing commands, in menu order.
@@ -237,6 +238,9 @@ public struct CommandRegistry {
     /// The bulk line operations, in menu order.
     public let lineOpCommands: [EditorCommand]
 
+    /// The Edit > Convert Case to commands, in menu order.
+    public let caseCommands: [EditorCommand]
+
     /// The view-only commands (folding and word wrap), in menu order.
     public let viewCommands: [EditorCommand]
 
@@ -244,7 +248,8 @@ public struct CommandRegistry {
 
     /// All commands offered by this registry, line-editing commands first.
     public var allCommands: [EditorCommand] {
-        commands + bookmarkCommands + toolCommands + lineOpCommands + viewCommands
+        commands + bookmarkCommands + toolCommands + lineOpCommands
+            + caseCommands + viewCommands
     }
 
     /// Creates a registry containing the default command groups.
@@ -261,6 +266,7 @@ public struct CommandRegistry {
                   bookmarkCommands: CommandRegistry.defaultBookmarkCommands(),
                   toolCommands: CommandRegistry.defaultToolCommands(now: now),
                   lineOpCommands: CommandRegistry.defaultLineOpCommands(),
+                  caseCommands: CommandRegistry.defaultCaseCommands(),
                   viewCommands: CommandRegistry.defaultViewCommands())
     }
 
@@ -271,14 +277,17 @@ public struct CommandRegistry {
                 bookmarkCommands: [EditorCommand] = [],
                 toolCommands: [EditorCommand] = [],
                 lineOpCommands: [EditorCommand] = [],
+                caseCommands: [EditorCommand] = [],
                 viewCommands: [EditorCommand] = []) {
         self.commands = commands
         self.bookmarkCommands = bookmarkCommands
         self.toolCommands = toolCommands
         self.lineOpCommands = lineOpCommands
+        self.caseCommands = caseCommands
         self.viewCommands = viewCommands
         var lookup: [String: EditorCommand] = [:]
-        for command in commands + bookmarkCommands + toolCommands + lineOpCommands + viewCommands
+        for command in commands + bookmarkCommands + toolCommands + lineOpCommands
+            + caseCommands + viewCommands
         where lookup[command.identifier] == nil {
             lookup[command.identifier] = command
         }
@@ -499,6 +508,56 @@ public struct CommandRegistry {
                 execute: { text, selection in
                     LineCommandOps.applying(LineOps.removeBlankLines, text: text, selection: selection)
                 }
+            )
+        ]
+    }
+
+    /// The Edit > Convert Case to commands, in Notepad++ menu order.
+    ///
+    /// Each command converts the selection, or the word at the caret when the
+    /// selection is empty, as one undoable edit. The blend variants preserve
+    /// words that are already all upper case (acronyms).
+    public static func defaultCaseCommands() -> [EditorCommand] {
+        [
+            EditorCommand(
+                identifier: "case-uppercase",
+                title: "UPPERCASE",
+                execute: CaseOps.uppercase
+            ),
+            EditorCommand(
+                identifier: "case-lowercase",
+                title: "lowercase",
+                execute: CaseOps.lowercase
+            ),
+            EditorCommand(
+                identifier: "case-proper",
+                title: "Proper Case",
+                execute: CaseOps.properCase
+            ),
+            EditorCommand(
+                identifier: "case-proper-blend",
+                title: "Proper Case (blend)",
+                execute: CaseOps.properCaseBlend
+            ),
+            EditorCommand(
+                identifier: "case-sentence",
+                title: "Sentence case",
+                execute: CaseOps.sentenceCase
+            ),
+            EditorCommand(
+                identifier: "case-sentence-blend",
+                title: "Sentence case (blend)",
+                execute: CaseOps.sentenceCaseBlend
+            ),
+            EditorCommand(
+                identifier: "case-invert",
+                title: "iNVERT cASE",
+                execute: CaseOps.invertCase
+            ),
+            EditorCommand(
+                identifier: "case-random",
+                title: "ranDOm CasE",
+                execute: CaseOps.randomCase
             )
         ]
     }

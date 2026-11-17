@@ -78,6 +78,22 @@ extension HexpadAppDelegate {
             copyPathMenu.addItem(item)
         }
         copyPathItem.submenu = copyPathMenu
+
+        // Notepad++ nests the eight text-case conversions under Edit >
+        // Convert Case to. They run through the shared registry command path,
+        // so validation (no-op cases disabled) and macro recording match the
+        // other editor commands.
+        let convertCaseItem = NSMenuItem(title: "Convert Case to", action: nil, keyEquivalent: "")
+        let convertCaseMenu = NSMenu(title: "Convert Case to")
+        for command in CommandRegistry.default.caseCommands {
+            let item = NSMenuItem(title: command.title,
+                                  action: #selector(MainWindowController.performCommand(withIdentifier:)),
+                                  keyEquivalent: "")
+            item.target = nil
+            item.representedObject = command.identifier
+            convertCaseMenu.addItem(item)
+        }
+        convertCaseItem.submenu = convertCaseMenu
         
         editMenu.addItem(undoItem)
         editMenu.addItem(redoItem)
@@ -87,6 +103,8 @@ extension HexpadAppDelegate {
         editMenu.addItem(copyPathItem)
         editMenu.addItem(pasteItem)
         editMenu.addItem(selectAllItem)
+        editMenu.addItem(.separator())
+        editMenu.addItem(convertCaseItem)
         editMenu.addItem(.separator())
         editMenu.addItem(findItem)
         return editMenu

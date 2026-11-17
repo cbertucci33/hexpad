@@ -66,9 +66,11 @@ final class BookmarkCommandTests: XCTestCase {
                        + registry.bookmarkCommands.map(\.identifier)
                        + registry.toolCommands.map(\.identifier)
                        + registry.lineOpCommands.map(\.identifier)
+                       + registry.caseCommands.map(\.identifier)
                        + registry.viewCommands.map(\.identifier))
         // Contract: the line-editing group stays first and unchanged, then
-        // bookmarks, then Tools, Line Ops and view commands in registry order.
+        // bookmarks, then Tools, Line Ops, case and view commands in registry
+        // order.
         XCTAssertEqual(registry.allCommands.map(\.identifier), [
             "duplicate-line",
             "delete-line",
@@ -96,6 +98,14 @@ final class BookmarkCommandTests: XCTestCase {
             "sort-lines-descending",
             "remove-duplicate-lines",
             "remove-blank-lines",
+            "case-uppercase",
+            "case-lowercase",
+            "case-proper",
+            "case-proper-blend",
+            "case-sentence",
+            "case-sentence-blend",
+            "case-invert",
+            "case-random",
             "fold-all",
             "unfold-all",
             "toggle-word-wrap"
