@@ -81,6 +81,37 @@ extension HexpadAppDelegate {
                                          keyEquivalent: "")
         documentMapItem.target = self
         viewMenu.addItem(documentMapItem)
+
+        // View > Show Symbol: Notepad++'s whitespace/EOL/indent-guide toggles.
+        // The leaves are nil-targeted (unlike Word Wrap/Document Map) so the
+        // first responder chain reaches the app delegate, whose validation
+        // owns the checkmarks from the live global preference.
+        let showSymbolItem = NSMenuItem(title: "Show Symbol", action: nil, keyEquivalent: "")
+        let showSymbolMenu = NSMenu(title: "Show Symbol")
+        let showWhitespaceItem = NSMenuItem(title: "Show Space and Tab",
+                                            action: #selector(HexpadAppDelegate.toggleShowWhitespace),
+                                            keyEquivalent: "")
+        showWhitespaceItem.target = nil
+        let showEOLItem = NSMenuItem(title: "Show End of Line",
+                                     action: #selector(HexpadAppDelegate.toggleShowEOL),
+                                     keyEquivalent: "")
+        showEOLItem.target = nil
+        let showAllItem = NSMenuItem(title: "Show All Characters",
+                                     action: #selector(HexpadAppDelegate.toggleShowAllCharacters),
+                                     keyEquivalent: "")
+        showAllItem.target = nil
+        let showIndentGuideItem = NSMenuItem(title: "Show Indent Guide",
+                                             action: #selector(HexpadAppDelegate.toggleShowIndentGuide),
+                                             keyEquivalent: "")
+        showIndentGuideItem.target = nil
+        showSymbolMenu.addItem(showWhitespaceItem)
+        showSymbolMenu.addItem(showEOLItem)
+        showSymbolMenu.addItem(showAllItem)
+        showSymbolMenu.addItem(.separator())
+        showSymbolMenu.addItem(showIndentGuideItem)
+        showSymbolItem.submenu = showSymbolMenu
+        viewMenu.addItem(showSymbolItem)
+
         viewMenu.addItem(functionListItem)
         viewMenu.addItem(.separator())
         viewMenu.addItem(foldAllItem)

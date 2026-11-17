@@ -271,6 +271,18 @@ class MainWindowController: NSViewController {
                 // split group).
                 pane.editor.setMinimapVisible(preferences.minimapVisible)
             }
+
+            if previous.showWhitespace != preferences.showWhitespace
+                || previous.showEOL != preferences.showEOL
+                || previous.showIndentGuide != preferences.showIndentGuide
+                || previous.tabSize != preferences.tabSize {
+                // Show Symbol options are global and viewport-rendered, so the
+                // same push covers every tab and the unfocused split group.
+                pane.editor.setShowSymbols(showWhitespace: preferences.showWhitespace,
+                                           showEOL: preferences.showEOL,
+                                           showIndentGuide: preferences.showIndentGuide,
+                                           tabSize: preferences.tabSize)
+            }
         }
 
         if previous.theme != preferences.theme {
@@ -1469,6 +1481,12 @@ class MainWindowController: NSViewController {
                                                             size: preferences.fontSize))
         editor.setWordWrapEnabled(document?.wordWrapEnabled ?? preferences.wordWrap)
         editor.setMinimapVisible(preferences.minimapVisible)
+        // Show Symbol options are global and stateless per document, so every
+        // bind re-applies them without writing anything back to the tab.
+        editor.setShowSymbols(showWhitespace: preferences.showWhitespace,
+                              showEOL: preferences.showEOL,
+                              showIndentGuide: preferences.showIndentGuide,
+                              tabSize: preferences.tabSize)
     }
 
     /// Re-applies persisted preferences to the editors. The app delegate calls
@@ -2185,6 +2203,37 @@ class MainWindowController: NSViewController {
     func toggleDocumentMap() {
         let visible = !preferences.minimapVisible
         try? PreferencesStore.update { $0.minimapVisible = visible }
+    }
+
+    /// View > Show Symbol > Show Space and Tab. Like Document Map, the store is
+    /// the single write path: `.preferencesDidChange` pushes the new value to
+    /// every pane through `handlePreferencesDidChange`.
+    func toggleShowWhitespace() {
+        let visible = !preferences.showWhitespace
+        try? PreferencesStore.update { $0.showWhitespace = visible }
+    }
+
+    /// View > Show Symbol > Show End of Line.
+    func toggleShowEOL() {
+        let visible = !preferences.showEOL
+        try? PreferencesStore.update { $0.showEOL = visible }
+    }
+
+    /// View > Show Symbol > Show All Characters. Notepad++ treats this as one
+    /// switch for space/tab and end-of-line glyphs together: it turns both on
+    /// unless both are already on.
+    func toggleShowAllCharacters() {
+        let enable = !(preferences.showWhitespace && preferences.showEOL)
+        try? PreferencesStore.update {
+            $0.showWhitespace = enable
+            $0.showEOL = enable
+        }
+    }
+
+    /// View > Show Symbol > Show Indent Guide.
+    func toggleShowIndentGuide() {
+        let visible = !preferences.showIndentGuide
+        try? PreferencesStore.update { $0.showIndentGuide = visible }
     }
     
     func zoomIn() {

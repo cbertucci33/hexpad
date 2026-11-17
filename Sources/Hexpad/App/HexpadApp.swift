@@ -332,6 +332,47 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     @objc func toggleDocumentMap() {
         activeController?.toggleDocumentMap()
     }
+
+    // MARK: - Show Symbol
+
+    @objc func toggleShowWhitespace() {
+        activeController?.toggleShowWhitespace()
+    }
+
+    @objc func toggleShowEOL() {
+        activeController?.toggleShowEOL()
+    }
+
+    @objc func toggleShowAllCharacters() {
+        activeController?.toggleShowAllCharacters()
+    }
+
+    @objc func toggleShowIndentGuide() {
+        activeController?.toggleShowIndentGuide()
+    }
+
+    /// Checkmark for a View > Show Symbol toggle, or nil for any other action.
+    /// Split out from validation so the on/off mapping is testable without a
+    /// key window; `validateMenuItem` supplies the live preferences.
+    static func showSymbolCheckmark(for action: Selector?,
+                                    preferences: Preferences) -> NSControl.StateValue? {
+        guard let action else { return nil }
+        if action == #selector(HexpadAppDelegate.toggleShowWhitespace) {
+            return preferences.showWhitespace ? .on : .off
+        }
+        if action == #selector(HexpadAppDelegate.toggleShowEOL) {
+            return preferences.showEOL ? .on : .off
+        }
+        if action == #selector(HexpadAppDelegate.toggleShowAllCharacters) {
+            // Notepad++'s Show All Characters is checked only when both glyph
+            // families are on.
+            return preferences.showWhitespace && preferences.showEOL ? .on : .off
+        }
+        if action == #selector(HexpadAppDelegate.toggleShowIndentGuide) {
+            return preferences.showIndentGuide ? .on : .off
+        }
+        return nil
+    }
     
     @objc func viewCurrentFileInBrowser(_ sender: NSMenuItem) {
         guard let controller = activeController,
@@ -635,9 +676,10 @@ extension HexpadAppDelegate: NSMenuItemValidation {
         return nil
     }
 
-    /// Document Map is the one delegate-owned toggle with a checkmark; its
-    /// state mirrors the controller's live global preference. Every other
-    /// delegate item remains enabled, as it was before this conformance.
+    /// Document Map and the four Show Symbol toggles are delegate-owned and
+    /// carry checkmarks mirroring the controller's live global preferences.
+    /// Every other delegate item remains enabled, as it was before this
+    /// conformance.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if let scope = closeScope(for: menuItem.action) {
             return activeController?.canCloseMultipleDocuments(scope) ?? false
@@ -647,6 +689,11 @@ extension HexpadAppDelegate: NSMenuItemValidation {
         }
         if menuItem.action == #selector(HexpadAppDelegate.toggleDocumentMap) {
             menuItem.state = (activeController?.preferences.minimapVisible ?? false) ? .on : .off
+        }
+        if let state = Self.showSymbolCheckmark(
+            for: menuItem.action,
+            preferences: activeController?.preferences ?? .defaults) {
+            menuItem.state = state
         }
         if menuItem.action == #selector(HexpadAppDelegate.copyPathToClipboard(_:)),
            let variant = CopyPathVariant(rawValue: menuItem.tag) {

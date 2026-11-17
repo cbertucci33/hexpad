@@ -63,6 +63,15 @@ struct Preferences: Codable, Equatable {
     var wordWrap: Bool
     var autoIndent: Bool
     var autoCloseBrackets: Bool
+    /// Whether spaces and tabs render as middle dots and arrows (View > Show
+    /// Symbol > Show Space and Tab). Off by default; global to every pane.
+    var showWhitespace: Bool
+    /// Whether each line terminator renders as a boxed CR/LF/CRLF glyph. Off
+    /// by default; global to every pane.
+    var showEOL: Bool
+    /// Whether dotted vertical indent guides render for indentation wider than
+    /// one tab stop. Off by default; global to every pane.
+    var showIndentGuide: Bool
     /// Whether the document map (minimap) is shown. Off by default, matching
     /// Notepad++'s opt-in Document Map. Global: every pane and every document
     /// follows this one value.
@@ -81,6 +90,9 @@ struct Preferences: Codable, Equatable {
          wordWrap: Bool = false,
          autoIndent: Bool = true,
          autoCloseBrackets: Bool = false,
+         showWhitespace: Bool = false,
+         showEOL: Bool = false,
+         showIndentGuide: Bool = false,
          minimapVisible: Bool = false,
          tabSize: Int = 4,
          useTabs: Bool = false,
@@ -91,6 +103,9 @@ struct Preferences: Codable, Equatable {
         self.wordWrap = wordWrap
         self.autoIndent = autoIndent
         self.autoCloseBrackets = autoCloseBrackets
+        self.showWhitespace = showWhitespace
+        self.showEOL = showEOL
+        self.showIndentGuide = showIndentGuide
         self.minimapVisible = minimapVisible
         self.tabSize = tabSize
         self.useTabs = useTabs
@@ -142,6 +157,7 @@ struct Preferences: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case fontFamily, fontSize, wordWrap, autoIndent, autoCloseBrackets
+        case showWhitespace, showEOL, showIndentGuide
         case minimapVisible
         case tabSize, useTabs, theme, version
     }
@@ -156,6 +172,12 @@ struct Preferences: Codable, Equatable {
         autoIndent = (try? container.decode(Bool.self, forKey: .autoIndent)) ?? fallback.autoIndent
         autoCloseBrackets = (try? container.decode(Bool.self, forKey: .autoCloseBrackets))
             ?? fallback.autoCloseBrackets
+        showWhitespace = (try? container.decode(Bool.self, forKey: .showWhitespace))
+            ?? fallback.showWhitespace
+        showEOL = (try? container.decode(Bool.self, forKey: .showEOL))
+            ?? fallback.showEOL
+        showIndentGuide = (try? container.decode(Bool.self, forKey: .showIndentGuide))
+            ?? fallback.showIndentGuide
         minimapVisible = (try? container.decode(Bool.self, forKey: .minimapVisible))
             ?? fallback.minimapVisible
         tabSize = (try? container.decode(Int.self, forKey: .tabSize)) ?? fallback.tabSize
@@ -432,6 +454,12 @@ final class PreferencesWindowController: NSWindowController {
                                               target: nil, action: nil)
     private let autoCloseCheckbox = NSButton(checkboxWithTitle: "Auto-close brackets and quotes",
                                              target: nil, action: nil)
+    private let whitespaceCheckbox = NSButton(checkboxWithTitle: "Show spaces and tabs",
+                                              target: nil, action: nil)
+    private let eolCheckbox = NSButton(checkboxWithTitle: "Show end-of-line characters",
+                                       target: nil, action: nil)
+    private let indentGuideCheckbox = NSButton(checkboxWithTitle: "Show indent guides",
+                                               target: nil, action: nil)
     private let minimapCheckbox = NSButton(checkboxWithTitle: "Show document map",
                                            target: nil, action: nil)
     private let tabSizeField = NSTextField()
@@ -586,7 +614,9 @@ final class PreferencesWindowController: NSWindowController {
         let pane = makePane()
         pane.addArrangedSubview(sectionLabel("Editor Behavior"))
 
-        for checkbox in [wordWrapCheckbox, autoIndentCheckbox, autoCloseCheckbox, minimapCheckbox] {
+        for checkbox in [wordWrapCheckbox, autoIndentCheckbox, autoCloseCheckbox,
+                         whitespaceCheckbox, eolCheckbox, indentGuideCheckbox,
+                         minimapCheckbox] {
             checkbox.target = self
             checkbox.action = #selector(editorCheckboxChanged)
             pane.addArrangedSubview(checkbox)
@@ -620,7 +650,8 @@ final class PreferencesWindowController: NSWindowController {
 
         pane.addArrangedSubview(hintLabel("Word wrap applies to the active editor immediately and "
             + "becomes the default for new documents. Each open document keeps its own setting. "
-            + "The document map is global, off by default, and applies to every tab. "
+            + "The document map and the Show Symbol options are global, off by default, and apply "
+            + "to every tab. "
             + "Auto-indent, auto-close, tab width, and the spaces/tabs choice are saved now and "
             + "will be wired into the editor in the follow-up slice."))
         return pane
@@ -688,6 +719,9 @@ final class PreferencesWindowController: NSWindowController {
         wordWrapCheckbox.state = preferences.wordWrap ? .on : .off
         autoIndentCheckbox.state = preferences.autoIndent ? .on : .off
         autoCloseCheckbox.state = preferences.autoCloseBrackets ? .on : .off
+        whitespaceCheckbox.state = preferences.showWhitespace ? .on : .off
+        eolCheckbox.state = preferences.showEOL ? .on : .off
+        indentGuideCheckbox.state = preferences.showIndentGuide ? .on : .off
         minimapCheckbox.state = preferences.minimapVisible ? .on : .off
         tabSizeField.integerValue = preferences.tabSize
         tabSizeStepper.integerValue = preferences.tabSize
@@ -726,6 +760,9 @@ final class PreferencesWindowController: NSWindowController {
             $0.wordWrap = wordWrapCheckbox.state == .on
             $0.autoIndent = autoIndentCheckbox.state == .on
             $0.autoCloseBrackets = autoCloseCheckbox.state == .on
+            $0.showWhitespace = whitespaceCheckbox.state == .on
+            $0.showEOL = eolCheckbox.state == .on
+            $0.showIndentGuide = indentGuideCheckbox.state == .on
             $0.minimapVisible = minimapCheckbox.state == .on
         }
     }

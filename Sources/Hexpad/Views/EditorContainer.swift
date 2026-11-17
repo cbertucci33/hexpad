@@ -325,6 +325,19 @@ class EditorContainer: NSView {
         layoutEditorSubviews()
     }
 
+    /// Applies the global View > Show Symbol options to the text view. Symbol
+    /// drawing itself is viewport-scoped in `MultiCaretTextView.draw(_:)`; this
+    /// only flips the flags and schedules one repaint.
+    func setShowSymbols(showWhitespace: Bool,
+                        showEOL: Bool,
+                        showIndentGuide: Bool,
+                        tabSize: Int) {
+        textView.setSymbolVisibility(showWhitespace: showWhitespace,
+                                     showEOL: showEOL,
+                                     showIndentGuide: showIndentGuide,
+                                     tabSize: tabSize)
+    }
+
     /// Applies a zoom multiplier over the base font and persists it on the
     /// bound document, so the View > Zoom commands survive a tab switch.
     func setZoomScale(_ scale: CGFloat) {
