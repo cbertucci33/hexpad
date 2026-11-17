@@ -15,6 +15,20 @@ extension HexpadAppDelegate {
         searchMenu.addItem(findInDocItem)
         searchMenu.addItem(findNextItem)
         searchMenu.addItem(findPrevItem)
+
+        // The Find dialog's "Find All" pair lives here as direct N++-style
+        // items. Nil-targeted so the focused window's controller (which owns
+        // the open documents) runs them and supplies validation.
+        let findAllInDocItem = NSMenuItem(title: "Find All in Current Document",
+                                          action: #selector(MainWindowController.findAllInCurrentDocument(_:)),
+                                          keyEquivalent: "")
+        findAllInDocItem.target = nil
+        let findAllOpenedItem = NSMenuItem(title: "Find All in All Opened Documents",
+                                           action: #selector(MainWindowController.findAllInAllOpenedDocuments(_:)),
+                                           keyEquivalent: "")
+        findAllOpenedItem.target = nil
+        searchMenu.addItem(findAllInDocItem)
+        searchMenu.addItem(findAllOpenedItem)
         searchMenu.addItem(.separator())
         let findInFilesItem = NSMenuItem(title: "Find in Files...", action: #selector(findInFiles), keyEquivalent: "F")
         findInFilesItem.keyEquivalentModifierMask = [.command, .shift]

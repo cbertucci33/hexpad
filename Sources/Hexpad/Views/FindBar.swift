@@ -844,6 +844,49 @@ class FindBar: NSView, NSSearchFieldDelegate {
         matchCountLabel.stringValue = "\(currentMatchIndex + 1) of \(allMatches.count)"
     }
 
+    // MARK: - Find All
+
+    /// One snapshot of the find bar's query state, taken once so the menu
+    /// actions and the bar can never disagree about pattern or flags.
+    struct FindAllQuery {
+        let pattern: String
+        let options: SearchOptions
+        let range: NSRange?
+    }
+
+    /// Nil when the field is empty: there is nothing to find all of, so the
+    /// controller opens the bar and lets the user type a query first.
+    private func findAllQuery(limitedToSelection: Bool) -> FindAllQuery? {
+        guard !searchField.stringValue.isEmpty else { return nil }
+        return FindAllQuery(pattern: searchPattern,
+                            options: searchOptions,
+                            range: limitedToSelection ? activeSearchScope() : nil)
+    }
+
+    /// Search > Find All in Current Document. Uses the bar's mode (Literal /
+    /// Extended / Regex), Match Case, Whole Word and Selection flags.
+    ///
+    /// Returns nil when the query field is empty; the caller then surfaces the
+    /// bar instead of opening an empty results window.
+    func findAllInCurrentDocument(_ doc: DocumentModel) -> [DocumentMatch]? {
+        guard let query = findAllQuery(limitedToSelection: true) else { return nil }
+        commitSearchHistory()
+        return SearchEngine.findAll(in: doc.text, pattern: query.pattern,
+                                    options: query.options, range: query.range)
+    }
+
+    /// Search > Find All in All Opened Documents. The "Selection" flag is
+    /// deliberately ignored: a selection only exists in the focused buffer, so
+    /// honouring it would silently limit a multi-file search to one file.
+    func findAllInAllOpenedDocuments(_ docs: [DocumentModel]) -> [(DocumentModel, [DocumentMatch])]? {
+        guard let query = findAllQuery(limitedToSelection: false) else { return nil }
+        commitSearchHistory()
+        return docs.map { doc in
+            (doc, SearchEngine.findAll(in: doc.text, pattern: query.pattern,
+                                       options: query.options))
+        }
+    }
+
     /// Clamps a match range to the editor's current buffer. A stale list — or a
     /// match edited away between search and navigation — must never hand
     /// NSTextView an out-of-range selection: `setSelectedRange` raises

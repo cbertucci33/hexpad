@@ -1,10 +1,30 @@
 import AppKit
 import HexpadKit
 
+/// One document's Find All results: the identity needed to jump back to the
+/// right editor, and the matches found in that buffer.
+struct DocumentSearchGroup {
+    let document: DocumentModel
+    let matches: [DocumentMatch]
+
+    /// Header title. File-backed documents show their path so two same-named
+    /// files stay distinguishable; untitled buffers say so explicitly.
+    var title: String {
+        document.filePath?.path ?? "\(document.name) (untitled)"
+    }
+}
+
 /// Find in Files panel. SearchEngine.searchInFiles shipped complete but had no
 /// UI at all. Runs the search off the main thread and opens a hit in a tab.
+///
+/// Also hosts the open-document Find All results (Search > Find All in Current
+/// Document / in All Opened Documents). Both modes share the table; file
+/// results keep their one-row-per-file summary, document results add per-file
+/// group headers with one row per match so every hit is individually
+/// double-clickable. Fold/unfold of those groups is deferred.
 final class FindInFilesWindowController: NSWindowController {
 
+    private let chooseButton = NSButton(title: "Choose Folder...", target: nil, action: nil)
     private let folderLabel = NSTextField(labelWithString: "No folder chosen")
     private let patternField = NSSearchField()
     private let replaceField = NSSearchField()
@@ -13,7 +33,21 @@ final class FindInFilesWindowController: NSWindowController {
     private let searchButton = NSButton(title: "Search", target: nil, action: nil)
     private let replaceAllButton = NSButton(title: "Replace All in Files", target: nil, action: nil)
     private let resultsTable = NSTableView()
+    private let resultsScrollView = NSScrollView()
     private let statusLabel = NSTextField(labelWithString: "")
+
+    private enum Mode {
+        case files
+        case documents
+    }
+    private var mode: Mode = .files
+
+    /// Row model for the document mode: one header per opened buffer followed
+    /// by one row per match. Clicking a match row jumps to that exact range.
+    private enum DocumentRow {
+        case header(group: Int)
+        case match(group: Int, index: Int)
+    }
 
     private var directory: URL?
     private var results: [(URL, [SearchMatch])] = []
@@ -21,8 +55,14 @@ final class FindInFilesWindowController: NSWindowController {
     /// Kept alongside the search hits so the table can show both counts.
     private var replaceCounts: [URL: Int] = [:]
 
+    private(set) var documentGroups: [DocumentSearchGroup] = []
+    private var documentRows: [DocumentRow] = []
+
     /// Called with the file URL and the match range to jump to in that file.
     var onOpenMatch: ((URL, NSRange) -> Void)?
+    /// Called with the owning document and the exact match range for document
+    /// results. The controller resolves the tab/group before scrolling.
+    var onOpenDocumentMatch: ((DocumentModel, NSRange) -> Void)?
 
     convenience init() {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 420),
@@ -38,7 +78,8 @@ final class FindInFilesWindowController: NSWindowController {
         guard let window, let content = window.contentView else { return }
         content.wantsLayer = true
 
-        let chooseButton = NSButton(title: "Choose Folder...", target: self, action: #selector(chooseFolder))
+        chooseButton.target = self
+        chooseButton.action = #selector(chooseFolder)
         chooseButton.bezelStyle = .rounded
         chooseButton.frame = NSRect(x: 12, y: 386, width: 130, height: 24)
         content.addSubview(chooseButton)
@@ -82,10 +123,10 @@ final class FindInFilesWindowController: NSWindowController {
         replaceAllButton.autoresizingMask = [.minXMargin]
         content.addSubview(replaceAllButton)
 
-        let scroll = NSScrollView(frame: NSRect(x: 12, y: 34, width: 596, height: 272))
-        scroll.autoresizingMask = [.width, .height]
-        scroll.hasVerticalScroller = true
-        scroll.borderType = .bezelBorder
+        resultsScrollView.frame = NSRect(x: 12, y: 34, width: 596, height: 272)
+        resultsScrollView.autoresizingMask = [.width, .height]
+        resultsScrollView.hasVerticalScroller = true
+        resultsScrollView.borderType = .bezelBorder
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("hit"))
         column.title = "Matches"
@@ -97,14 +138,75 @@ final class FindInFilesWindowController: NSWindowController {
         resultsTable.delegate = self
         resultsTable.target = self
         resultsTable.doubleAction = #selector(openSelected)
-        scroll.documentView = resultsTable
-        content.addSubview(scroll)
+        resultsScrollView.documentView = resultsTable
+        content.addSubview(resultsScrollView)
 
         statusLabel.font = NSFont.systemFont(ofSize: 11)
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.frame = NSRect(x: 12, y: 12, width: 596, height: 16)
         statusLabel.autoresizingMask = [.width]
         content.addSubview(statusLabel)
+    }
+
+    /// Inputs that only make sense for directory search. Document-result mode
+    /// hides them and grows the table into the freed space.
+    private var fileInputControls: [NSView] {
+        [chooseButton, folderLabel, patternField, replaceField,
+         regexCheckbox, caseCheckbox, searchButton, replaceAllButton]
+    }
+
+    private func setFileInputsVisible(_ visible: Bool) {
+        for control in fileInputControls {
+            control.isHidden = !visible
+        }
+        guard let content = window?.contentView else { return }
+        let bottomInset: CGFloat = 34
+        // File mode leaves the search/replace control band above the table;
+        // document mode only needs the close/scroll/status band.
+        let topInset: CGFloat = visible ? 114 : 10
+        let height = max(80, content.bounds.height - bottomInset - topInset)
+        resultsScrollView.frame = NSRect(x: 12, y: bottomInset,
+                                         width: max(120, content.bounds.width - 24),
+                                         height: height)
+    }
+
+    private func enterFilesMode() {
+        guard mode != .files else { return }
+        mode = .files
+        window?.title = "Find in Files"
+        setFileInputsVisible(true)
+        resultsTable.reloadData()
+    }
+
+    /// Shows Find All results for open documents. `searchDescription` is the
+    /// query echoed in the status line; the controller stays dumb about how the
+    /// search was produced.
+    func showDocumentResults(groups: [DocumentSearchGroup], searchDescription: String) {
+        mode = .documents
+        window?.title = "Search Results"
+        setFileInputsVisible(false)
+
+        documentGroups = groups
+        documentRows = []
+        for (groupIndex, group) in groups.enumerated() {
+            documentRows.append(.header(group: groupIndex))
+            for matchIndex in group.matches.indices {
+                documentRows.append(.match(group: groupIndex, index: matchIndex))
+            }
+        }
+        resultsTable.reloadData()
+
+        let matchCount = groups.reduce(0) { $0 + $1.matches.count }
+        if matchCount == 0 {
+            statusLabel.stringValue = "No matches for \(searchDescription)"
+        } else {
+            statusLabel.stringValue = "\(matchCount) matches in \(groups.count) files for \(searchDescription)"
+        }
+    }
+
+    /// Total hits currently listed in document mode. Used by app tests.
+    var documentResultCount: Int {
+        documentGroups.reduce(0) { $0 + $1.matches.count }
     }
 
     @objc private func chooseFolder() {
@@ -118,6 +220,7 @@ final class FindInFilesWindowController: NSWindowController {
     }
 
     @objc private func runSearch() {
+        enterFilesMode()
         guard let directory else {
             statusLabel.stringValue = "Choose a folder first"
             return
@@ -155,6 +258,7 @@ final class FindInFilesWindowController: NSWindowController {
     /// Replaces every match under the chosen folder, then reports per-file
     /// replacement counts in the same table used for search hits.
     @objc private func replaceAllInFiles() {
+        enterFilesMode()
         guard let directory else {
             statusLabel.stringValue = "Choose a folder first"
             return
@@ -199,18 +303,49 @@ final class FindInFilesWindowController: NSWindowController {
 
     @objc private func openSelected() {
         let row = resultsTable.clickedRow
-        guard row >= 0, row < results.count else { return }
-        let (url, matches) = results[row]
-        guard let first = matches.first else { return }
-        onOpenMatch?(url, first.range)
+        switch mode {
+        case .files:
+            guard row >= 0, row < results.count else { return }
+            let (url, matches) = results[row]
+            guard let first = matches.first else { return }
+            onOpenMatch?(url, first.range)
+        case .documents:
+            guard row >= 0, row < documentRows.count else { return }
+            guard case .match(let groupIndex, let matchIndex) = documentRows[row] else { return }
+            let group = documentGroups[groupIndex]
+            guard group.matches.indices.contains(matchIndex) else { return }
+            onOpenDocumentMatch?(group.document, group.matches[matchIndex].range)
+        }
     }
 }
 
 extension FindInFilesWindowController: NSTableViewDataSource, NSTableViewDelegate {
 
-    func numberOfRows(in tableView: NSTableView) -> Int { results.count }
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        switch mode {
+        case .files: return results.count
+        case .documents: return documentRows.count
+        }
+    }
+
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
+        guard mode == .documents else { return true }
+        guard row >= 0, row < documentRows.count else { return false }
+        if case .header = documentRows[row] { return false }
+        return true
+    }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        switch mode {
+        case .files:
+            return fileResultView(row: row)
+        case .documents:
+            return documentResultView(row: row)
+        }
+    }
+
+    private func fileResultView(row: Int) -> NSView? {
+        guard row >= 0, row < results.count else { return nil }
         let (url, matches) = results[row]
         let label = NSTextField(labelWithString: "")
         label.lineBreakMode = .byTruncatingMiddle
@@ -226,6 +361,29 @@ extension FindInFilesWindowController: NSTableViewDataSource, NSTableViewDelegat
         }
         label.stringValue = "\(url.path)\n\(summary)"
         label.maximumNumberOfLines = 2
+        return label
+    }
+
+    private func documentResultView(row: Int) -> NSView? {
+        guard row >= 0, row < documentRows.count else { return nil }
+        let label = NSTextField(labelWithString: "")
+        label.lineBreakMode = .byTruncatingTail
+        label.font = NSFont.systemFont(ofSize: 11)
+
+        switch documentRows[row] {
+        case .header(let groupIndex):
+            let group = documentGroups[groupIndex]
+            label.font = NSFont.boldSystemFont(ofSize: 11)
+            label.stringValue = "\(group.title)  —  \(group.matches.count) match(es)"
+            label.toolTip = group.document.filePath?.path
+            label.maximumNumberOfLines = 1
+        case .match(let groupIndex, let matchIndex):
+            let match = documentGroups[groupIndex].matches[matchIndex]
+            let preview = match.context.isEmpty ? "(blank line)" : match.context
+            label.stringValue = "    \(match.line): \(preview)"
+            label.toolTip = "Line \(match.line), column \(match.column): \(match.text)"
+            label.maximumNumberOfLines = 1
+        }
         return label
     }
 }

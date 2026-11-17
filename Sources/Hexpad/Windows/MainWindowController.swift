@@ -1710,6 +1710,116 @@ class MainWindowController: NSViewController {
     func findPrevious() {
         findBar?.findPrevious()
     }
+
+    // MARK: - Find All (open documents)
+
+    /// Results window for Find All in Current/All Opened Documents. Created on
+    /// first use and reused; the file-mode instance stays app-owned in
+    /// HexpadAppDelegate, so the two modes never share window state.
+    private(set) var searchResultsController: FindInFilesWindowController?
+
+    /// Menu validation: the focused buffer must have text to search.
+    func canFindAllInCurrentDocument() -> Bool {
+        (tabStore.selectedDocument?.textStorage.length ?? 0) > 0
+    }
+
+    /// Menu validation: at least one document open in either split group.
+    func canFindAllInAllOpenedDocuments() -> Bool {
+        allPanes.contains { $0.tabStore.count > 0 }
+    }
+
+    /// Search > Find All in Current Document. The find bar owns the query and
+    /// mode flags; the controller owns the results window and the jump back.
+    @objc func findAllInCurrentDocument(_ sender: Any?) {
+        guard let doc = tabStore.selectedDocument,
+              prepareFindAllQuery(),
+              let matches = findBar?.findAllInCurrentDocument(doc) else { return }
+        showDocumentSearchResults([DocumentSearchGroup(document: doc, matches: matches)])
+    }
+
+    /// Search > Find All in All Opened Documents. Every buffer in both groups
+    /// is searched, untitled ones included (they are real text buffers). Only
+    /// files with hits are listed, matching N++'s per-file grouping.
+    @objc func findAllInAllOpenedDocuments(_ sender: Any?) {
+        let docs = allPanes.flatMap { $0.tabStore.documents }
+        guard !docs.isEmpty, prepareFindAllQuery(),
+              let results = findBar?.findAllInAllOpenedDocuments(docs) else { return }
+        let groups = results.compactMap { doc, matches in
+            matches.isEmpty ? nil : DocumentSearchGroup(document: doc, matches: matches)
+        }
+        showDocumentSearchResults(groups)
+    }
+
+    /// Ensures the bar holds a query before Find All runs. Empty bar: show it,
+    /// seed from the editor selection when there is one (the same convenience
+    /// as Cmd+F), and let the user press the menu item again if still empty.
+    @discardableResult
+    private func prepareFindAllQuery() -> Bool {
+        guard let find = findBar else { return false }
+        if !find.isVisible {
+            find.show()
+            updateLayout()
+        }
+        if find.searchField.stringValue.isEmpty,
+           let editor = editorContainer,
+           editor.textView.selectedRange.length > 0 {
+            let selected = (editor.textView.string as NSString)
+                .substring(with: editor.textView.selectedRange)
+            find.searchField.stringValue = selected
+            find.performFind()
+        }
+        view.window?.makeFirstResponder(find.searchField)
+        return !find.searchField.stringValue.isEmpty
+    }
+
+    private func showDocumentSearchResults(_ groups: [DocumentSearchGroup]) {
+        let controller = searchResultsController ?? makeSearchResultsController()
+        let query = findBar?.searchField.stringValue ?? ""
+        controller.showDocumentResults(groups: groups,
+                                       searchDescription: "\"\(query)\"")
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+    }
+
+    private func makeSearchResultsController() -> FindInFilesWindowController {
+        let controller = FindInFilesWindowController()
+        controller.onOpenDocumentMatch = { [weak self] document, range in
+            self?.navigateToDocumentMatch(document, range: range)
+        }
+        searchResultsController = controller
+        return controller
+    }
+
+    /// Jumps to a document-search hit: activate the owning tab/group first (the
+    /// hit may be in the unfocused split group), reveal folded regions, then
+    /// select and scroll the exact match range.
+    func navigateToDocumentMatch(_ document: DocumentModel, range: NSRange) {
+        guard let target = locateDocument(document) else { return }
+        focusGroup(target.pane.group)
+        selectTab(at: target.index)
+
+        let editor = target.pane.editor
+        let length = (editor.textView.string as NSString).length
+        guard range.location != NSNotFound, range.location <= length else { return }
+        let clamped = NSRange(location: range.location,
+                              length: min(range.length, length - range.location))
+        editor.reveal(location: clamped.location)
+        editor.textView.setSelectedRange(clamped)
+        editor.textView.scrollRangeToVisible(clamped)
+        view.window?.makeKeyAndOrderFront(nil)
+        view.window?.makeFirstResponder(editor.textView)
+    }
+
+    /// Identity lookup across both groups; a document belongs to exactly one
+    /// tab store, so the first match is authoritative.
+    private func locateDocument(_ document: DocumentModel) -> (pane: TabGroupPane, index: Int)? {
+        for pane in allPanes {
+            if let index = pane.tabStore.documents.firstIndex(where: { $0 === document }) {
+                return (pane, index)
+            }
+        }
+        return nil
+    }
     
     // MARK: - Function List
 
@@ -2721,6 +2831,12 @@ extension MainWindowController: NSMenuItemValidation {
         }
         if menuItem.action == #selector(MainWindowController.unfoldAll(_:)) {
             return canUnfoldAll()
+        }
+        if menuItem.action == #selector(MainWindowController.findAllInCurrentDocument(_:)) {
+            return canFindAllInCurrentDocument()
+        }
+        if menuItem.action == #selector(MainWindowController.findAllInAllOpenedDocuments(_:)) {
+            return canFindAllInAllOpenedDocuments()
         }
         if menuItem.action == #selector(MainWindowController.toggleSplitView(_:)) {
             menuItem.state = isSplitViewOpen ? .on : .off
