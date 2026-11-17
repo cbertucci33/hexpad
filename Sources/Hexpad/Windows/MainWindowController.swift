@@ -1126,6 +1126,59 @@ class MainWindowController: NSViewController {
     @objc func selectTabByNumber(_ sender: NSMenuItem) {
         selectTab(at: sender.tag - 1)
     }
+
+    /// Selects the tab at a zero-based index and moves first responder into the
+    /// focused group's editor. Unlike ``selectTab(at:)`` this also focuses the
+    /// editor when the requested tab is already selected, because the View > Tab
+    /// items are also used to return to the buffer being edited.
+    func selectNthTab(_ index: Int) {
+        guard index >= 0, index < tabStore.count else { return }
+        selectTab(at: index)
+        view.window?.makeFirstResponder(editorContainer?.textView)
+    }
+
+    /// Handles View > Tab > 1st..9th Tab. The item tag holds the 1-based tab
+    /// number, matching the Window menu's Tab 1..9 items. Named apart from the
+    /// index-taking overload so the selector stays unambiguous.
+    @objc func selectNthTabFromMenu(_ sender: NSMenuItem) {
+        selectNthTab(sender.tag - 1)
+    }
+
+    @objc func selectFirstTab(_ sender: Any?) {
+        selectNthTab(0)
+    }
+
+    @objc func selectLastTab(_ sender: Any?) {
+        selectNthTab(tabStore.count - 1)
+    }
+
+    /// View > Tab > Move Tab to Start. Tab order is window chrome, not buffer
+    /// state, so this deliberately skips the undo stack and the session's
+    /// document payload; only the on-screen order changes.
+    @objc func moveTabToStart(_ sender: Any?) {
+        moveSelectedTab(to: 0)
+    }
+
+    /// View > Tab > Move Tab to End.
+    @objc func moveTabToEnd(_ sender: Any?) {
+        moveSelectedTab(to: tabStore.count - 1)
+    }
+
+    /// Reorders the focused group's tabs, keeping the moved document selected.
+    /// `TabStore.moveDocument` preserves the order array only; the selection is
+    /// an index, so it must follow the document to its new slot or the next
+    /// command would act on whichever tab slid into the old index.
+    private func moveSelectedTab(to destination: Int) {
+        guard tabStore.count > 1 else { return }
+        let source = tabStore.selectedIndex
+        guard source >= 0, source != destination else { return }
+        tabStore.moveDocument(from: source, to: destination)
+        tabStore.selectDocument(at: destination)
+        refreshTabBar()
+        // The selected document is unchanged but its index moved, so the
+        // FindBar and both tab bars still need the notice the drag path posts.
+        postTabSelectionDidChange()
+    }
     
     func refreshTabBar() {
         allPanes.forEach { $0.tabBar.reloadTabs() }
@@ -2797,6 +2850,19 @@ extension MainWindowController: NSMenuItemValidation {
         }
         if menuItem.action == #selector(MainWindowController.selectTabByNumber(_:)) {
             return menuItem.tag >= 1 && menuItem.tag <= tabStore.count
+        }
+        if menuItem.action == #selector(MainWindowController.selectNthTabFromMenu(_:)) {
+            // View > Tab > Nth Tab: the tag is the 1-based tab number.
+            return menuItem.tag >= 1 && menuItem.tag <= tabStore.count
+        }
+        if menuItem.action == #selector(MainWindowController.selectFirstTab(_:))
+            || menuItem.action == #selector(MainWindowController.selectLastTab(_:))
+            || menuItem.action == #selector(MainWindowController.moveTabToStart(_:))
+            || menuItem.action == #selector(MainWindowController.moveTabToEnd(_:)) {
+            // Jumping to an edge or reordering needs a second tab; the move
+            // items stay enabled even when the tab is already there, because
+            // validation is about applicability, not about a visible effect.
+            return tabStore.count > 1
         }
         if menuItem.action == #selector(MainWindowController.nextSearchResult(_:))
             || menuItem.action == #selector(MainWindowController.previousSearchResult(_:)) {

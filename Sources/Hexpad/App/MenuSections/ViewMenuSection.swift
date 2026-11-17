@@ -130,6 +130,46 @@ extension HexpadAppDelegate {
         documentSwitcherBackItem.isHidden = true
         documentSwitcherBackItem.allowsKeyEquivalentWhenHidden = true
         viewMenu.addItem(documentSwitcherBackItem)
+        // View > Tab: Notepad++'s per-tab navigation. Window already owns
+        // Cmd+1..9 for its Tab 1..9 items, and AppKit dispatches a chord to the
+        // first matching item in menu order (and would show the same shortcut
+        // twice), so these leaves are deliberately menu-only. All are
+        // nil-targeted; MainWindowController validates against the focused
+        // group's tab count.
+        let tabItem = NSMenuItem(title: "Tab", action: nil, keyEquivalent: "")
+        let tabMenu = NSMenu(title: "Tab")
+        for number in 1...9 {
+            let nthItem = NSMenuItem(title: "\(tabOrdinal(number)) Tab",
+                                     action: #selector(MainWindowController.selectNthTabFromMenu(_:)),
+                                     keyEquivalent: "")
+            nthItem.tag = number
+            nthItem.target = nil
+            tabMenu.addItem(nthItem)
+        }
+        tabMenu.addItem(.separator())
+        let firstTabItem = NSMenuItem(title: "First Tab",
+                                      action: #selector(MainWindowController.selectFirstTab(_:)),
+                                      keyEquivalent: "")
+        firstTabItem.target = nil
+        let lastTabItem = NSMenuItem(title: "Last Tab",
+                                     action: #selector(MainWindowController.selectLastTab(_:)),
+                                     keyEquivalent: "")
+        lastTabItem.target = nil
+        tabMenu.addItem(firstTabItem)
+        tabMenu.addItem(lastTabItem)
+        tabMenu.addItem(.separator())
+        let moveTabToStartItem = NSMenuItem(title: "Move Tab to Start",
+                                            action: #selector(MainWindowController.moveTabToStart(_:)),
+                                            keyEquivalent: "")
+        moveTabToStartItem.target = nil
+        let moveTabToEndItem = NSMenuItem(title: "Move Tab to End",
+                                          action: #selector(MainWindowController.moveTabToEnd(_:)),
+                                          keyEquivalent: "")
+        moveTabToEndItem.target = nil
+        tabMenu.addItem(moveTabToStartItem)
+        tabMenu.addItem(moveTabToEndItem)
+        tabItem.submenu = tabMenu
+        viewMenu.addItem(tabItem)
         // View > View Current File In > Default Browser: hand the selected
         // document to the system browser via Launch Services. The section
         // parent is actionless; the Default Browser leaf owns the selector and
@@ -146,5 +186,15 @@ extension HexpadAppDelegate {
         viewMenu.addItem(.separator())
         viewMenu.addItem(appearanceItem)
         return viewMenu
+    }
+
+    /// Ordinal labels for the nine numbered tab items ("1st"…"9th").
+    private func tabOrdinal(_ number: Int) -> String {
+        switch number {
+        case 1: return "\(number)st"
+        case 2: return "\(number)nd"
+        case 3: return "\(number)rd"
+        default: return "\(number)th"
+        }
     }
 }
