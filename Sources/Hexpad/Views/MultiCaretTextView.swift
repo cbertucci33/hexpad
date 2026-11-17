@@ -18,6 +18,7 @@ protocol MultiCaretTextViewHost: AnyObject {
     func collapseMultiCaret()
 
     func applyMultiCaretInsertion(_ insertion: String)
+    func applyMultiCaretOverwrite(_ insertion: String)
     func applyMultiCaretDeletion(forward: Bool)
 }
 
@@ -33,6 +34,12 @@ final class MultiCaretTextView: NSTextView {
     /// selection. The caret count cannot stand in for this: a zero-width column
     /// drag legitimately has only one caret at its start.
     private var isColumnSelecting = false
+
+    /// Overwrite (OVR) typing. Session-only UI state: it lives on the shared
+    /// text view, so it survives tab switches in this window but is not a
+    /// preference and is not persisted per document. The status bar's INS/OVR
+    /// field is the only toggle (no Insert key in v1; see KEYBINDINGS notes).
+    var isOverwriteMode = false
 
     // MARK: - Symbol rendering
     //
@@ -250,11 +257,6 @@ final class MultiCaretTextView: NSTextView {
     // MARK: - Editing
 
     override func insertText(_ string: Any, replacementRange: NSRange) {
-        guard let host, host.multiCaretState.count > 1 else {
-            super.insertText(string, replacementRange: replacementRange)
-            return
-        }
-
         let insertion: String
         if let attributed = string as? NSAttributedString {
             insertion = attributed.string
@@ -263,8 +265,60 @@ final class MultiCaretTextView: NSTextView {
         } else {
             insertion = "\(string)"
         }
+
+        if isOverwriteMode, Self.isSingleTypedCharacter(insertion) {
+            if let host, host.multiCaretState.count > 1 {
+                host.applyMultiCaretOverwrite(insertion)
+                return
+            }
+            if let overwrite = overwriteRange(forReplacementRange: replacementRange) {
+                super.insertText(string, replacementRange: overwrite)
+                return
+            }
+        }
+
+        guard let host, host.multiCaretState.count > 1 else {
+            super.insertText(string, replacementRange: replacementRange)
+            return
+        }
+
         guard !insertion.isEmpty else { return }
         host.applyMultiCaretInsertion(insertion)
+    }
+
+    /// Overwrite applies to one typed character. A paste, a tab or a newline
+    /// goes through the normal insertion path instead of replacing text.
+    private static func isSingleTypedCharacter(_ insertion: String) -> Bool {
+        guard insertion.count == 1 else { return false }
+        return !insertion.unicodeScalars.contains { $0 == "\n" || $0 == "\r" }
+    }
+
+    /// The range a single typed character should replace: the composed
+    /// character under a zero-length caret, unless the caret sits on a line
+    /// ending or at the end of the buffer (typing there appends).
+    ///
+    /// Returns `nil` when the normal insertion path should run, which also
+    /// covers typing over a non-empty selection.
+    private func overwriteRange(forReplacementRange replacementRange: NSRange) -> NSRange? {
+        guard let storage = textStorage else { return nil }
+        let selection = selectedRange
+        let range: NSRange
+        if replacementRange.location == NSNotFound {
+            range = selection
+        } else {
+            // Only a plain caret qualifies: an explicit replacement range from
+            // an input method must not swallow the character after it.
+            guard replacementRange.length == 0, replacementRange == selection else {
+                return nil
+            }
+            range = replacementRange
+        }
+        guard range.length == 0, range.location < storage.length else { return nil }
+
+        let text = storage.string as NSString
+        let unit = text.character(at: range.location)
+        guard unit != 10, unit != 13 else { return nil }
+        return text.rangeOfComposedCharacterSequence(at: range.location)
     }
 
     override func deleteBackward(_ sender: Any?) {

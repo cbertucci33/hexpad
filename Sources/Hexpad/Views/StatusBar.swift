@@ -4,10 +4,17 @@ import HexpadKit
 class StatusBar: NSView {
     
     private var positionLabel: NSTextField?
+    private var modeLabel: ClickableStatusLabel?
     private var selectionLabel: NSTextField?
     private var eolLabel: NSTextField?
     private var encodingLabel: NSTextField?
     private var languageLabel: NSTextField?
+    private var lengthLabel: NSTextField?
+    private var linesLabel: NSTextField?
+
+    /// Fired when the user clicks the INS/OVR field. The window controller
+    /// flips overwrite mode on the focused editor and refreshes this bar.
+    var onToggleOverwriteMode: (() -> Void)?
 
     /// A line index plus the identity of the text it was built from.
     ///
@@ -109,29 +116,52 @@ class StatusBar: NSView {
         addSubview(pos)
         positionLabel = pos
         
+        // The mode indicator is the bar's only interactive field: a click
+        // toggles overwrite typing for the focused editor (Notepad++ parity).
+        let mode = ClickableStatusLabel(labelWithString: "INS")
+        mode.font = font
+        mode.frame = NSRect(x: 136, y: (height - 14) / 2, width: 34, height: 14)
+        mode.onClick = { [weak self] in self?.onToggleOverwriteMode?() }
+        addSubview(mode)
+        modeLabel = mode
+        
         let sel = NSTextField(labelWithString: "0 selected")
         sel.font = font
-        sel.frame = NSRect(x: 136, y: (height - 14) / 2, width: 100, height: 14)
+        sel.frame = NSRect(x: 178, y: (height - 14) / 2, width: 100, height: 14)
         addSubview(sel)
         selectionLabel = sel
         
         let eol = NSTextField(labelWithString: "LF")
         eol.font = font
-        eol.frame = NSRect(x: 244, y: (height - 14) / 2, width: 40, height: 14)
+        eol.frame = NSRect(x: 286, y: (height - 14) / 2, width: 40, height: 14)
         addSubview(eol)
         eolLabel = eol
         
         let enc = NSTextField(labelWithString: "UTF-8")
         enc.font = font
-        enc.frame = NSRect(x: 292, y: (height - 14) / 2, width: 70, height: 14)
+        enc.frame = NSRect(x: 334, y: (height - 14) / 2, width: 70, height: 14)
         addSubview(enc)
         encodingLabel = enc
         
         let lang = NSTextField(labelWithString: "Plain Text")
         lang.font = font
-        lang.frame = NSRect(x: 370, y: (height - 14) / 2, width: 100, height: 14)
+        lang.frame = NSRect(x: 412, y: (height - 14) / 2, width: 100, height: 14)
         addSubview(lang)
         languageLabel = lang
+
+        // Notepad++ shows length and lines as separate counters; the bar has
+        // room at the 800pt minimum window width, so they stay separate.
+        let length = NSTextField(labelWithString: "length : 0")
+        length.font = font
+        length.frame = NSRect(x: 520, y: (height - 14) / 2, width: 110, height: 14)
+        addSubview(length)
+        lengthLabel = length
+
+        let lines = NSTextField(labelWithString: "lines : 1")
+        lines.font = font
+        lines.frame = NSRect(x: 638, y: (height - 14) / 2, width: 80, height: 14)
+        addSubview(lines)
+        linesLabel = lines
 
         let separator = NSView(frame: .zero)
         separator.wantsLayer = true
@@ -152,8 +182,18 @@ class StatusBar: NSView {
         let h = bounds.height
         let labelHeight: CGFloat = 14
         let y = max(0, (h - labelHeight) / 2)
-        let xs: [(CGFloat, CGFloat)] = [(8, 120), (136, 100), (244, 40), (292, 70), (370, 100)]
-        let labels = [positionLabel, selectionLabel, eolLabel, encodingLabel, languageLabel]
+        let xs: [(CGFloat, CGFloat)] = [
+            (8, 120),   // Ln/Col
+            (136, 34),  // INS/OVR
+            (178, 100), // selection
+            (286, 40),  // EOL
+            (334, 70),  // encoding
+            (412, 100), // language
+            (520, 110), // length
+            (638, 80)   // lines
+        ]
+        let labels: [NSTextField?] = [positionLabel, modeLabel, selectionLabel, eolLabel,
+                                      encodingLabel, languageLabel, lengthLabel, linesLabel]
         for (label, geo) in zip(labels, xs) {
             label?.frame = NSRect(x: geo.0, y: y, width: geo.1, height: labelHeight)
         }
@@ -185,6 +225,21 @@ class StatusBar: NSView {
         }
         let col = selRange.location - firstCharIndex + 1
         positionLabel?.stringValue = "Ln \(line), Col \(col)"
+
+        // Overwrite mode lives on the text view (shared by every tab in this
+        // window), so the field always mirrors the editor rather than keeping
+        // a second copy of the flag here.
+        if let multiCaret = textView as? MultiCaretTextView {
+            setOverwriteMode(multiCaret.isOverwriteMode)
+        }
+
+        // UTF-16 length matches the selection count above. Reading the storage
+        // length avoids copying the buffer on every caret move; the line count
+        // comes from the cached index, so neither counter adds a document scan.
+        let length = textView.textStorage?.length ?? (textView.string as NSString).length
+        lengthLabel?.stringValue = "length : \(length)"
+        let lineCount = index?.count ?? GutterGeometry.lineCount(in: textView.string)
+        linesLabel?.stringValue = "lines : \(lineCount)"
         
         if selRange.length > 0 {
             selectionLabel?.stringValue = "\(selRange.length) selected"
@@ -195,6 +250,11 @@ class StatusBar: NSView {
         eolLabel?.stringValue = doc?.eolType ?? "LF"
         encodingLabel?.stringValue = doc?.encoding ?? "UTF-8"
         languageLabel?.stringValue = doc?.language ?? "Plain Text"
+    }
+
+    /// Shows the typing-mode field's INS or OVR state.
+    func setOverwriteMode(_ isOverwrite: Bool) {
+        modeLabel?.stringValue = isOverwrite ? "OVR" : "INS"
     }
 
     /// Returns the cached index when it still describes the text on screen.
@@ -234,3 +294,19 @@ class StatusBar: NSView {
         return index
     }
 }
+
+/// A label that behaves like a button without the button chrome. Only the
+/// status bar's INS/OVR field uses it; the rest are plain labels.
+private final class ClickableStatusLabel: NSTextField {
+    var onClick: (() -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        onClick?()
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+}
+

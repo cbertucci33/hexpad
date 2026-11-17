@@ -447,6 +447,9 @@ class MainWindowController: NSViewController {
         view.addSubview(status)
         statusBar = status
         status.autoresizingMask = [.width, .maxYMargin]
+        status.onToggleOverwriteMode = { [weak self] in
+            self?.toggleOverwriteMode()
+        }
         
         let find = FindBar()
         view.addSubview(find)
@@ -1806,6 +1809,19 @@ class MainWindowController: NSViewController {
         guard let status = statusBar, let editor = editorContainer else { return }
         let doc = tabStore.selectedDocument
         status.update(with: doc, textView: editor.textView)
+    }
+
+    /// Flips overwrite typing for the focused editor, driven by the status
+    /// bar's INS/OVR field. Session-only UI state on the shared text view: no
+    /// preference and no per-document persistence (v1 has no Insert key).
+    func toggleOverwriteMode() {
+        guard let editor = editorContainer else { return }
+        editor.textView.isOverwriteMode.toggle()
+        updateStatusBar()
+        // The mode field is a label, so it never becomes first responder;
+        // restoring the editor explicitly keeps the next keystroke in the
+        // buffer, now in the new mode.
+        view.window?.makeFirstResponder(editor.textView)
     }
     
     // MARK: - Window title / edited state

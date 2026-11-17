@@ -175,4 +175,99 @@ final class StatusBarLineIndexTests: XCTestCase {
         XCTAssertEqual(editor.textView.string, originalText,
                        "caret moves must not touch the text")
     }
+
+    // MARK: - Typing mode and document counters
+
+    /// The bar's fields are laid out by horizontal origin, so a test can find
+    /// one without depending on the value it displays.
+    private func statusField(atX x: CGFloat, in bar: StatusBar) throws -> NSTextField {
+        try XCTUnwrap(bar.subviews.compactMap { $0 as? NSTextField }.first { $0.frame.minX == x },
+                      "status bar field at x=\(x) is missing")
+    }
+
+    private func mouseDownEvent() throws -> NSEvent {
+        try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown,
+                                         location: .zero,
+                                         modifierFlags: [],
+                                         timestamp: 0,
+                                         windowNumber: 0,
+                                         context: nil,
+                                         eventNumber: 0,
+                                         clickCount: 1,
+                                         pressure: 1))
+    }
+
+    func testStatusBarShowsInsertModeAndCountsForThreeLineDocument() throws {
+        let (editor, document) = makeEditor("one\ntwo\nthree")
+        let bar = StatusBar()
+
+        // Initial state, before the first update: insert mode, empty buffer.
+        XCTAssertEqual(try statusField(atX: 136, in: bar).stringValue, "INS")
+        XCTAssertEqual(try statusField(atX: 520, in: bar).stringValue, "length : 0")
+        XCTAssertEqual(try statusField(atX: 638, in: bar).stringValue, "lines : 1")
+
+        bar.update(with: document, textView: editor.textView)
+
+        // 13 UTF-16 units in three logical lines.
+        XCTAssertEqual(try statusField(atX: 136, in: bar).stringValue, "INS")
+        XCTAssertEqual(try statusField(atX: 520, in: bar).stringValue, "length : 13")
+        XCTAssertEqual(try statusField(atX: 638, in: bar).stringValue, "lines : 3")
+    }
+
+    func testClickingModeFieldTogglesOverwriteAndRefreshesItsText() throws {
+        let (editor, document) = makeEditor("one\ntwo\nthree")
+        let bar = StatusBar()
+        var clicks = 0
+        bar.onToggleOverwriteMode = {
+            clicks += 1
+            editor.textView.isOverwriteMode.toggle()
+        }
+        bar.update(with: document, textView: editor.textView)
+        let mode = try statusField(atX: 136, in: bar)
+        XCTAssertEqual(mode.stringValue, "INS")
+
+        mode.mouseDown(with: try mouseDownEvent())
+        XCTAssertEqual(clicks, 1)
+        XCTAssertTrue(editor.textView.isOverwriteMode)
+        bar.update(with: document, textView: editor.textView)
+        XCTAssertEqual(mode.stringValue, "OVR")
+
+        mode.mouseDown(with: try mouseDownEvent())
+        XCTAssertEqual(clicks, 2)
+        XCTAssertFalse(editor.textView.isOverwriteMode)
+        bar.update(with: document, textView: editor.textView)
+        XCTAssertEqual(mode.stringValue, "INS")
+    }
+
+    // MARK: - Overwrite typing
+
+    func testOverwriteTypingReplacesTheComposedCharacterAtTheCaret() {
+        let (editor, document) = makeEditor("a😀c")
+        editor.textView.isOverwriteMode = true
+        // The emoji is one composed character made of two UTF-16 units.
+        editor.textView.setSelectedRange(NSRange(location: 1, length: 0))
+
+        editor.textView.insertText("X", replacementRange: NSRange(location: 1, length: 0))
+
+        XCTAssertEqual(document.text, "aXc", "one typed character replaces one character")
+        XCTAssertEqual(editor.textView.selectedRange, NSRange(location: 2, length: 0))
+    }
+
+    func testOverwriteTypingReplacesOneCharacterPerCaretInOneEdit() {
+        let (editor, document) = makeEditor("abc\ndef")
+        document.undoManager.removeAllActions()
+        editor.textView.isOverwriteMode = true
+        editor.textView.setSelectedRange(NSRange(location: 0, length: 0))
+        editor.placeAdditionalCaret(atCharacterIndex: 4)
+
+        editor.textView.insertText("X", replacementRange: editor.textView.selectedRange)
+
+        XCTAssertEqual(document.text, "Xbc\nXef")
+        XCTAssertEqual(editor.multiCaretState.carets,
+                       [NSRange(location: 1, length: 0),
+                        NSRange(location: 5, length: 0)])
+
+        document.undoManager.undo()
+        XCTAssertEqual(document.text, "abc\ndef", "both carets undo in one step")
+    }
 }

@@ -683,6 +683,35 @@ class EditorContainer: NSView {
         applyMultiCaretTransform(MultiCaretEditing.insertionTransform(insertion))
     }
 
+    /// Types `insertion` in overwrite mode at every caret as one undoable edit.
+    ///
+    /// A zero-length caret replaces the composed character it sits on, except
+    /// at a line ending or the end of the buffer, where typing appends. A caret
+    /// with a selection replaces it exactly like normal typing.
+    func applyMultiCaretOverwrite(_ insertion: String) {
+        applyMultiCaretTransform(Self.overwriteTransform(insertion))
+    }
+
+    private static func overwriteTransform(_ insertion: String)
+        -> MultiCaretApplier.TextTransform {
+        let insertedLength = (insertion as NSString).length
+        return { text, selection in
+            let document = NSMutableString(string: text)
+            let location = max(0, min(selection.location, document.length))
+            let selectedLength = max(0, min(selection.length, document.length - location))
+            var range = NSRange(location: location, length: selectedLength)
+            if selectedLength == 0, location < document.length {
+                let unit = document.character(at: location)
+                if unit != 10, unit != 13 {
+                    range = document.rangeOfComposedCharacterSequence(at: location)
+                }
+            }
+            document.replaceCharacters(in: range, with: insertion)
+            return (document as String,
+                    NSRange(location: range.location + insertedLength, length: 0))
+        }
+    }
+
     /// Backspaces (or forward-deletes) at every caret as one undoable edit.
     func applyMultiCaretDeletion(forward: Bool) {
         applyMultiCaretTransform(MultiCaretEditing.deletionTransform(forward: forward))
