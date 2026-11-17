@@ -2055,6 +2055,21 @@ class MainWindowController: NSViewController {
         if command.viewExecute != nil {
             return canPerformViewCommand(identifier)
         }
+        // The bookmarked-line commands have applicability rules that the
+        // pure transform cannot express: Copy changes only the pasteboard,
+        // Paste needs a clipboard the command cannot see here, and Inverse is
+        // available on any non-empty document.
+        switch identifier {
+        case "bookmark-cut-lines",
+             "bookmark-copy-lines",
+             "bookmark-paste-replace-lines",
+             "bookmark-remove-lines":
+            return !doc.bookmarkState.isEmpty
+        case "bookmark-inverse":
+            return !doc.text.isEmpty
+        default:
+            break
+        }
         let state = DocumentState(text: doc.text,
                                   selection: editor.textView.selectedRange,
                                   bookmarkState: doc.bookmarkState)
@@ -2107,10 +2122,10 @@ class MainWindowController: NSViewController {
                                                context: editorCommandContext(for: editor)) ?? false
         }
 
-        guard let result = commandResult(identifier: identifier,
-                                         parameter: parameter,
-                                         doc: doc,
-                                         editor: editor) else {
+        guard let outcome = commandResult(identifier: identifier,
+                                          parameter: parameter,
+                                          doc: doc,
+                                          editor: editor) else {
             return false
         }
 
@@ -2121,7 +2136,8 @@ class MainWindowController: NSViewController {
         // macro cannot re-record its own steps.
         macroRecorder.record(identifier, parameter: parameter)
 
-        return applyCommandResult(result, to: doc, editor: editor)
+        let changed = applyCommandResult(outcome.state, to: doc, editor: editor)
+        return changed || outcome.wroteClipboard
     }
 
     /// Installs the live-editor hooks a view-only command needs.
@@ -2138,21 +2154,38 @@ class MainWindowController: NSViewController {
 
     /// Resolves a registry command against the selected document's live state,
     /// passing the macro-style parameter when the command accepts one.
+    ///
+    /// Clipboard commands read the current pasteboard and write a returned
+    /// payload. `wroteClipboard` lets ``performCommand(identifier:parameter:)``
+    /// report success even when the buffer itself did not change (Copy).
     private func commandResult(identifier: String,
                                parameter: String?,
                                doc: DocumentModel,
-                               editor: EditorContainer) -> DocumentState? {
+                               editor: EditorContainer) -> (state: DocumentState, wroteClipboard: Bool)? {
         let state = DocumentState(text: doc.text,
                                   selection: editor.textView.selectedRange,
                                   bookmarkState: doc.bookmarkState)
         guard let command = commandRegistry.command(for: identifier) else { return nil }
         if let parameter, let makeAction = command.parameterizedExecute {
             let result = makeAction(parameter)(state.text, state.selection)
-            return DocumentState(text: result.text,
-                                 selection: result.selection,
-                                 bookmarkState: state.bookmarkState)
+            return (DocumentState(text: result.text,
+                                  selection: result.selection,
+                                  bookmarkState: state.bookmarkState), false)
         }
-        return commandRegistry.execute(identifier, on: state)
+        if command.clipboardExecute != nil {
+            let pasteboard = NSPasteboard.general
+            let output = commandRegistry.execute(identifier,
+                                                 on: state,
+                                                 clipboard: pasteboard.string(forType: .string))
+            guard let output else { return nil }
+            if let payload = output.clipboard {
+                pasteboard.clearContents()
+                pasteboard.setString(payload, forType: .string)
+            }
+            return (output.state, output.clipboard != nil)
+        }
+        guard let result = commandRegistry.execute(identifier, on: state) else { return nil }
+        return (result, false)
     }
 
     /// Applies a command/replay result to the document as one undoable edit.

@@ -31,18 +31,33 @@ final class BookmarkCommandTests: XCTestCase {
             "bookmark-toggle",
             "bookmark-next",
             "bookmark-prev",
-            "bookmark-clear-all"
+            "bookmark-clear-all",
+            "bookmark-cut-lines",
+            "bookmark-copy-lines",
+            "bookmark-paste-replace-lines",
+            "bookmark-remove-lines",
+            "bookmark-inverse"
         ])
         XCTAssertEqual(registry.bookmarkCommands.map(\.title), [
             "Toggle Bookmark",
             "Next Bookmark",
             "Previous Bookmark",
-            "Clear All Bookmarks"
+            "Clear All Bookmarks",
+            "Cut Bookmarked Lines",
+            "Copy Bookmarked Lines",
+            "Paste to (Replace) Bookmarked Lines",
+            "Remove Bookmarked Lines",
+            "Inverse Bookmarks"
         ])
         XCTAssertNotNil(registry.command(for: "bookmark-toggle"))
         XCTAssertNotNil(registry.command(for: "bookmark-next"))
         XCTAssertNotNil(registry.command(for: "bookmark-prev"))
         XCTAssertNotNil(registry.command(for: "bookmark-clear-all"))
+        XCTAssertNotNil(registry.command(for: "bookmark-cut-lines"))
+        XCTAssertNotNil(registry.command(for: "bookmark-copy-lines"))
+        XCTAssertNotNil(registry.command(for: "bookmark-paste-replace-lines"))
+        XCTAssertNotNil(registry.command(for: "bookmark-remove-lines"))
+        XCTAssertNotNil(registry.command(for: "bookmark-inverse"))
     }
 
     func testAllCommandsKeepsLineCommandsFirst() {
@@ -66,6 +81,11 @@ final class BookmarkCommandTests: XCTestCase {
             "bookmark-next",
             "bookmark-prev",
             "bookmark-clear-all",
+            "bookmark-cut-lines",
+            "bookmark-copy-lines",
+            "bookmark-paste-replace-lines",
+            "bookmark-remove-lines",
+            "bookmark-inverse",
             "hash-md5",
             "hash-sha1",
             "hash-sha256",

@@ -20,6 +20,27 @@ extension HexpadAppDelegate {
         findInFilesItem.keyEquivalentModifierMask = [.command, .shift]
         findInFilesItem.target = self
         searchMenu.addItem(findInFilesItem)
+        searchMenu.addItem(.separator())
+
+        // Search > Bookmark mirrors the registry's bookmark group. The group
+        // already owns key chords through the Text menu, so these items carry
+        // no duplicate equivalents; validation still runs through the
+        // controller's bookmark action.
+        let bookmarkMenu = NSMenu(title: "Bookmark")
+        for command in CommandRegistry.default.bookmarkCommands {
+            let item = NSMenuItem(title: command.title,
+                                  action: #selector(MainWindowController.performBookmarkCommand(withIdentifier:)),
+                                  keyEquivalent: "")
+            item.target = nil
+            item.representedObject = command.identifier
+            bookmarkMenu.addItem(item)
+            if command.identifier == "bookmark-clear-all" {
+                bookmarkMenu.addItem(.separator())
+            }
+        }
+        let bookmarkItem = NSMenuItem(title: "Bookmark", action: nil, keyEquivalent: "")
+        bookmarkItem.submenu = bookmarkMenu
+        searchMenu.addItem(bookmarkItem)
         return searchMenu
     }
 }

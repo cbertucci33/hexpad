@@ -71,7 +71,9 @@ public struct EditorCommandContext {
 /// command is a single undoable edit.
 ///
 /// Commands that need state beyond text and selection (the bookmark commands)
-/// also provide a ``documentExecute`` action. Text-only commands keep working
+/// also provide a ``documentExecute`` action. Clipboard-bearing bookmark
+/// commands additionally provide a ``clipboardExecute`` action because the
+/// pasteboard is not part of ``DocumentState``. Text-only commands keep working
 /// through their original ``execute`` action. View-only commands (folding and
 /// word wrap) provide a ``viewExecute`` action instead and are run by the app's
 /// live ``EditorCommandContext``.
@@ -82,6 +84,15 @@ public struct EditorCommand {
 
     /// Transforms a full ``DocumentState``, including bookmarks.
     public typealias DocumentAction = (_ state: DocumentState) -> DocumentState
+
+    /// Transforms a document together with the clipboard snapshot.
+    ///
+    /// The return value carries the new state and an optional pasteboard
+    /// payload to write. Clipboard commands need this because their effect is
+    /// split between the buffer and the pasteboard, which is not part of
+    /// ``DocumentState``.
+    public typealias ClipboardAction = (_ state: DocumentState, _ clipboard: String?)
+        -> (state: DocumentState, clipboard: String?)
 
     /// Builds an ``Action`` for a command-specific parameter.
     ///
@@ -131,6 +142,14 @@ public struct EditorCommand {
     /// ``EditorCommandContext``.
     public let viewExecute: ViewAction?
 
+    /// The clipboard-aware action, or `nil` for commands that never read or
+    /// write the pasteboard.
+    ///
+    /// Cut/Copy/Paste bookmarked lines use this because the pasteboard is not
+    /// part of ``DocumentState``. The app supplies the current payload and
+    /// writes the returned one; headless callers can pass `nil`.
+    public let clipboardExecute: ClipboardAction?
+
     public init(identifier: String, title: String, execute: @escaping Action) {
         self.identifier = identifier
         self.title = title
@@ -138,6 +157,7 @@ public struct EditorCommand {
         self.parameterizedExecute = nil
         self.documentExecute = nil
         self.viewExecute = nil
+        self.clipboardExecute = nil
     }
 
     /// Creates a command that also supports a recorded parameter.
@@ -151,6 +171,7 @@ public struct EditorCommand {
         self.parameterizedExecute = parameterizedExecute
         self.documentExecute = nil
         self.viewExecute = nil
+        self.clipboardExecute = nil
     }
 
     /// Creates a command that reads and writes the full document state.
@@ -160,13 +181,15 @@ public struct EditorCommand {
     public init(identifier: String,
                 title: String,
                 execute: @escaping Action,
-                documentExecute: @escaping DocumentAction) {
+                documentExecute: @escaping DocumentAction,
+                clipboardExecute: ClipboardAction? = nil) {
         self.identifier = identifier
         self.title = title
         self.execute = execute
         self.parameterizedExecute = nil
         self.documentExecute = documentExecute
         self.viewExecute = nil
+        self.clipboardExecute = clipboardExecute
     }
 
     /// Creates a view-only command that runs through ``EditorCommandContext``.
@@ -183,13 +206,14 @@ public struct EditorCommand {
         self.parameterizedExecute = nil
         self.documentExecute = nil
         self.viewExecute = viewExecute
+        self.clipboardExecute = nil
     }
 }
 
 /// An ordered collection of editor commands with identifier lookup.
 ///
 /// The default registry contains the line-editing commands from `LineOps` in
-/// ``commands``, the bookmark navigation commands in ``bookmarkCommands``, the
+/// ``commands``, the bookmark commands in ``bookmarkCommands``, the
 /// Tools/Line Ops commands in ``toolCommands`` and ``lineOpCommands``, and the
 /// view-only fold/wrap commands in ``viewCommands``. All groups share identifier
 /// lookup and the ``execute(_:on:)`` state-aware path. Menu and keybinding
@@ -342,6 +366,39 @@ public struct CommandRegistry {
                 title: "Clear All Bookmarks",
                 execute: { text, selection in (text, selection) },
                 documentExecute: BookmarkCommandOps.clearAll
+            ),
+            EditorCommand(
+                identifier: "bookmark-cut-lines",
+                title: "Cut Bookmarked Lines",
+                execute: { text, selection in (text, selection) },
+                documentExecute: BookmarkCommandOps.cutLines,
+                clipboardExecute: BookmarkCommandOps.cutLinesWithClipboard
+            ),
+            EditorCommand(
+                identifier: "bookmark-copy-lines",
+                title: "Copy Bookmarked Lines",
+                execute: { text, selection in (text, selection) },
+                documentExecute: { $0 },
+                clipboardExecute: BookmarkCommandOps.copyLinesWithClipboard
+            ),
+            EditorCommand(
+                identifier: "bookmark-paste-replace-lines",
+                title: "Paste to (Replace) Bookmarked Lines",
+                execute: { text, selection in (text, selection) },
+                documentExecute: { $0 },
+                clipboardExecute: BookmarkCommandOps.pasteReplacingLines
+            ),
+            EditorCommand(
+                identifier: "bookmark-remove-lines",
+                title: "Remove Bookmarked Lines",
+                execute: { text, selection in (text, selection) },
+                documentExecute: BookmarkCommandOps.removeLines
+            ),
+            EditorCommand(
+                identifier: "bookmark-inverse",
+                title: "Inverse Bookmarks",
+                execute: { text, selection in (text, selection) },
+                documentExecute: BookmarkCommandOps.inverse
             )
         ]
     }
@@ -518,6 +575,25 @@ public struct CommandRegistry {
                              bookmarkState: state.bookmarkState)
     }
 
+    /// Runs the command registered under `identifier` with a clipboard
+    /// snapshot.
+    ///
+    /// Commands with a ``EditorCommand/clipboardExecute`` action receive
+    /// `clipboard` and may return a new payload. Every other command runs
+    /// through ``execute(_:on:)`` and leaves the payload untouched.
+    ///
+    /// Returns `nil` when no command with that identifier exists.
+    public func execute(_ identifier: String,
+                        on state: DocumentState,
+                        clipboard: String?) -> (state: DocumentState, clipboard: String?)? {
+        guard let command = command(for: identifier) else { return nil }
+        if let clipboardExecute = command.clipboardExecute {
+            return clipboardExecute(state, clipboard)
+        }
+        guard let result = execute(identifier, on: state) else { return nil }
+        return (result, nil)
+    }
+
     /// Runs a view-only command through the supplied editor context.
     ///
     /// Returns `nil` when no command with that identifier exists or when the
@@ -607,7 +683,9 @@ enum LineCommandOps {
 /// Implementations of the bookmark commands.
 ///
 /// They operate on a ``BookmarkModel`` so line validation and wrap-around match
-/// the rest of the bookmark layer. Text is never modified.
+/// the rest of the bookmark layer. Navigation commands never modify text; the
+/// bookmarked-line operations delegate to ``BookmarkLineOps`` for text and
+/// bookmark changes.
 enum BookmarkCommandOps {
 
     /// Bookmarks the current line, or removes its bookmark when present.
@@ -645,6 +723,65 @@ enum BookmarkCommandOps {
         var model = BookmarkModel(text: state.text, bookmarkState: state.bookmarkState)
         model.removeAll()
         return replacingBookmarks(in: state, with: model.bookmarkState)
+    }
+
+    // MARK: - Bookmarked-line operations
+
+    /// Removes every bookmarked line. The clipboard-aware variant also
+    /// returns those lines as the pasteboard payload.
+    static func cutLines(_ state: DocumentState) -> DocumentState {
+        applying(BookmarkLineOps.cut(state.text,
+                                     selection: state.selection,
+                                     bookmarks: state.bookmarkState))
+    }
+
+    static func cutLinesWithClipboard(_ state: DocumentState,
+                                      clipboard: String?) -> (state: DocumentState, clipboard: String?) {
+        let result = BookmarkLineOps.cut(state.text,
+                                        selection: state.selection,
+                                        bookmarks: state.bookmarkState)
+        return (applying(result), result.clipboardText)
+    }
+
+    /// Copies every bookmarked line and leaves the buffer alone.
+    static func copyLinesWithClipboard(_ state: DocumentState,
+                                       clipboard: String?) -> (state: DocumentState, clipboard: String?) {
+        let result = BookmarkLineOps.copy(state.text,
+                                         selection: state.selection,
+                                         bookmarks: state.bookmarkState)
+        return (state, result.clipboardText)
+    }
+
+    /// Replaces bookmarked lines' content with the clipboard's lines.
+    static func pasteReplacingLines(_ state: DocumentState,
+                                    clipboard: String?) -> (state: DocumentState, clipboard: String?) {
+        guard let clipboard else { return (state, nil) }
+        let result = BookmarkLineOps.pasteReplacing(state.text,
+                                                   selection: state.selection,
+                                                   bookmarks: state.bookmarkState,
+                                                   clipboard: clipboard)
+        return (applying(result), nil)
+    }
+
+    /// Removes every bookmarked line without changing the clipboard.
+    static func removeLines(_ state: DocumentState) -> DocumentState {
+        applying(BookmarkLineOps.remove(state.text,
+                                        selection: state.selection,
+                                        bookmarks: state.bookmarkState))
+    }
+
+    /// Inverts the bookmark set line by line.
+    static func inverse(_ state: DocumentState) -> DocumentState {
+        applying(BookmarkLineOps.inverse(state.text,
+                                         selection: state.selection,
+                                         bookmarks: state.bookmarkState))
+    }
+
+    /// Wraps a line-operation result as a document state.
+    private static func applying(_ result: BookmarkLineOps.Result) -> DocumentState {
+        DocumentState(text: result.text,
+                      selection: result.selection,
+                      bookmarkState: result.bookmarks)
     }
 
     // MARK: - Helpers

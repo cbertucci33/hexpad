@@ -373,4 +373,62 @@ final class BookmarkMarginTests: XCTestCase {
         XCTAssertEqual(clearAll.keyEquivalent, "",
                        "clear-all ships without a default chord")
     }
+
+    // MARK: - Search > Bookmark wiring
+
+    func testSearchMenuContainsTheWholeBookmarkGroup() throws {
+        let menu = HexpadAppDelegate().buildMainMenu()
+        let searchMenu = try XCTUnwrap(menu.item(withTitle: "Search")?.submenu)
+        let bookmarkItem = try XCTUnwrap(searchMenu.item(withTitle: "Bookmark"))
+        let bookmarkMenu = try XCTUnwrap(bookmarkItem.submenu)
+
+        let items = bookmarkMenu.items.filter { !$0.isSeparatorItem }
+        let expected = CommandRegistry.default.bookmarkCommands
+        XCTAssertEqual(items.map(\.title), expected.map(\.title))
+        XCTAssertEqual(items.map { $0.representedObject as? String },
+                       expected.map(\.identifier))
+
+        for item in items {
+            XCTAssertNil(item.target, "bookmark commands resolve through the responder chain")
+            XCTAssertEqual(item.action,
+                           #selector(MainWindowController.performBookmarkCommand(withIdentifier:)))
+        }
+    }
+
+    func testBookmarkedLineCommandsValidateAgainstBookmarksAndDocument() throws {
+        let (controller, _) = makeController()
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+
+        func item(_ identifier: String) -> NSMenuItem {
+            let item = NSMenuItem(title: identifier,
+                                  action: #selector(MainWindowController.performBookmarkCommand(withIdentifier:)),
+                                  keyEquivalent: "")
+            item.representedObject = identifier
+            return item
+        }
+
+        doc.replaceAllText(with: "one\ntwo\nthree")
+        doc.bookmarkState = BookmarkState()
+
+        // No bookmarks: only Inverse is available, because the document has
+        // lines to bookmark.
+        XCTAssertFalse(controller.validateMenuItem(item("bookmark-cut-lines")))
+        XCTAssertFalse(controller.validateMenuItem(item("bookmark-copy-lines")))
+        XCTAssertFalse(controller.validateMenuItem(item("bookmark-paste-replace-lines")))
+        XCTAssertFalse(controller.validateMenuItem(item("bookmark-remove-lines")))
+        XCTAssertTrue(controller.validateMenuItem(item("bookmark-inverse")))
+
+        doc.bookmarkState = BookmarkState(bookmarks: [Bookmark(line: 2)])
+        XCTAssertTrue(controller.validateMenuItem(item("bookmark-cut-lines")))
+        XCTAssertTrue(controller.validateMenuItem(item("bookmark-copy-lines")))
+        XCTAssertTrue(controller.validateMenuItem(item("bookmark-paste-replace-lines")))
+        XCTAssertTrue(controller.validateMenuItem(item("bookmark-remove-lines")))
+        XCTAssertTrue(controller.validateMenuItem(item("bookmark-inverse")))
+
+        // Inverse needs a non-empty document; the bookmark commands still need
+        // bookmarks (which an empty document cannot have).
+        doc.replaceAllText(with: "")
+        doc.bookmarkState = BookmarkState()
+        XCTAssertFalse(controller.validateMenuItem(item("bookmark-inverse")))
+    }
 }
