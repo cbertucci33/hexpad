@@ -21,7 +21,8 @@ struct DocumentSearchGroup {
 /// Document / in All Opened Documents). Both modes share the table; file
 /// results keep their one-row-per-file summary, document results add per-file
 /// group headers with one row per match so every hit is individually
-/// double-clickable. Fold/unfold of those groups is deferred.
+/// double-clickable. Clicking a group header folds/unfolds it; folded matches
+/// leave both the table and the F4 / Shift+F4 navigation order.
 final class FindInFilesWindowController: NSWindowController {
 
     private let chooseButton = NSButton(title: "Choose Folder...", target: nil, action: nil)
@@ -56,7 +57,13 @@ final class FindInFilesWindowController: NSWindowController {
     private var replaceCounts: [URL: Int] = [:]
 
     private(set) var documentGroups: [DocumentSearchGroup] = []
+    /// Visible document rows in display order. A folded group contributes its
+    /// header but none of its match rows, so every consumer (table, F4
+    /// navigation, openRow) reads the same list without a visibility filter.
     private var documentRows: [DocumentRow] = []
+    /// Group indices the user collapsed by clicking their header. Cleared when
+    /// a new result set is shown.
+    private var foldedGroups: Set<Int> = []
 
     /// Table row indices in navigation order: every file row in files mode,
     /// every match row (headers excluded) in documents mode. F4 / Shift+F4
@@ -144,6 +151,7 @@ final class FindInFilesWindowController: NSWindowController {
         resultsTable.dataSource = self
         resultsTable.delegate = self
         resultsTable.target = self
+        resultsTable.action = #selector(handleResultsRowClick)
         resultsTable.doubleAction = #selector(openSelected)
         resultsScrollView.documentView = resultsTable
         content.addSubview(resultsScrollView)
@@ -195,15 +203,8 @@ final class FindInFilesWindowController: NSWindowController {
         setFileInputsVisible(false)
 
         documentGroups = groups
-        documentRows = []
-        for (groupIndex, group) in groups.enumerated() {
-            documentRows.append(.header(group: groupIndex))
-            for matchIndex in group.matches.indices {
-                documentRows.append(.match(group: groupIndex, index: matchIndex))
-            }
-        }
-        rebuildResultRows()
-        resultsTable.reloadData()
+        foldedGroups = []
+        rebuildDocumentRows()
 
         let matchCount = groups.reduce(0) { $0 + $1.matches.count }
         if matchCount == 0 {
@@ -226,6 +227,65 @@ final class FindInFilesWindowController: NSWindowController {
 
     /// Status line text. Used by app tests.
     var statusText: String { statusLabel.stringValue }
+
+    // MARK: - Group folding
+
+    /// Builds the visible row list from `documentGroups` and the fold set.
+    /// Rebuilding (rather than filtering at read time) keeps navigation, the
+    /// table view and openRow on one shared row model.
+    private func rebuildDocumentRows() {
+        documentRows = []
+        for (groupIndex, group) in documentGroups.enumerated() {
+            documentRows.append(.header(group: groupIndex))
+            guard !foldedGroups.contains(groupIndex) else { continue }
+            for matchIndex in group.matches.indices {
+                documentRows.append(.match(group: groupIndex, index: matchIndex))
+            }
+        }
+        rebuildResultRows()
+        resultsTable.reloadData()
+    }
+
+    /// Collapses/expands one document group. Files mode has no groups, so the
+    /// call is a no-op there.
+    func toggleGroupFold(at groupIndex: Int) {
+        guard mode == .documents,
+              documentGroups.indices.contains(groupIndex) else { return }
+        if foldedGroups.contains(groupIndex) {
+            foldedGroups.remove(groupIndex)
+        } else {
+            foldedGroups.insert(groupIndex)
+        }
+        rebuildDocumentRows()
+    }
+
+    /// Whether the group's match rows are currently hidden. Used by app tests.
+    func isGroupFolded(_ groupIndex: Int) -> Bool {
+        foldedGroups.contains(groupIndex)
+    }
+
+    /// Header text for one group. Folded groups report "N matches"; expanded
+    /// groups keep the pre-existing "N match(es)" summary. Used by the table
+    /// and by app tests.
+    func headerText(for groupIndex: Int) -> String? {
+        guard documentGroups.indices.contains(groupIndex) else { return nil }
+        let group = documentGroups[groupIndex]
+        if foldedGroups.contains(groupIndex) {
+            return "▸ \(group.title)  —  \(group.matches.count) matches"
+        }
+        return "▾ \(group.title)  —  \(group.matches.count) match(es)"
+    }
+
+    /// Single-click handler. Only group headers act; a match row's click is
+    /// left to the normal selection machinery. The second click of a
+    /// double-click arrives as `openSelected` (doubleAction), not here.
+    @objc private func handleResultsRowClick() {
+        guard mode == .documents else { return }
+        let row = resultsTable.clickedRow
+        guard documentRows.indices.contains(row),
+              case .header(let groupIndex) = documentRows[row] else { return }
+        toggleGroupFold(at: groupIndex)
+    }
 
     // MARK: - Result navigation
 
@@ -457,7 +517,7 @@ extension FindInFilesWindowController: NSTableViewDataSource, NSTableViewDelegat
         case .header(let groupIndex):
             let group = documentGroups[groupIndex]
             label.font = NSFont.boldSystemFont(ofSize: 11)
-            label.stringValue = "\(group.title)  —  \(group.matches.count) match(es)"
+            label.stringValue = headerText(for: groupIndex) ?? ""
             label.toolTip = group.document.filePath?.path
             label.maximumNumberOfLines = 1
         case .match(let groupIndex, let matchIndex):

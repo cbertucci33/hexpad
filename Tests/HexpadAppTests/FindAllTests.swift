@@ -606,3 +606,173 @@ extension FindAllTests {
     }
 }
 
+// MARK: - S18e-2: result-group folding
+
+extension FindAllTests {
+
+    func testGroupFoldTogglesVisibleRowsAndHeaderCount() throws {
+        let (_, results, _, _) = try makeResultsWithTwoFiles()
+        XCTAssertEqual(results.navigableResultCount, 3)
+        XCTAssertFalse(results.isGroupFolded(1))
+        XCTAssertTrue(results.headerText(for: 1)?.hasSuffix("1 match(es)") == true)
+
+        results.toggleGroupFold(at: 1)
+
+        XCTAssertTrue(results.isGroupFolded(1))
+        XCTAssertEqual(results.navigableResultCount, 2,
+                       "the folded group's match row leaves the visible row list")
+        XCTAssertTrue(results.headerText(for: 1)?.hasSuffix("1 matches") == true,
+                      "a folded header reports its hidden match count")
+        XCTAssertTrue(results.headerText(for: 1)?.hasPrefix("▸") == true)
+
+        results.toggleGroupFold(at: 1)
+
+        XCTAssertFalse(results.isGroupFolded(1))
+        XCTAssertEqual(results.navigableResultCount, 3)
+        XCTAssertTrue(results.headerText(for: 1)?.hasSuffix("1 match(es)") == true)
+        XCTAssertTrue(results.headerText(for: 1)?.hasPrefix("▾") == true)
+    }
+
+    func testNavigationSkipsFoldedGroupAndWrapsOverVisibleRowsOnly() throws {
+        let (controller, results, first, _) = try makeResultsWithTwoFiles()
+        results.toggleGroupFold(at: 1)
+        XCTAssertEqual(results.navigableResultCount, 2)
+
+        // Rows now: header 0, match (0,0), match (0,1), header 1. The folded
+        // group's match row (old row 4) must never be selected.
+        results.nextResult()
+        XCTAssertEqual(results.currentResultIndex, 0)
+        XCTAssertEqual(results.selectedResultsRow, 1)
+        results.nextResult()
+        XCTAssertEqual(results.currentResultIndex, 1)
+        XCTAssertEqual(results.selectedResultsRow, 2)
+
+        // Wrapping goes back to the first visible match, not the folded row.
+        results.nextResult()
+        XCTAssertEqual(results.currentResultIndex, 0)
+        XCTAssertEqual(results.selectedResultsRow, 1)
+        XCTAssertTrue(controller.tabStore.selectedDocument === first)
+        XCTAssertEqual(results.statusText, "Result 1 of 2")
+    }
+
+    func testFoldingFirstGroupKeepsSecondGroupsHeaderAdjacent() throws {
+        let (controller, results, _, second) = try makeResultsWithTwoFiles()
+        results.toggleGroupFold(at: 0)
+        XCTAssertEqual(results.navigableResultCount, 1)
+
+        // Rows now: header 0, header 1, match (1,0).
+        results.nextResult()
+        XCTAssertEqual(results.selectedResultsRow, 2)
+        XCTAssertTrue(controller.tabStore.selectedDocument === second)
+        XCTAssertEqual(results.statusText, "Result 1 of 1")
+    }
+}
+
+// MARK: - S18c-2: Incremental Search
+
+extension FindAllTests {
+
+    private func openIncrementalSearch(_ controller: MainWindowController) throws -> IncrementalSearchBar {
+        controller.toggleIncrementalSearch(nil)
+        let bar = try XCTUnwrap(controller.incrementalSearchBar)
+        XCTAssertTrue(bar.isVisible)
+        return bar
+    }
+
+    func testIncrementalBarKeepsFindBarQueryAndHistoryUntouched() throws {
+        let (controller, _) = makeController()
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        doc.text = "foo bar foo"
+        let find = try setQuery("bar", on: controller)
+        XCTAssertEqual(find.matchCountLabel.stringValue, "1 of 1")
+        let historyBefore = UserDefaults.standard.stringArray(forKey: "HexpadFindSearchHistory")
+
+        let bar = try openIncrementalSearch(controller)
+        bar.searchField.stringValue = "foo"
+        bar.performSearch()
+
+        XCTAssertEqual(bar.matches.count, 2)
+        XCTAssertEqual(find.searchField.stringValue, "bar",
+                       "incremental search never rewrites the Find field")
+        XCTAssertEqual(find.matchCountLabel.stringValue, "1 of 1",
+                       "nor its match list/counter")
+        XCTAssertEqual(UserDefaults.standard.stringArray(forKey: "HexpadFindSearchHistory"),
+                       historyBefore,
+                       "nor the shared find history")
+        XCTAssertEqual(controller.editorTextView?.selectedRange,
+                       (doc.text as NSString).range(of: "foo"),
+                       "the incremental match is selected in the editor")
+    }
+
+    func testIncrementalBarEscapeClosesAndClearsHighlights() throws {
+        let (controller, _) = makeController()
+        try XCTUnwrap(controller.tabStore.selectedDocument).text = "foo bar foo"
+        let bar = try openIncrementalSearch(controller)
+        bar.searchField.stringValue = "foo"
+        bar.performSearch()
+
+        let textView = try XCTUnwrap(controller.editorTextView)
+        let layoutManager = try XCTUnwrap(textView.layoutManager)
+        XCTAssertNotNil(layoutManager.temporaryAttribute(.backgroundColor,
+                                                          atCharacterIndex: 0,
+                                                          effectiveRange: nil),
+                        "live query highlights the first match")
+
+        bar.cancelOperation(nil)
+
+        XCTAssertFalse(bar.isVisible)
+        XCTAssertEqual(bar.matches.count, 0)
+        XCTAssertNil(layoutManager.temporaryAttribute(.backgroundColor,
+                                                       atCharacterIndex: 0,
+                                                       effectiveRange: nil),
+                     "Escape clears the incremental highlights")
+    }
+
+    func testIncrementalBarNextAndPreviousWrap() throws {
+        let (controller, _) = makeController()
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        doc.text = "foo bar foo"
+        let bar = try openIncrementalSearch(controller)
+        bar.searchField.stringValue = "foo"
+        bar.performSearch()
+        XCTAssertEqual(bar.currentMatchIndex, 0)
+
+        bar.findNext()
+        XCTAssertEqual(bar.currentMatchIndex, 1)
+        XCTAssertEqual(controller.editorTextView?.selectedRange,
+                       (doc.text as NSString).range(of: "foo",
+                                                     options: [], range: NSRange(location: 4,
+                                                                                length: (doc.text as NSString).length - 4)))
+        bar.findNext()
+        XCTAssertEqual(bar.currentMatchIndex, 0, "wrap at the end")
+        bar.findPrevious()
+        XCTAssertEqual(bar.currentMatchIndex, 1, "wrap at the start")
+    }
+
+    func testIncrementalBarHidesOnTabSwitch() throws {
+        let (controller, _) = makeController()
+        try XCTUnwrap(controller.tabStore.selectedDocument).text = "foo"
+        let bar = try openIncrementalSearch(controller)
+        bar.searchField.stringValue = "foo"
+        bar.performSearch()
+        XCTAssertTrue(bar.isVisible)
+
+        controller.addNewTab()
+
+        XCTAssertFalse(bar.isVisible, "a tab switch invalidates the match ranges")
+        XCTAssertEqual(bar.matches.count, 0)
+    }
+
+    func testSearchMenuHasIncrementalSearchItem() throws {
+        let menu = HexpadAppDelegate().buildMainMenu()
+        let searchMenu = try XCTUnwrap(menu.item(withTitle: "Search")?.submenu)
+        let item = try XCTUnwrap(searchMenu.items.first {
+            $0.action == #selector(MainWindowController.toggleIncrementalSearch(_:))
+        })
+        XCTAssertEqual(item.title, "Incremental Search")
+        XCTAssertEqual(item.keyEquivalent, "i")
+        XCTAssertEqual(item.keyEquivalentModifierMask, [.command])
+        XCTAssertNil(item.target, "nil target routes to the focused window's controller")
+    }
+}
+

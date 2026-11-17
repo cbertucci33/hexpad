@@ -42,6 +42,15 @@ extension HexpadAppDelegate {
         searchMenu.addItem(volatileNextItem)
         searchMenu.addItem(volatilePrevItem)
 
+        // N++ Incremental Search. Cmd+I is free across every menu section and
+        // the editor command registry, so it gets the chord. Nil-targeted so
+        // the focused window's controller owns the toggle and validation.
+        let incrementalSearchItem = NSMenuItem(title: "Incremental Search",
+                                               action: #selector(MainWindowController.toggleIncrementalSearch(_:)),
+                                               keyEquivalent: "i")
+        incrementalSearchItem.target = nil
+        searchMenu.addItem(incrementalSearchItem)
+
         // The Find dialog's "Find All" pair lives here as direct N++-style
         // items. Nil-targeted so the focused window's controller (which owns
         // the open documents) runs them and supplies validation.

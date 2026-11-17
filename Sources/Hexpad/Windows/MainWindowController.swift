@@ -86,6 +86,9 @@ class MainWindowController: NSViewController {
     /// Exposed for app tests (find-bar counts/highlight behaviour) and refreshed
     /// only through `refreshChrome`'s injected refs.
     private(set) var findBar: FindBar?
+    /// Search > Incremental Search (Cmd+I). A separate bar with its own query,
+    /// deliberately isolated from `findBar`'s field/history/match list.
+    private(set) var incrementalSearchBar: IncrementalSearchBar?
     private var dividerView: NSView?
     /// Routes clicks in either group's editor/tab bar to ``focusGroup(_:)``.
     private var mouseDownMonitor: Any?
@@ -411,7 +414,14 @@ class MainWindowController: NSViewController {
         find.tabStoreRef = primaryPane.tabStore
         find.editorRef = primaryPane.editor
         find.setupObservers()
-        
+
+        let incremental = IncrementalSearchBar()
+        incremental.onClose = { [weak self] in
+            self?.incrementalSearchBarDidHide()
+        }
+        view.addSubview(incremental)
+        incrementalSearchBar = incremental
+
         updateLayout()
     }
 
@@ -496,6 +506,17 @@ class MainWindowController: NSViewController {
                                 y: max(statusHeight, height - topInset),
                                 width: width,
                                 height: findHeight)
+
+        // Incremental search floats over the focused editor's top-right corner
+        // instead of reserving layout space, so opening it never reflows text.
+        if let incremental = incrementalSearchBar, incremental.isVisible {
+            let editorFrame = activePane.editor.frame
+            let barWidth = min(380, max(220, editorFrame.width - 16))
+            incremental.frame = NSRect(x: editorFrame.maxX - barWidth - 8,
+                                       y: max(statusHeight, editorFrame.maxY - IncrementalSearchBar.preferredHeight - 6),
+                                       width: barWidth,
+                                       height: IncrementalSearchBar.preferredHeight)
+        }
 
         status.frame = NSRect(x: 0, y: 0, width: width, height: statusHeight)
     }
@@ -1249,6 +1270,7 @@ class MainWindowController: NSViewController {
         let pane = activePane
         findBar?.tabStoreRef = pane.tabStore
         findBar?.editorRef = pane.editor
+        incrementalSearchBar?.editorRef = pane.editor
 
         if let doc = pane.tabStore.selectedDocument {
             applySyntaxHighlighting(to: pane.editor, for: doc, forceReset: true)
@@ -1278,6 +1300,10 @@ class MainWindowController: NSViewController {
     func focusGroup(_ group: TabGroup) {
         if group == .secondary && secondaryPane == nil { return }
         guard group != focusedGroup else { return }
+        // The incremental bar highlights the focused editor with temporary
+        // attributes; close it while the old editor is still injected so those
+        // highlights are cleared from the buffer they belong to.
+        incrementalSearchBar?.hide()
         focusedGroup = group
         // Bind first, then refresh chrome. A focus change can be the first thing
         // to happen after a store's selection moved (Move to Other View and a
@@ -1780,6 +1806,50 @@ class MainWindowController: NSViewController {
     
     func findPrevious() {
         findBar?.findPrevious()
+    }
+
+    // MARK: - Incremental Search (Cmd+I)
+
+    /// Search > Incremental Search. Opens/closes the floating incremental bar
+    /// over the focused editor. The bar owns its query and match list, so the
+    /// main FindBar's field, history and match counter are untouched.
+    @objc func toggleIncrementalSearch(_ sender: Any?) {
+        guard let bar = incrementalSearchBar else { return }
+        if bar.isVisible {
+            hideIncrementalSearch()
+        } else {
+            showIncrementalSearch()
+        }
+    }
+
+    private func showIncrementalSearch() {
+        guard let bar = incrementalSearchBar else { return }
+        bar.editorRef = editorContainer
+        // Seed from the editor selection like N++'s incremental search; an
+        // empty bar is also fine, the user just types.
+        var seed = ""
+        if let editor = editorContainer, editor.textView.selectedRange.length > 0 {
+            seed = (editor.textView.string as NSString)
+                .substring(with: editor.textView.selectedRange)
+        }
+        bar.show(initialQuery: seed)
+        updateLayout()
+        view.window?.makeFirstResponder(bar.searchField)
+    }
+
+    /// Closes the bar from any caller. The bar's `onClose` hook relayouts.
+    func hideIncrementalSearch() {
+        incrementalSearchBar?.hide()
+    }
+
+    /// Called by the bar after it hides itself (Escape, focus loss, tab
+    /// switch). Relayout so the overlay leaves no slot, and return focus to
+    /// the editor when this window is active.
+    private func incrementalSearchBarDidHide() {
+        updateLayout()
+        if view.window?.isKeyWindow == true, let textView = editorTextView {
+            view.window?.makeFirstResponder(textView)
+        }
     }
 
     // MARK: - Select and Find / Find (Volatile)
@@ -3026,6 +3096,11 @@ extension MainWindowController: NSMenuItemValidation {
         }
         if menuItem.action == #selector(MainWindowController.findAllInAllOpenedDocuments(_:)) {
             return canFindAllInAllOpenedDocuments()
+        }
+        if menuItem.action == #selector(MainWindowController.toggleIncrementalSearch(_:)) {
+            // Needs a focused buffer to search; stays enabled while open so the
+            // same item can close it.
+            return tabStore.selectedDocument != nil
         }
         if menuItem.action == #selector(MainWindowController.toggleSplitView(_:)) {
             menuItem.state = isSplitViewOpen ? .on : .off
