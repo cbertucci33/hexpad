@@ -2321,6 +2321,60 @@ class MainWindowController: NSViewController {
         canFoldAll()
     }
 
+    /// View > Hide Lines. Hides the selected whole lines, or the caret's line
+    /// when nothing is selected. Presentation-only: the buffer is untouched,
+    /// so find/replace and line operations still see the hidden text.
+    @objc func hideLines(_ sender: Any?) {
+        _ = editorContainer?.hideSelectedLines()
+    }
+
+    /// View > Unhide Lines. Reveals the hidden block at the caret; with none
+    /// there, reveals the first hidden block. The margin symbol and selecting
+    /// across a block are the two targeted gestures.
+    @objc func unhideLines(_ sender: Any?) {
+        _ = editorContainer?.unhideSelectedLines()
+    }
+
+    /// Hiding needs a document with text. The editor refuses a hide that would
+    /// leave no visible line, so validation stays simple and always enabled.
+    func canHideLines() -> Bool {
+        guard let doc = tabStore.selectedDocument else { return false }
+        return !doc.text.isEmpty
+    }
+
+    func canUnhideLines() -> Bool {
+        editorContainer?.hasHiddenLines ?? false
+    }
+
+    // MARK: - Tab colours
+
+    /// View > Tab > Apply Color 1...5. The tag carries the 1-based colour
+    /// index. Colours live on the document, so a tab moved to the other pane
+    /// keeps its bar and the session restores it.
+    @objc func applyTabColor(_ sender: NSMenuItem) {
+        guard let doc = tabStore.selectedDocument,
+              sender.tag >= 1, sender.tag <= TabColorPalette.colorCount else { return }
+        doc.tabColorIndex = sender.tag
+        refreshTabBar()
+    }
+
+    /// View > Tab > Remove Color. Resets the document's bar to none.
+    @objc func removeTabColor(_ sender: Any?) {
+        guard let doc = tabStore.selectedDocument, doc.tabColorIndex != nil else { return }
+        doc.tabColorIndex = nil
+        refreshTabBar()
+    }
+
+    /// Applying a colour needs an open document; the colour itself is free.
+    func canApplyTabColor() -> Bool {
+        tabStore.selectedDocument != nil
+    }
+
+    /// Removing is only meaningful once a colour is set.
+    func canRemoveTabColor() -> Bool {
+        tabStore.selectedDocument?.tabColorIndex != nil
+    }
+
     /// View > Word Wrap. Routes through the registry so the toggle is recorded
     /// while a macro is being captured.
     func toggleWordWrap() {
@@ -3233,6 +3287,24 @@ extension MainWindowController: NSMenuItemValidation {
         }
         if menuItem.action == #selector(MainWindowController.unfoldAll(_:)) {
             return canUnfoldAll()
+        }
+        if menuItem.action == #selector(MainWindowController.hideLines(_:)) {
+            return canHideLines()
+        }
+        if menuItem.action == #selector(MainWindowController.unhideLines(_:)) {
+            return canUnhideLines()
+        }
+        if menuItem.action == #selector(MainWindowController.applyTabColor(_:)) {
+            // The tag is the 1-based colour index; a checkmark marks the
+            // selected document's current colour.
+            guard menuItem.tag >= 1, menuItem.tag <= TabColorPalette.colorCount else {
+                return false
+            }
+            menuItem.state = tabStore.selectedDocument?.tabColorIndex == menuItem.tag ? .on : .off
+            return canApplyTabColor()
+        }
+        if menuItem.action == #selector(MainWindowController.removeTabColor(_:)) {
+            return canRemoveTabColor()
         }
         if menuItem.action == #selector(MainWindowController.findAllInCurrentDocument(_:)) {
             return canFindAllInCurrentDocument()

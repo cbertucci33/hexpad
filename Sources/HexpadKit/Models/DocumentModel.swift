@@ -131,6 +131,13 @@ public final class DocumentModel: Identifiable, ObservableObject {
     /// a sensible line is the app layer's concern, not the model's.
     public var bookmarkState: BookmarkState
 
+    /// The tab's colour bar (View > Tab > Apply Color 1...5), or `nil` when the
+    /// tab has no colour. Stored on the document rather than the tab bar so a
+    /// tab dragged to the other pane keeps its colour, and persisted with the
+    /// document so a restored session shows the same bars. Values outside
+    /// 1...5 are ignored.
+    public var tabColorIndex: Int?
+
     public var caretRange: NSRange {
         get { editorState.caretRange }
         set { editorState.caretRange = newValue }
@@ -423,6 +430,9 @@ public final class DocumentModel: Identifiable, ObservableObject {
         if let path = self.filePath?.path {
             data["filePath"] = path
         }
+        if let tabColorIndex = self.tabColorIndex {
+            data["tabColorIndex"] = tabColorIndex
+        }
         return data
     }
     
@@ -460,6 +470,14 @@ public final class DocumentModel: Identifiable, ObservableObject {
         // "bookmarkState" key; absence restores an empty (no bookmarked lines)
         // state.
         doc.bookmarkState = BookmarkState.fromSessionData(data["bookmarkState"] as? [String: Any])
+        // Sessions written before tab colours existed have no "tabColorIndex"
+        // key; absence restores an uncoloured tab. Out-of-range values are
+        // ignored rather than clamped, so a newer build's extra colour cannot
+        // turn into a different one here.
+        if let tabColor = intValue(data["tabColorIndex"]),
+           tabColor >= 1, tabColor <= TabColorPalette.colorCount {
+            doc.tabColorIndex = tabColor
+        }
         // Restore dirty state: if marked modified, diff against the real saved baseline.
         // File-backed docs diff against their on-disk content; untitled buffers have no
         // file, so their baseline is the empty (never-saved) buffer.
@@ -488,6 +506,13 @@ public final class DocumentModel: Identifiable, ObservableObject {
         doc._saveConversionPending = pendingConversion
         doc._isDirty = isModified
         return doc
+    }
+
+    /// JSONSerialization hands numbers back as NSNumber; tests and callers may
+    /// also supply native Swift numbers. Accept both.
+    private static func intValue(_ value: Any?) -> Int? {
+        if let int = value as? Int { return int }
+        return (value as? NSNumber)?.intValue
     }
 }
 

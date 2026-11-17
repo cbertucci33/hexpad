@@ -108,7 +108,7 @@ class EditorContainer: NSView {
     /// fold state before they are handed to layout or to a caller.
     var foldHiddenRanges: [NSRange] {
         refreshFoldModelIfStale()
-        return foldHider.hiddenRanges
+        return foldHider.foldHiddenRanges
     }
 
     // MARK: - Bookmarks
@@ -139,6 +139,55 @@ class EditorContainer: NSView {
     var bookmarkLines: Set<Int> {
         Set(bookmarkModel?.bookmarkState.lines ?? [])
     }
+
+    // MARK: - Hidden lines
+    //
+    // View > Hide Lines hides whole lines without deleting them. Like folds and
+    // bookmarks the state is per document, keyed by id here and mirrored into
+    // `DocumentModel.editorState.hiddenLinesState`, which is what the session
+    // save path stores. The state is line-based; the derived UTF-16 spans are
+    // recomputed from the live text (on bind, on hide/unhide, and after edits)
+    // and handed to the same glyph hider collapsing folds uses.
+
+    /// Hidden-line state per document id, retained across tab switches.
+    private var hideStates: [UUID: HideLinesState] = [:]
+
+    /// UTF-16 spans currently hidden by the hide-lines mask, for the bound
+    /// document. Cached so the selection observer stays cheap.
+    private var hiddenLineCharacterRanges: [NSRange] = []
+
+    /// Logical line count of the bound document at the last span recompute.
+    /// Cached with the spans so the gutter draw pass never rescans the text.
+    private var hiddenLineTextLineCount = 0
+
+    /// Hidden-line state for the bound document.
+    var hiddenLinesState: HideLinesState {
+        guard let document = boundDocument else { return HideLinesState() }
+        return hideStates[document.id] ?? document.editorState.hiddenLinesState
+    }
+
+    /// Whether the bound document has any hidden line range.
+    var hasHiddenLines: Bool { !hiddenLinesState.isEmpty }
+
+    /// Hidden line ranges for the bound document, in document order.
+    var hiddenLineRanges: [ClosedRange<Int>] { hiddenLinesState.lineRanges }
+
+    /// Anchor line → hidden range, for the gutter's unhide symbols.
+    var hiddenLineMarkers: [Int: ClosedRange<Int>] {
+        let state = hiddenLinesState
+        guard !state.isEmpty else { return [:] }
+        var markers: [Int: ClosedRange<Int>] = [:]
+        for range in state.lineRanges {
+            if let anchor = state.anchorLine(for: range, lineCount: hiddenLineTextLineCount) {
+                markers[anchor] = range
+            }
+        }
+        return markers
+    }
+
+    /// UTF-16 spans the glyph hider suppresses for hidden lines. Diagnostic /
+    /// test hook; fold-only spans remain available as ``foldHiddenRanges``.
+    var hiddenLineCharacterSpans: [NSRange] { hiddenLineCharacterRanges }
 
     /// Used when no tab is selected, so the text view always has a storage.
     private let unboundStorage = NSTextStorage()
@@ -254,6 +303,10 @@ class EditorContainer: NSView {
         // Bookmarks have no language dependency, but rebinding is the moment
         // the container adopts a tab's persisted state.
         bindBookmarks(for: document)
+
+        // Hidden lines are also per document; binding re-resolves their line
+        // ranges against the buffer that is now live.
+        bindHiddenLines(for: document)
 
         // Adopt the incoming document's persisted editor state. This runs after
         // the storage swap and fold/bookmark binding so the caret is clamped
@@ -388,6 +441,12 @@ class EditorContainer: NSView {
         document.scrollOffset = scrollView.contentView.bounds.origin
         document.wordWrapEnabled = isWordWrapEnabled
         document.zoomScale = zoomScale
+        // Hidden lines are already written through on every hide/unhide, but
+        // flushing here covers a state adopted from a session that the user
+        // never touched again.
+        if let state = hideStates[document.id] {
+            document.editorState.hiddenLinesState = state
+        }
     }
 
     /// Adopts a document's persisted editor state, clamping the caret to the
@@ -514,6 +573,17 @@ class EditorContainer: NSView {
         ruler.onToggleBookmark = { [weak self] line in
             self?.toggleBookmark(atLine: line)
         }
+        ruler.hiddenLinesProvider = { [weak self] in
+            guard let self else { return .empty }
+            return HiddenLinesPresentation(state: self.hiddenLinesState,
+                                           lineCount: self.hiddenLineTextLineCount)
+        }
+        ruler.hiddenRangeMarkersProvider = { [weak self] in
+            self?.hiddenLineMarkers ?? [:]
+        }
+        ruler.onUnhideHiddenRange = { [weak self] range in
+            self?.unhideLines(range)
+        }
 
         // Fold content is hidden at the glyph level so the shared text storage
         // and its highlighting attributes are never rewritten. NSTextView leaves
@@ -594,6 +664,9 @@ class EditorContainer: NSView {
             self.columnAnchor = nil
             self.multiCaretState = MultiCaretState(caret: selection)
             self.textView.needsDisplay = true
+            // Clamp a caret that landed inside hidden text, and unhide a block
+            // the user just selected across (N++'s second unhide gesture).
+            self.reconcileSelectionWithHiddenLines(selection)
         }
     }
 
@@ -1071,6 +1144,194 @@ class EditorContainer: NSView {
     func forgetDocumentState(for id: UUID) {
         foldStates.removeValue(forKey: id)
         bookmarkStates.removeValue(forKey: id)
+        hideStates.removeValue(forKey: id)
+    }
+
+    // MARK: - Hidden lines
+
+    /// Hides the selected line range, or the caret's line when the selection is
+    /// collapsed.
+    ///
+    /// Hiding is presentation-only: the text stays in the buffer, so search,
+    /// line operations and saving still see it. Whole lines are hidden,
+    /// including their trailing newline, which is what makes the following
+    /// visible line move up into the hidden row's place.
+    ///
+    /// - Returns: `true` when the state changed. Hiding every remaining line is
+    ///   refused: a fully hidden document has no visible line to click and no
+    ///   layout, so the margin/selection unhide affordances would vanish.
+    @discardableResult
+    func hideSelectedLines() -> Bool {
+        guard let document = boundDocument else { return false }
+        let length = document.textStorage.length
+        guard length > 0 else { return false }
+
+        let index = LineIndex(document.text)
+        let lineCount = index.count
+        guard lineCount > 0 else { return false }
+
+        let selection = textView.selectedRange
+        let start = min(max(0, selection.location), length)
+        // The last character the selection touches, so a selection ending at a
+        // line start does not pull the next line into the hide range.
+        let end = selection.length > 0
+            ? min(length, NSMaxRange(selection)) - 1
+            : start
+        let firstLine = index.line(of: min(start, end))
+        let lastLine = index.line(of: max(start, end))
+        guard lastLine >= firstLine else { return false }
+
+        var state = hiddenLinesState
+        guard state.hide(firstLine...lastLine) else { return false }
+        guard state.visibleLineCount(lineCount: lineCount) > 0 else { return false }
+
+        adopt(hideState: state, for: document)
+        return true
+    }
+
+    /// Unhides the hidden range(s) touching the caret's line.
+    ///
+    /// This is the "Unhide Lines" menu action: it removes the block that
+    /// contains or immediately adjoins the selection, so a user who placed the
+    /// caret next to a hidden block can reveal it without hunting for the
+    /// margin symbol. With no hidden block at the caret it unhides the nearest
+    /// hidden block in document order (the first one), keeping the command
+    /// useful after a navigation that could not land inside hidden text.
+    ///
+    /// - Returns: `true` when a range was unhidden.
+    @discardableResult
+    func unhideSelectedLines() -> Bool {
+        guard let document = boundDocument else { return false }
+        var state = hiddenLinesState
+        guard !state.isEmpty else { return false }
+
+        let index = LineIndex(document.text)
+        let selection = textView.selectedRange
+        let length = document.textStorage.length
+        let end = selection.length > 0
+            ? min(length, NSMaxRange(selection)) - 1
+            : min(max(0, selection.location), length)
+        let firstLine = index.line(of: min(max(0, selection.location), end))
+        let lastLine = index.line(of: max(0, end))
+
+        let target = state.lineRanges.first {
+            $0.lowerBound - 1 <= lastLine && $0.upperBound + 1 >= firstLine
+        } ?? state.lineRanges.first
+        guard let target else { return false }
+        guard state.unhide(target) else { return false }
+        adopt(hideState: state, for: document)
+        return true
+    }
+
+    /// Unhides `range` (a margin-symbol click).
+    @discardableResult
+    func unhideLines(_ range: ClosedRange<Int>) -> Bool {
+        guard let document = boundDocument else { return false }
+        var state = hiddenLinesState
+        guard state.unhide(range) else { return false }
+        adopt(hideState: state, for: document)
+        return true
+    }
+
+    /// Unhides every hidden range (View > Unhide Lines and the fallback that
+    /// keeps a fully hidden document recoverable).
+    ///
+    /// - Returns: The number of ranges removed.
+    @discardableResult
+    func unhideAllLines() -> Int {
+        guard let document = boundDocument else { return 0 }
+        var state = hiddenLinesState
+        let removed = state.unhideAll()
+        guard removed > 0 else { return 0 }
+        adopt(hideState: state, for: document)
+        return removed
+    }
+
+    /// Writes `state` through to the per-document store, the persisted editor
+    /// state, the cached character spans and the glyph hider.
+    private func adopt(hideState state: HideLinesState, for document: DocumentModel) {
+        hideStates[document.id] = state
+        document.editorState.hiddenLinesState = state
+        recomputeHiddenLineSpans(for: document)
+        applyHiddenLineVisibility()
+        ruler.needsDisplay = true
+    }
+
+    /// Adopts a document's persisted hidden lines when it is first bound.
+    private func bindHiddenLines(for document: DocumentModel?) {
+        guard let document else {
+            hiddenLineCharacterRanges = []
+            hiddenLineTextLineCount = 0
+            applyHiddenLineVisibility()
+            ruler.needsDisplay = true
+            return
+        }
+        if hideStates[document.id] == nil {
+            hideStates[document.id] = document.editorState.hiddenLinesState
+        }
+        recomputeHiddenLineSpans(for: document)
+        applyHiddenLineVisibility()
+        ruler.needsDisplay = true
+    }
+
+    /// Re-resolves line ranges into UTF-16 spans for the document's live text.
+    /// A range that no longer names a line in this buffer (a stale session, or
+    /// text removed under a hidden block) simply stops hiding anything.
+    ///
+    /// One `LineIndex` serves both the spans and the cached logical line count
+    /// the gutter's renumbering and marker anchors need, so a draw pass never
+    /// rescans the document.
+    private func recomputeHiddenLineSpans(for document: DocumentModel) {
+        let state = hideStates[document.id] ?? document.editorState.hiddenLinesState
+        let index = LineIndex(document.text)
+        hiddenLineTextLineCount = index.count
+        hiddenLineCharacterRanges = state.lineRanges.compactMap {
+            HideLinesVisibility.characterRange(for: $0, in: index)
+        }
+    }
+
+    /// Hands the hide-lines mask to the glyph hider and relayouts when the
+    /// effective hidden set changed. Folds keep their own mask in parallel.
+    private func applyHiddenLineVisibility() {
+        guard foldHider.setLineHiddenRanges(hiddenLineCharacterRanges) else { return }
+        invalidateFoldLayout()
+    }
+
+    /// Selection-time visibility rules for hidden lines:
+    ///
+    /// - A bare caret never rests inside hidden text. Arrow keys, gutter clicks
+    ///   and programmatic navigation clamp it to the nearest visible character.
+    /// - A selection that fully covers a hidden range unhides it, so selecting
+    ///   "across" a hidden block is the second way to reveal it (beside the
+    ///   margin symbol).
+    private func reconcileSelectionWithHiddenLines(_ selection: NSRange) {
+        guard !hiddenLineCharacterRanges.isEmpty, let document = boundDocument else { return }
+
+        if selection.length == 0 {
+            let location = selection.location
+            guard let hidden = hiddenLineCharacterRanges.first(where: {
+                $0.location <= location && location < NSMaxRange($0)
+            }) else { return }
+            let target = hidden.location > 0 ? hidden.location - 1 : NSMaxRange(hidden)
+            setMultiCaretState(MultiCaretState(caretAt: target))
+            return
+        }
+
+        // Unhide every block the selection covers entirely. Line ranges are
+        // re-derived against the live text so a stale range cannot match an
+        // arbitrary offset.
+        let selected = NSRange(location: selection.location, length: selection.length)
+        var state = hiddenLinesState
+        let index = LineIndex(document.text)
+        var changed = false
+        for range in state.lineRanges {
+            guard let span = HideLinesVisibility.characterRange(for: range, in: index) else { continue }
+            if selected.location <= span.location, NSMaxRange(selected) >= NSMaxRange(span) {
+                changed = state.unhide(range) || changed
+            }
+        }
+        guard changed else { return }
+        adopt(hideState: state, for: document)
     }
 
     /// Remaps bookmarks across a text edit so their circles follow the lines.
@@ -1128,6 +1389,14 @@ class EditorContainer: NSView {
             remapBookmarks(for: edit, oldLength: oldLength)
         } else if bookmarkModel != nil {
             bookmarkModelTextIsStale = true
+        }
+
+        // Hidden lines are line-based, so their UTF-16 spans must be
+        // recomputed against the edited text. With nothing hidden there is no
+        // mask to keep valid and no layout to invalidate.
+        if hasHiddenLines {
+            recomputeHiddenLineSpans(for: document)
+            applyHiddenLineVisibility()
         }
 
         guard let model = cachedFoldModel else { return }

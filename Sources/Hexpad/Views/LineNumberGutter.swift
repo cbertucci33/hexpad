@@ -46,46 +46,104 @@ enum FoldMargin {
     }
 }
 
-/// Hides collapsed fold content from text layout without touching the text
-/// storage.
+/// Hides collapsed fold content and explicitly hidden lines from text layout
+/// without touching the text storage.
 ///
 /// The editor's incremental highlighting pipeline owns character attributes on
 /// `DocumentModel.textStorage`. Zero-width fonts or clear foreground colours
 /// would be overwritten by the next highlight pass, and replacing the storage
 /// would break the shared buffer. Instead this layout-manager delegate swaps
 /// the glyphs of hidden characters for null glyphs: layout gives them zero
-/// advance and skips their line breaks, so folded lines disappear from the
-/// rendered document while the model, tokenizer, selections, and undo stack all
-/// keep operating on the full text.
+/// advance and skips their line breaks, so folded or hidden lines disappear
+/// from the rendered document while the model, tokenizer, selections, and undo
+/// stack all keep operating on the full text.
 ///
-/// Hidden ranges come from ``FoldVisibility``; call ``setHiddenRanges(_:)`` and
-/// then invalidate glyphs/layout for the affected range (the editor container
-/// does both).
+/// Two independent masks share the delegate — one from ``FoldVisibility``, one
+/// from ``HideLinesVisibility`` — because the editor must be able to hide a
+/// fold and a user-hidden block at the same time. ``hiddenRanges`` is their
+/// merged effective set; ``foldHiddenRanges`` keeps the fold mask separate for
+/// callers that ask about folds specifically.
+///
+/// Call `setFoldHiddenRanges(_:)` / `setLineHiddenRanges(_:)` and then
+/// invalidate glyphs/layout for the affected range (the editor container does
+/// both).
 final class FoldGlyphHider: NSObject, NSLayoutManagerDelegate {
 
-    /// Document ranges whose glyphs layout suppresses. Sorted, non-overlapping.
+    /// Document ranges whose glyphs layout suppresses because their fold is
+    /// collapsed. Sorted, non-overlapping.
+    private(set) var foldHiddenRanges: [NSRange] = []
+
+    /// Document ranges whose glyphs layout suppresses because the user hid the
+    /// lines (View > Hide Lines). Sorted, non-overlapping.
+    private(set) var lineHiddenRanges: [NSRange] = []
+
+    /// Effective hidden set: both masks merged. Sorted, non-overlapping.
     private(set) var hiddenRanges: [NSRange] = []
 
-    /// Replaces the hidden ranges.
+    /// Replaces the fold mask.
     ///
-    /// - Returns: `true` when the effective set changed, so callers can skip a
-    ///   full layout invalidation when a fold toggle leaves visibility alone.
+    /// - Returns: `true` when the effective hidden set changed, so callers can
+    ///   skip a full layout invalidation when a fold toggle leaves visibility
+    ///   alone.
     @discardableResult
     func setHiddenRanges(_ ranges: [NSRange]) -> Bool {
-        let sorted = ranges.filter { $0.length > 0 }.sorted { lhs, rhs in
-            if lhs.location != rhs.location { return lhs.location < rhs.location }
-            return lhs.length < rhs.length
-        }
-        guard sorted != hiddenRanges else { return false }
-        hiddenRanges = sorted
-        return true
+        setFoldHiddenRanges(ranges)
     }
 
-    /// Whether the character at `characterIndex` is hidden by a collapsed fold.
+    /// Replaces the fold mask. Kept separate from the hidden-lines mask so each
+    /// owner can update its own ranges without clobbering the other's.
+    @discardableResult
+    func setFoldHiddenRanges(_ ranges: [NSRange]) -> Bool {
+        let sorted = FoldGlyphHider.normalized(ranges)
+        guard sorted != foldHiddenRanges else { return false }
+        foldHiddenRanges = sorted
+        return rebuildEffectiveRanges()
+    }
+
+    /// Replaces the user-hidden-lines mask.
+    @discardableResult
+    func setLineHiddenRanges(_ ranges: [NSRange]) -> Bool {
+        let sorted = FoldGlyphHider.normalized(ranges)
+        guard sorted != lineHiddenRanges else { return false }
+        lineHiddenRanges = sorted
+        return rebuildEffectiveRanges()
+    }
+
+    /// Whether the character at `characterIndex` is hidden by a collapsed fold
+    /// or by a hidden line.
     func isHidden(characterIndex: Int) -> Bool {
         hiddenRanges.contains { range in
             range.location <= characterIndex && characterIndex < NSMaxRange(range)
         }
+    }
+
+    private func rebuildEffectiveRanges() -> Bool {
+        let before = hiddenRanges
+        hiddenRanges = FoldGlyphHider.merged(foldHiddenRanges + lineHiddenRanges)
+        return hiddenRanges != before
+    }
+
+    private static func normalized(_ ranges: [NSRange]) -> [NSRange] {
+        ranges.filter { $0.length > 0 }.sorted { lhs, rhs in
+            if lhs.location != rhs.location { return lhs.location < rhs.location }
+            return lhs.length < rhs.length
+        }
+    }
+
+    /// Merges touching and overlapping ranges so the glyph loop checks the
+    /// smallest possible set (fold and hide masks often overlap exactly).
+    private static func merged(_ ranges: [NSRange]) -> [NSRange] {
+        var result: [NSRange] = []
+        for range in normalized(ranges) {
+            if let last = result.last, range.location <= NSMaxRange(last) {
+                let end = max(NSMaxRange(last), NSMaxRange(range))
+                result[result.count - 1] = NSRange(location: last.location,
+                                                   length: end - last.location)
+            } else {
+                result.append(range)
+            }
+        }
+        return result
     }
 
     // MARK: - NSLayoutManagerDelegate
@@ -125,6 +183,15 @@ final class FoldGlyphHider: NSObject, NSLayoutManagerDelegate {
                                 forGlyphRange: glyphRange)
         return glyphRange.length
     }
+}
+
+/// Hidden-lines state plus the live line count, handed to the gutter in one
+/// pull so a draw pass never rescans the document to number its rows.
+struct HiddenLinesPresentation {
+    let state: HideLinesState
+    let lineCount: Int
+
+    static let empty = HiddenLinesPresentation(state: HideLinesState(), lineCount: 0)
 }
 
 /// Vertical line-number gutter drawn from real text-layout geometry.
@@ -194,6 +261,21 @@ final class LineNumberGutter: NSView {
 
     /// Called with the 1-based logical line whose bookmark margin was clicked.
     var onToggleBookmark: ((Int) -> Void)?
+
+    /// Supplies the hidden-lines state and line count at draw time so the
+    /// gutter can renumber visible rows and place unhide symbols. Pulled like
+    /// the other providers: the container refreshes its per-document state
+    /// first.
+    var hiddenLinesProvider: (() -> HiddenLinesPresentation)?
+
+    /// Anchor logical line → the hidden line range it represents. Hidden rows
+    /// have no layout of their own, so a range's symbol is drawn on the last
+    /// visible line above it (or the first visible line below when the range
+    /// starts at line 1).
+    var hiddenRangeMarkersProvider: (() -> [Int: ClosedRange<Int>])?
+
+    /// Called with the hidden line range whose margin symbol was clicked.
+    var onUnhideHiddenRange: ((ClosedRange<Int>) -> Void)?
 
     /// Character index where the current gutter drag started; drives
     /// click-and-drag line selection.
@@ -307,14 +389,26 @@ final class LineNumberGutter: NSView {
         let rows = Self.rows(in: textView)
         let markers = foldMarkersProvider?() ?? [:]
         let bookmarkedLines = bookmarkLinesProvider?() ?? []
+        let hidden = hiddenLinesProvider?() ?? .empty
+        let hiddenMarkers = hiddenRangeMarkersProvider?() ?? [:]
         for row in rows {
-            drawNumber("\(row.line)", atTopY: row.topY, height: row.height,
-                       textView: textView, attributes: attributes)
+            // Hiding renumbers the visible rows: the line after a hidden block
+            // takes the next number instead of skipping. Bookmarks and fold
+            // markers still key on `row.line`, the document line.
+            let number = hidden.state.displayNumber(forLine: row.line,
+                                                   lineCount: hidden.lineCount)
+            if let number {
+                drawNumber("\(number)", atTopY: row.topY, height: row.height,
+                           textView: textView, attributes: attributes)
+            }
             if let marker = markers[row.line] {
                 drawMarker(marker, atTopY: row.topY, height: row.height, textView: textView)
             }
             if bookmarkedLines.contains(row.line) {
                 drawBookmark(atTopY: row.topY, height: row.height, textView: textView)
+            }
+            if hiddenMarkers[row.line] != nil {
+                drawHiddenRangeMarker(atTopY: row.topY, height: row.height, textView: textView)
             }
         }
     }
@@ -434,6 +528,25 @@ final class LineNumberGutter: NSView {
         NSBezierPath(ovalIn: rect).fill()
     }
 
+    /// Draws the unhide symbol for a hidden line range: three small dots in the
+    /// trailing half of the marker column, leaving the fold triangle's centre
+    /// free on lines that are also foldable. Clicking it unhides the range.
+    private func drawHiddenRangeMarker(atTopY topY: CGFloat, height: CGFloat,
+                                       textView: NSTextView) {
+        let diameter = max(1.5, min(2.5, numberFont(for: textView).pointSize * 0.18))
+        let rowTop = bounds.height - topY - height
+        let midY = rowTop + height / 2
+        let spacing = diameter + 1.5
+        let lastX = Self.markerColumnWidth - diameter - 1
+        NSColor.secondaryLabelColor.setFill()
+        for step in 0..<3 {
+            let x = lastX - CGFloat(2 - step) * spacing
+            let rect = NSRect(x: x, y: midY - diameter / 2,
+                              width: diameter, height: diameter)
+            NSBezierPath(ovalIn: rect).fill()
+        }
+    }
+
     // MARK: - Mouse
 
     /// Maps a mouse event into the character index it landed on, resolving it
@@ -469,6 +582,23 @@ final class LineNumberGutter: NSView {
         return true
     }
 
+    /// Consumes a press that lands on a hidden-range symbol.
+    ///
+    /// Hidden rows have no layout, so the symbol is drawn on the anchor line
+    /// the container supplies; clicking it asks the editor to unhide that whole
+    /// range.
+    ///
+    /// - Returns: `true` when the press was a hidden-range symbol click.
+    @discardableResult
+    func handleHiddenRangeClick(at point: NSPoint) -> Bool {
+        guard point.x < Self.markerColumnWidth,
+              let line = logicalLine(atViewPoint: point),
+              let range = hiddenRangeMarkersProvider?()[line] else { return false }
+        dragAnchorCharIndex = nil
+        onUnhideHiddenRange?(range)
+        return true
+    }
+
     /// Consumes a press that lands in the bookmark margin.
     ///
     /// Every valid line has a bookmark margin (unlike the fold column, which
@@ -488,6 +618,12 @@ final class LineNumberGutter: NSView {
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        // Unhide symbols share the leading column with fold markers; they are
+        // checked first because they are drawn in its trailing half and are the
+        // only way back for a hidden block with no fold of its own.
+        if handleHiddenRangeClick(at: point) {
+            return
+        }
         // A press on a drawn fold marker toggles the fold and intentionally does
         // not start a line selection.
         if handleFoldMarkerClick(at: point) {

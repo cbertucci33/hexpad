@@ -789,6 +789,8 @@ extension MenuWiringTests {
             "6th Tab", "7th Tab", "8th Tab", "9th Tab",
             "First Tab", "Last Tab",
             "Move Tab to Start", "Move Tab to End",
+            "Apply Color 1", "Apply Color 2", "Apply Color 3",
+            "Apply Color 4", "Apply Color 5", "Remove Color",
         ])
 
         for (offset, number) in (1...9).enumerated() {
@@ -908,6 +910,152 @@ extension MenuWiringTests {
         // the items are applicable, the action is just a no-op.
         XCTAssertTrue(controller.validateMenuItem(moveToStart))
         XCTAssertTrue(controller.validateMenuItem(moveToEnd))
+    }
+
+    // MARK: - View > Hide Lines
+
+    func testViewMenuHasHideAndUnhideLinesItems() throws {
+        let menu = HexpadAppDelegate().buildMainMenu()
+        let viewMenu = try XCTUnwrap(menu.item(withTitle: "View")?.submenu)
+
+        let hide = try XCTUnwrap(viewMenu.item(withTitle: "Hide Lines"))
+        XCTAssertEqual(hide.action, #selector(MainWindowController.hideLines(_:)))
+        XCTAssertNil(hide.target, "validation reaches the controller through the responder chain")
+
+        let unhide = try XCTUnwrap(viewMenu.item(withTitle: "Unhide Lines"))
+        XCTAssertEqual(unhide.action, #selector(MainWindowController.unhideLines(_:)))
+        XCTAssertNil(unhide.target)
+
+        // Both sit with the folding commands, before the zoom block.
+        let titles = viewMenu.items.map(\.title)
+        let fold = try XCTUnwrap(titles.firstIndex(of: "Unfold All"))
+        XCTAssertEqual(Array(titles[(fold + 1)...(fold + 2)]), ["Hide Lines", "Unhide Lines"])
+    }
+
+    func testHideAndUnhideLinesThroughTheController() throws {
+        let (controller, _) = makeController()
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        let textView = try XCTUnwrap(controller.editorTextView)
+
+        doc.replaceAllText(with: "a\nb\nc\nd\n")
+        textView.setSelectedRange(NSRange(location: 0, length: 0))
+
+        func item(_ action: Selector, tag: Int = 0) -> NSMenuItem {
+            let created = NSMenuItem(title: "", action: action, keyEquivalent: "")
+            created.tag = tag
+            return created
+        }
+        let hideItem = item(#selector(MainWindowController.hideLines(_:)))
+        let unhideItem = item(#selector(MainWindowController.unhideLines(_:)))
+
+        XCTAssertTrue(controller.validateMenuItem(hideItem))
+        XCTAssertFalse(controller.validateMenuItem(unhideItem), "nothing is hidden yet")
+
+        // Hide lines 2-3 (the selection covers "b\nc\n").
+        textView.setSelectedRange(NSRange(location: 2, length: 4))
+        controller.hideLines(nil)
+
+        XCTAssertEqual(doc.editorState.hiddenLinesState.lineRanges, [2...3],
+                       "hidden lines persist on the document for the session")
+        XCTAssertTrue(controller.validateMenuItem(unhideItem))
+
+        // The rows are excluded from layout: the gutter would render 1, 2, 3.
+        // (The empty line after the trailing newline has no fragment of its own,
+        // so it never appears in this list.)
+        let rows = LineNumberGutter.rows(in: textView,
+                                         characterRange: NSRange(location: 0, length: 8))
+        XCTAssertEqual(rows.map(\.line), [1, 4],
+                       "hidden lines disappear from layout; logical lines keep their identity")
+        XCTAssertEqual(doc.editorState.hiddenLinesState.displayNumber(forLine: 4, lineCount: 5), 2,
+                       "gutter numbering renumbers the rows after a hidden block")
+
+        // A caret cannot rest inside hidden text: it clamps to the visible
+        // line before the block.
+        textView.setSelectedRange(NSRange(location: 3, length: 0))
+        XCTAssertEqual(textView.selectedRange.location, 1)
+
+        // Unhide is targeted at the hidden block next to the caret.
+        controller.unhideLines(nil)
+        XCTAssertTrue(doc.editorState.hiddenLinesState.isEmpty)
+        XCTAssertFalse(controller.validateMenuItem(unhideItem))
+        XCTAssertEqual(LineNumberGutter.rows(in: textView,
+                                             characterRange: NSRange(location: 0, length: 8)).map(\.line),
+                       [1, 2, 3, 4])
+    }
+
+    func testSelectingAcrossAHiddenBlockUnhidesIt() throws {
+        let (controller, _) = makeController()
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        let textView = try XCTUnwrap(controller.editorTextView)
+
+        doc.replaceAllText(with: "a\nb\nc\nd\n")
+        textView.setSelectedRange(NSRange(location: 2, length: 4))
+        controller.hideLines(nil)
+        XCTAssertEqual(doc.editorState.hiddenLinesState.lineRanges, [2...3])
+
+        // Selecting the whole buffer covers the hidden span, so the selection
+        // observer treats it as "select across to unhide" (N++'s second way).
+        textView.setSelectedRange(NSRange(location: 0, length: 8))
+        XCTAssertTrue(doc.editorState.hiddenLinesState.isEmpty)
+    }
+
+    // MARK: - View > Tab > Colours
+
+    func testViewTabColorItemsAreWiredToOneControllerAction() throws {
+        let tabMenu = try viewTabMenu()
+
+        for (offset, color) in (1...TabColorPalette.colorCount).enumerated() {
+            let item = try XCTUnwrap(tabMenu.item(withTitle: "Apply Color \(color)"))
+            XCTAssertEqual(item.tag, color)
+            XCTAssertEqual(item.action, #selector(MainWindowController.applyTabColor(_:)))
+            XCTAssertNil(item.target)
+            XCTAssertEqual(tabMenu.items.firstIndex(of: item), tabMenu.items.count - 6 + offset)
+        }
+
+        let remove = try XCTUnwrap(tabMenu.item(withTitle: "Remove Color"))
+        XCTAssertEqual(remove.action, #selector(MainWindowController.removeTabColor(_:)))
+        XCTAssertNil(remove.target)
+        XCTAssertTrue(tabMenu.items.last === remove)
+    }
+
+    func testTabColorApplyRemoveAndValidation() throws {
+        let (controller, _) = makeController()
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+
+        func item(_ action: Selector, tag: Int = 0) -> NSMenuItem {
+            let created = NSMenuItem(title: "", action: action, keyEquivalent: "")
+            created.tag = tag
+            return created
+        }
+        let apply = { (tag: Int) in item(#selector(MainWindowController.applyTabColor(_:)), tag: tag) }
+        let remove = item(#selector(MainWindowController.removeTabColor(_:)))
+
+        let firstColor = apply(1)
+        XCTAssertTrue(controller.validateMenuItem(firstColor), "Apply only needs a document")
+        XCTAssertEqual(firstColor.state, .off)
+        XCTAssertFalse(controller.validateMenuItem(remove), "no colour is set")
+
+        let secondColor = apply(2)
+        controller.applyTabColor(secondColor)
+        XCTAssertEqual(doc.tabColorIndex, 2)
+
+        let current = apply(2)
+        XCTAssertTrue(controller.validateMenuItem(current))
+        XCTAssertEqual(current.state, .on, "the current colour is checkmarked")
+        let other = apply(1)
+        XCTAssertTrue(controller.validateMenuItem(other))
+        XCTAssertEqual(other.state, .off)
+        XCTAssertTrue(controller.validateMenuItem(remove))
+
+        controller.applyTabColor(apply(5))
+        XCTAssertEqual(doc.tabColorIndex, 5)
+
+        controller.removeTabColor(nil)
+        XCTAssertNil(doc.tabColorIndex)
+        XCTAssertFalse(controller.validateMenuItem(remove))
+        let cleared = apply(5)
+        _ = controller.validateMenuItem(cleared)
+        XCTAssertEqual(cleared.state, .off)
     }
 
     // MARK: - Token styles (Search > Style ...)

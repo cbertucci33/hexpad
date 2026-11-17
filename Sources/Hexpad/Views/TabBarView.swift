@@ -409,5 +409,16 @@ class TabButton: NSButton {
             line.lineWidth = 2
             line.stroke()
         }
+        // Per-tab colour bar (View > Tab > Apply Color). Three points high on
+        // the bottom edge; it replaces the selection underline's look when a
+        // colour is set, so the tab still reads as the active one. Resolved on
+        // every draw, and `viewDidChangeEffectiveAppearance` requests a redraw,
+        // so a light/dark switch gets the matching palette.
+        if let colorIndex = doc.tabColorIndex,
+           let color = TabColorPalette.color(for: colorIndex,
+                                             appearance: effectiveAppearance) {
+            color.setFill()
+            NSRect(x: 0, y: 0, width: tabWidth, height: 3).fill()
+        }
     }
 }

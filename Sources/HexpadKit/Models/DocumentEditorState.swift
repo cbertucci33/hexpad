@@ -30,6 +30,12 @@ public struct DocumentEditorState: Equatable {
     /// styles survive a session restart with the document that owns them.
     public var tokenStyleState: TokenStyleState
 
+    /// The whole lines this document hides (View > Hide Lines). Hidden lines
+    /// are presentation-only: the buffer keeps them, so search, line ops and
+    /// saving still see the full text. Persisted with `editorState`, so a
+    /// restored tab hides the same lines it did before the restart.
+    public var hiddenLinesState: HideLinesState
+
     /// Restored defaults. These intentionally match the app's startup state,
     /// so a session written before per-document editor state existed restores
     /// exactly as it did previously.
@@ -39,12 +45,14 @@ public struct DocumentEditorState: Equatable {
                 scrollOffset: CGPoint = .zero,
                 wordWrapEnabled: Bool = false,
                 zoomScale: CGFloat = 1.0,
-                tokenStyleState: TokenStyleState = TokenStyleState()) {
+                tokenStyleState: TokenStyleState = TokenStyleState(),
+                hiddenLinesState: HideLinesState = HideLinesState()) {
         self.caretRange = caretRange
         self.scrollOffset = scrollOffset
         self.wordWrapEnabled = wordWrapEnabled
         self.zoomScale = zoomScale
         self.tokenStyleState = tokenStyleState
+        self.hiddenLinesState = hiddenLinesState
     }
 }
 
@@ -63,7 +71,8 @@ extension DocumentEditorState {
             "scrollY": Double(scrollOffset.y),
             "wordWrap": wordWrapEnabled,
             "zoomScale": Double(zoomScale),
-            "tokenStyles": tokenStyleState.toSessionData()
+            "tokenStyles": tokenStyleState.toSessionData(),
+            "hiddenRanges": hiddenLinesState.toSessionData()
         ]
     }
 
@@ -98,6 +107,11 @@ extension DocumentEditorState {
         // key and restore as an empty state. Ranges are clipped against the
         // live text when the editor builds its TokenStyleModel.
         state.tokenStyleState = TokenStyleState.fromSessionData(data["tokenStyles"] as? [String: Any])
+
+        // Hidden lines are stored as 1-based line ranges and re-resolved
+        // against the live text on bind, so a stale range never hides an
+        // arbitrary offset.
+        state.hiddenLinesState = HideLinesState.fromSessionData(data["hiddenRanges"] as? [String: Any])
 
         return state
     }

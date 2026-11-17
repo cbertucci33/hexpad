@@ -116,6 +116,19 @@ extension HexpadAppDelegate {
         viewMenu.addItem(.separator())
         viewMenu.addItem(foldAllItem)
         viewMenu.addItem(unfoldAllItem)
+        // Notepad++'s Hide Lines / Unhide Lines. Both nil-targeted so the
+        // controller disables Unhide when nothing is hidden and Hide when no
+        // document is open.
+        let hideLinesItem = NSMenuItem(title: "Hide Lines",
+                                       action: #selector(MainWindowController.hideLines(_:)),
+                                       keyEquivalent: "")
+        hideLinesItem.target = nil
+        viewMenu.addItem(hideLinesItem)
+        let unhideLinesItem = NSMenuItem(title: "Unhide Lines",
+                                         action: #selector(MainWindowController.unhideLines(_:)),
+                                         keyEquivalent: "")
+        unhideLinesItem.target = nil
+        viewMenu.addItem(unhideLinesItem)
         viewMenu.addItem(.separator())
         viewMenu.addItem(zoomInItem)
         viewMenu.addItem(zoomOutItem)
@@ -199,6 +212,23 @@ extension HexpadAppDelegate {
         moveTabToEndItem.target = nil
         tabMenu.addItem(moveTabToStartItem)
         tabMenu.addItem(moveTabToEndItem)
+        // N++'s per-tab colour bars. The tag on each Apply item is the 1-based
+        // palette index; validation puts a checkmark on the document's current
+        // colour and disables Remove until one is set.
+        tabMenu.addItem(.separator())
+        for color in 1...TabColorPalette.colorCount {
+            let colorItem = NSMenuItem(title: "Apply Color \(color)",
+                                       action: #selector(MainWindowController.applyTabColor(_:)),
+                                       keyEquivalent: "")
+            colorItem.tag = color
+            colorItem.target = nil
+            tabMenu.addItem(colorItem)
+        }
+        let removeColorItem = NSMenuItem(title: "Remove Color",
+                                         action: #selector(MainWindowController.removeTabColor(_:)),
+                                         keyEquivalent: "")
+        removeColorItem.target = nil
+        tabMenu.addItem(removeColorItem)
         tabItem.submenu = tabMenu
         viewMenu.addItem(tabItem)
         // View > View Current File In > Default Browser: hand the selected
