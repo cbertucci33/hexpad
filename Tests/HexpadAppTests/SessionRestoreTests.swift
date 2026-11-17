@@ -233,4 +233,41 @@ final class SessionRestoreTests: XCTestCase {
         XCTAssertEqual(controller.tabStore.count, 1, "group 1 must not gain a duplicate tab")
         XCTAssertNil(controller.tabStore.selectedDocument?.filePath)
     }
+
+    // MARK: - P16e: Save All
+
+    func testSaveAllSavesDirtyFileBackedDocumentsInBothGroups() throws {
+        let primaryURL = testDir.appendingPathComponent("save-all-primary.txt")
+        let secondaryURL = testDir.appendingPathComponent("save-all-secondary.txt")
+        try "original\n".write(to: primaryURL, atomically: true, encoding: .utf8)
+        try "original\n".write(to: secondaryURL, atomically: true, encoding: .utf8)
+
+        let (controller, _) = makeController()
+        controller.openSplitView()
+
+        let primaryDoc = DocumentModel(text: "original\n", filePath: primaryURL)
+        primaryDoc.text = "primary edit\n"
+        let secondaryDoc = DocumentModel(text: "original\n", filePath: secondaryURL)
+        secondaryDoc.text = "secondary edit\n"
+        let untitled = DocumentModel(text: "scratch")
+        untitled.text = "scratch edit"
+
+        controller.tabStore.documents = [primaryDoc, untitled]
+        let secondaryStore = try XCTUnwrap(
+            controller.allPanes.first { $0.group == .secondary }?.tabStore
+        )
+        secondaryStore.addDocument(secondaryDoc)
+
+        XCTAssertTrue(primaryDoc.unsavedChanges)
+        XCTAssertTrue(secondaryDoc.unsavedChanges)
+
+        controller.saveAllDocuments()
+
+        XCTAssertEqual(try String(contentsOf: primaryURL, encoding: .utf8), "primary edit\n")
+        XCTAssertEqual(try String(contentsOf: secondaryURL, encoding: .utf8), "secondary edit\n")
+        XCTAssertFalse(primaryDoc.unsavedChanges)
+        XCTAssertFalse(secondaryDoc.unsavedChanges)
+        XCTAssertTrue(untitled.unsavedChanges,
+                      "Save All leaves untitled buffers for a per-tab Save As")
+    }
 }

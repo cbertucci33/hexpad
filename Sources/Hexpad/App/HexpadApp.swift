@@ -256,6 +256,14 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         activeController?.saveAsFile()
     }
     
+    @objc func saveAllFiles() {
+        activeController?.saveAllDocuments()
+    }
+    
+    @objc func openFolderAsWorkspace() {
+        activeController?.openFolderAsWorkspace()
+    }
+    
     @objc func closeTab() {
         activeController?.closeSelectedTab()
     }

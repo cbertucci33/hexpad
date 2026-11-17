@@ -111,6 +111,9 @@ class MainWindowController: NSViewController {
     /// Single reusable Function List panel. The View item is nil-targeted, so
     /// this controller owns both the toggle and the no-document validation.
     private var functionListController: FunctionListWindowController?
+    /// Reusable Open Folder as Workspace listing panel. v1 is a flat recursive
+    /// list; tree expansion, watching and persistence are deferred.
+    private var workspacePanelController: WorkspacePanelController?
     /// Debounces outline rebuilds while typing. The panel is a view of the
     /// document, so bursts of edits should produce one model scan, not one per
     /// keystroke.
@@ -674,6 +677,110 @@ class MainWindowController: NSViewController {
         }
     }
     
+    // MARK: - Save All
+
+    /// File > Save All. Writes every dirty file-backed document in both tab
+    /// groups through the ordinary save path. Untitled buffers are skipped
+    /// (saving one needs a name, so that remains a per-tab Save As); a failed
+    /// write does not stop the sweep and all failures are reported afterwards.
+    /// The menu item stays enabled even with nothing dirty, like N++.
+    func saveAllDocuments() {
+        var failures: [String] = []
+        var savedAny = false
+
+        for doc in allPanes.flatMap({ $0.tabStore.documents }) {
+            guard doc.filePath != nil, doc.unsavedChanges else { continue }
+            do {
+                try doc.save()
+                savedAny = true
+            } catch {
+                failures.append("\(doc.name): \(error.localizedDescription)")
+            }
+        }
+
+        guard savedAny || !failures.isEmpty else { return }
+        NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
+        refreshTabBar()
+        updateStatusBar()
+
+        if !failures.isEmpty {
+            showError("Failed to save file:\n" + failures.joined(separator: "\n"))
+        }
+    }
+
+    // MARK: - Workspace
+
+    /// File > Open Folder as Workspace…. Picks a folder and shows a flat,
+    /// recursively built list of text-ish files. Double-clicking a row opens
+    /// it in the focused group's editor through the normal open path.
+    func openFolderAsWorkspace() {
+        let panel = NSOpenPanel()
+        panel.title = "Open Folder as Workspace"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        let workspace: WorkspacePanelController
+        if let existing = workspacePanelController {
+            existing.update(rootURL: url)
+            workspace = existing
+        } else {
+            let created = WorkspacePanelController(rootURL: url)
+            created.onOpenFile = { [weak self] path in
+                guard let self else { return }
+                self.openFile(atPath: path)
+                self.view.window?.makeKeyAndOrderFront(nil)
+            }
+            workspacePanelController = created
+            workspace = created
+        }
+        workspace.showWindow(nil)
+        workspace.window?.makeKeyAndOrderFront(nil)
+    }
+
+    // MARK: - Reload from Disk
+
+    /// File > Reload from Disk. Reuses the external-change reload path. A clean
+    /// buffer reloads silently; a dirty one asks before discarding edits.
+    /// Validation disables the item when the focused tab has no file.
+    @objc func reloadActiveDocument(_ sender: Any?) {
+        guard let doc = tabStore.selectedDocument,
+              let url = doc.filePath else { return }
+
+        if doc.unsavedChanges {
+            let alert = NSAlert()
+            alert.messageText = "Discard unsaved changes to \(doc.name)?"
+            alert.informativeText = "The file will be reloaded from disk and your unsaved edits will be lost."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Reload")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            showError("The file no longer exists on disk.")
+            return
+        }
+
+        if !reloadDocument(doc, from: url) {
+            // The on-disk text already matches the buffer. After a confirmed
+            // discard that still means dropping the dirty baseline.
+            doc.setModified(false)
+        }
+
+        // The explicit reload supersedes this tick's external-change signal.
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+           let modDate = attrs[.modificationDate] as? Date {
+            seenModDates[doc.id] = modDate
+        }
+
+        refreshTabBar()
+        updateEditor(forceRebind: true)
+        updateStatusBar()
+    }
+
     // MARK: - Print
 
     /// File > Print… (Cmd+P). Prints the focused group's current document
@@ -2575,6 +2682,9 @@ extension MainWindowController: NSMenuItemValidation {
         }
         if menuItem.action == #selector(MainWindowController.showDocumentSwitcher(_:)) {
             return canShowDocumentSwitcher()
+        }
+        if menuItem.action == #selector(MainWindowController.reloadActiveDocument(_:)) {
+            return tabStore.selectedDocument?.filePath != nil
         }
         if menuItem.action == #selector(MainWindowController.printDocument(_:)) {
             return canPrintDocument()
