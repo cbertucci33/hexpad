@@ -1764,6 +1764,60 @@ class MainWindowController: NSViewController {
         findBar?.findPrevious()
     }
 
+    // MARK: - Select and Find / Find (Volatile)
+
+    /// The range Select and Find / volatile find act on: the editor selection,
+    /// or the word at the caret when the selection is empty. nil means the
+    /// command no-ops (there is no query to derive), which is also why the menu
+    /// validation can stay enabled.
+    private func selectionSearchAnchor() -> NSRange? {
+        guard let textView = editorTextView else { return nil }
+        return SearchEngine.selectionSearchRange(text: textView.string,
+                                                  selection: textView.selectedRange)
+    }
+
+    private func selectionSearchTerm(_ anchor: NSRange, in textView: NSTextView) -> String {
+        (textView.string as NSString).substring(with: anchor)
+    }
+
+    /// Search > Select and Find Next. Seeds the find bar with the current
+    /// selection (or word at the caret) and selects the following match.
+    @objc func selectAndFindNext(_ sender: Any?) {
+        performSelectAndFind(forward: true)
+    }
+
+    /// Search > Select and Find Previous. See `selectAndFindNext`.
+    @objc func selectAndFindPrevious(_ sender: Any?) {
+        performSelectAndFind(forward: false)
+    }
+
+    /// Search > Find (Volatile) Next. One-shot search of the selection; leaves
+    /// the find bar's query and history alone.
+    @objc func findVolatileNext(_ sender: Any?) {
+        performVolatileFind(forward: true)
+    }
+
+    /// Search > Find (Volatile) Previous. See `findVolatileNext`.
+    @objc func findVolatilePrevious(_ sender: Any?) {
+        performVolatileFind(forward: false)
+    }
+
+    private func performSelectAndFind(forward: Bool) {
+        guard let find = findBar, let textView = editorTextView,
+              let anchor = selectionSearchAnchor() else { return }
+        find.selectAndFind(selectionSearchTerm(anchor, in: textView),
+                           direction: forward ? .next : .previous,
+                           anchor: anchor)
+    }
+
+    private func performVolatileFind(forward: Bool) {
+        guard let find = findBar, let textView = editorTextView,
+              let anchor = selectionSearchAnchor() else { return }
+        find.findVolatile(selectionSearchTerm(anchor, in: textView),
+                          direction: forward ? .next : .previous,
+                          anchor: anchor)
+    }
+
     // MARK: - Find All (open documents)
 
     /// Results window for Find All in Current/All Opened Documents. Created on

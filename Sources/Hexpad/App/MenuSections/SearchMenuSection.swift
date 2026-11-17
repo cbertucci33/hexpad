@@ -16,6 +16,32 @@ extension HexpadAppDelegate {
         searchMenu.addItem(findNextItem)
         searchMenu.addItem(findPrevItem)
 
+        // N++ Select and Find / Find (Volatile). No chords: N++ assigns none,
+        // and Cmd+F / Cmd+G / Shift+Cmd+G already cover the field-driven paths.
+        // Nil-targeted like Find All so the focused window's controller can
+        // read the editor selection. Validation stays enabled for all four;
+        // the actions no-op when there is no selection and no word at caret.
+        let selectFindNextItem = NSMenuItem(title: "Select and Find Next",
+                                            action: #selector(MainWindowController.selectAndFindNext(_:)),
+                                            keyEquivalent: "")
+        selectFindNextItem.target = nil
+        let selectFindPrevItem = NSMenuItem(title: "Select and Find Previous",
+                                            action: #selector(MainWindowController.selectAndFindPrevious(_:)),
+                                            keyEquivalent: "")
+        selectFindPrevItem.target = nil
+        let volatileNextItem = NSMenuItem(title: "Find (Volatile) Next",
+                                          action: #selector(MainWindowController.findVolatileNext(_:)),
+                                          keyEquivalent: "")
+        volatileNextItem.target = nil
+        let volatilePrevItem = NSMenuItem(title: "Find (Volatile) Previous",
+                                          action: #selector(MainWindowController.findVolatilePrevious(_:)),
+                                          keyEquivalent: "")
+        volatilePrevItem.target = nil
+        searchMenu.addItem(selectFindNextItem)
+        searchMenu.addItem(selectFindPrevItem)
+        searchMenu.addItem(volatileNextItem)
+        searchMenu.addItem(volatilePrevItem)
+
         // The Find dialog's "Find All" pair lives here as direct N++-style
         // items. Nil-targeted so the focused window's controller (which owns
         // the open documents) runs them and supplies validation.

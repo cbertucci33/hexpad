@@ -395,3 +395,214 @@ final class FindAllTests: XCTestCase {
         XCTAssertTrue(controller.validateMenuItem(item))
     }
 }
+
+// MARK: - S18c-1: Select and Find / Find (Volatile)
+
+extension FindAllTests {
+
+    private func button(named title: String, in bar: FindBar) throws -> NSButton {
+        try XCTUnwrap(bar.subviews.compactMap { $0 as? NSButton }
+            .first { $0.title == title })
+    }
+
+    private func select(_ range: NSRange, on controller: MainWindowController) throws -> NSTextView {
+        let textView = try XCTUnwrap(controller.editorTextView)
+        textView.setSelectedRange(range)
+        return textView
+    }
+
+    // MARK: Menu wiring
+
+    func testSearchMenuHasSelectAndFindAndVolatileItemsInNotepadOrder() throws {
+        let menu = HexpadAppDelegate().buildMainMenu()
+        let searchMenu = try XCTUnwrap(menu.item(withTitle: "Search")?.submenu)
+        let titles = searchMenu.items.map(\.title)
+
+        let previousFind = try XCTUnwrap(titles.firstIndex(of: "Find Previous"))
+        XCTAssertEqual(Array(titles[(previousFind + 1)...(previousFind + 4)]),
+                       ["Select and Find Next",
+                        "Select and Find Previous",
+                        "Find (Volatile) Next",
+                        "Find (Volatile) Previous"],
+                       "N++ order, right after the field-driven Find Next/Previous")
+
+        let expected: [(String, Selector)] = [
+            ("Select and Find Next", #selector(MainWindowController.selectAndFindNext(_:))),
+            ("Select and Find Previous", #selector(MainWindowController.selectAndFindPrevious(_:))),
+            ("Find (Volatile) Next", #selector(MainWindowController.findVolatileNext(_:))),
+            ("Find (Volatile) Previous", #selector(MainWindowController.findVolatilePrevious(_:))),
+        ]
+        for (title, action) in expected {
+            let item = try XCTUnwrap(searchMenu.items.first { $0.title == title })
+            XCTAssertEqual(item.action, action)
+            XCTAssertNil(item.target, "nil target routes to the focused window's controller")
+            XCTAssertEqual(item.keyEquivalent, "", "N++ assigns no chord to these four")
+        }
+    }
+
+    // MARK: Select and Find (stateful)
+
+    func testSelectAndFindNextSeedsFindStateAndJumpsToFollowingMatch() throws {
+        let (controller, _) = makeController()
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        doc.text = "foo bar foo baz foo"
+        let textView = try select(NSRange(location: 0, length: 3), on: controller)
+
+        controller.selectAndFindNext(nil)
+
+        let bar = try XCTUnwrap(controller.findBar)
+        XCTAssertEqual(bar.searchField.stringValue, "foo", "the selection becomes the query")
+        XCTAssertEqual(textView.selectedRange, NSRange(location: 8, length: 3),
+                       "next must skip the occurrence it was invoked from")
+        XCTAssertEqual(bar.matchCountLabel.stringValue, "2 of 3")
+        XCTAssertEqual(UserDefaults.standard.stringArray(forKey: "HexpadFindSearchHistory")?.first,
+                       "foo", "Select and Find commits the query to history")
+    }
+
+    func testSelectAndFindPreviousJumpsBackwards() throws {
+        let (controller, _) = makeController()
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        doc.text = "foo bar foo baz foo"
+        let textView = try select(NSRange(location: 8, length: 3), on: controller)
+
+        controller.selectAndFindPrevious(nil)
+
+        XCTAssertEqual(textView.selectedRange, NSRange(location: 0, length: 3))
+        XCTAssertEqual(controller.findBar?.matchCountLabel.stringValue, "1 of 3")
+    }
+
+    func testSelectAndFindUsesWordAtCaretWhenSelectionIsEmpty() throws {
+        let (controller, _) = makeController()
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        doc.text = "alpha beta alpha"
+        let textView = try select(NSRange(location: 2, length: 0), on: controller)
+
+        controller.selectAndFindNext(nil)
+
+        XCTAssertEqual(controller.findBar?.searchField.stringValue, "alpha")
+        XCTAssertEqual(textView.selectedRange, NSRange(location: 11, length: 5))
+    }
+
+    func testSelectAndFindWrapsWhenTheBarWraps() throws {
+        let (controller, _) = makeController()
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        doc.text = "foo bar foo"
+        let textView = try select(NSRange(location: 8, length: 3), on: controller)
+
+        controller.selectAndFindNext(nil)
+
+        XCTAssertEqual(textView.selectedRange, NSRange(location: 0, length: 3),
+                       "Wrap is on by default in the bar")
+    }
+
+    func testSelectAndFindNoOpsWhenCaretIsOffAWord() throws {
+        let (controller, _) = makeController()
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        doc.text = "alpha  beta"
+        // Caret on the second of two spaces: not directly after a word.
+        let textView = try select(NSRange(location: 6, length: 0), on: controller)
+        let bar = try XCTUnwrap(controller.findBar)
+
+        controller.selectAndFindNext(nil)
+        controller.selectAndFindPrevious(nil)
+
+        XCTAssertEqual(textView.selectedRange, NSRange(location: 6, length: 0))
+        XCTAssertEqual(bar.searchField.stringValue, "", "nothing was seeded")
+        XCTAssertNil(UserDefaults.standard.stringArray(forKey: "HexpadFindSearchHistory"))
+    }
+
+    func testSelectAndFindUsesTheBarMode() throws {
+        let (controller, _) = makeController()
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        doc.text = "a.b axb"
+        // Regex mode: the selected "a.b" is a pattern, so it matches "axb".
+        let bar = try setQuery("unused", on: controller)
+        try button(named: "Regex", in: bar).performClick(nil)
+        let textView = try select(NSRange(location: 0, length: 3), on: controller)
+
+        controller.selectAndFindNext(nil)
+
+        XCTAssertEqual(bar.searchField.stringValue, "a.b")
+        XCTAssertEqual(textView.selectedRange, NSRange(location: 4, length: 3))
+    }
+
+    // MARK: Find (Volatile) (one-shot)
+
+    func testVolatileFindSelectsNextMatchWithoutTouchingFindState() throws {
+        let (controller, _) = makeController()
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        doc.text = "foo bar foo baz foo"
+        let bar = try setQuery("bar", on: controller)
+        XCTAssertEqual(bar.matchCountLabel.stringValue, "1 of 1")
+        let textView = try select(NSRange(location: 0, length: 3), on: controller)
+
+        controller.findVolatileNext(nil)
+
+        XCTAssertEqual(textView.selectedRange, NSRange(location: 8, length: 3),
+                       "the next \"foo\", since the selection was the query")
+        XCTAssertEqual(bar.searchField.stringValue, "bar", "volatile keeps the old query")
+        XCTAssertEqual(bar.matchCountLabel.stringValue, "1 of 1", "and the old match list")
+        XCTAssertNil(UserDefaults.standard.stringArray(forKey: "HexpadFindSearchHistory"),
+                     "no history entry for the volatile term")
+
+        // The field-driven navigation must still continue from "bar", proving
+        // the volatile jump left lastQuery/allMatches alone.
+        controller.findNext()
+        XCTAssertEqual(textView.selectedRange, (doc.text as NSString).range(of: "bar"))
+    }
+
+    func testVolatileFindPreviousJumpsBackwards() throws {
+        let (controller, _) = makeController()
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        doc.text = "foo bar foo baz foo"
+        _ = try setQuery("bar", on: controller)
+        let textView = try select(NSRange(location: 8, length: 3), on: controller)
+
+        controller.findVolatilePrevious(nil)
+
+        XCTAssertEqual(textView.selectedRange, NSRange(location: 0, length: 3))
+    }
+
+    func testVolatileFindHonoursBarFlags() throws {
+        let (controller, _) = makeController()
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        doc.text = "cat catalog cat"
+        let bar = try setQuery("unused", on: controller)
+        try button(named: "Whole Word", in: bar).performClick(nil)
+        let textView = try select(NSRange(location: 0, length: 3), on: controller)
+
+        controller.findVolatileNext(nil)
+
+        XCTAssertEqual(textView.selectedRange, NSRange(location: 12, length: 3),
+                       "whole word skips the occurrence inside \"catalog\"")
+    }
+
+    func testVolatileFindUsesTheBarMode() throws {
+        let (controller, _) = makeController()
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        doc.text = "a.b axb"
+        let bar = try setQuery("unused", on: controller)
+        try button(named: "Regex", in: bar).performClick(nil)
+        let textView = try select(NSRange(location: 0, length: 3), on: controller)
+
+        controller.findVolatileNext(nil)
+
+        XCTAssertEqual(textView.selectedRange, NSRange(location: 4, length: 3),
+                       "the selected text is used as a regex in Regex mode")
+        XCTAssertEqual(bar.searchField.stringValue, "unused")
+    }
+
+    func testVolatileFindNoOpsWhenCaretIsOffAWord() throws {
+        let (controller, _) = makeController()
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        doc.text = "alpha  beta"
+        _ = try setQuery("alpha", on: controller)
+        let textView = try select(NSRange(location: 6, length: 0), on: controller)
+
+        controller.findVolatileNext(nil)
+        controller.findVolatilePrevious(nil)
+
+        XCTAssertEqual(textView.selectedRange, NSRange(location: 6, length: 0))
+    }
+}
+

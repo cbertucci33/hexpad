@@ -834,6 +834,55 @@ class FindBar: NSView, NSSearchFieldDelegate {
         updateMatchDisplay()
     }
     
+    // MARK: - Select and Find / Find (Volatile)
+
+    /// Search > Select and Find Next/Previous.
+    ///
+    /// Seeds the find state from `term` (the caller resolved the selection or
+    /// word at the caret) exactly as if it had been typed: field, history and
+    /// `lastQuery` move together, so a following Cmd+G continues from here.
+    /// Then jumps to the neighbouring match, skipping the occurrence the
+    /// command was invoked from.
+    @discardableResult
+    func selectAndFind(_ term: String, direction: SearchDirection, anchor: NSRange) -> Bool {
+        guard let doc = tabStore?.selectedDocument, !term.isEmpty else { return false }
+        searchField.stringValue = term
+        commitSearchHistory()
+        // Build the match list without yanking the selection first; the jump
+        // below is the only selection change this action makes.
+        performFind(select: false)
+        guard let index = SearchEngine.targetMatchIndex(
+            in: allMatches, from: anchor, direction: direction,
+            wrap: searchOptions.contains(.wrapAround)) else { return false }
+        currentMatchIndex = index
+        updateMatchDisplay()
+        return true
+    }
+
+    /// Search > Find (Volatile) Next/Previous.
+    ///
+    /// One-shot: searches `term` with the bar's current mode and flags but
+    /// leaves the whole find state untouched (no field, history, match list or
+    /// label update). The selection *is* the query here, so the "Selection"
+    /// scope flag is not applied and the whole buffer is searched.
+    @discardableResult
+    func findVolatile(_ term: String, direction: SearchDirection, anchor: NSRange) -> Bool {
+        guard let doc = tabStore?.selectedDocument,
+              let textView = editorContainer?.textView,
+              !term.isEmpty else { return false }
+        // Extended mode rewrites escapes before matching, exactly like the
+        // field-driven searchPattern path.
+        let pattern = searchMode == .extended ? ExtendedSearch.translate(term) : term
+        let matches = SearchEngine.search(doc.text, pattern: pattern, options: searchOptions)
+        guard let index = SearchEngine.targetMatchIndex(
+            in: matches, from: anchor, direction: direction,
+            wrap: searchOptions.contains(.wrapAround)) else { return false }
+        let range = clampedMatchRange(matches[index].range, in: textView)
+        textView.setSelectedRange(range)
+        textView.scrollRangeToVisible(range)
+        return true
+    }
+
     private func updateMatchDisplay() {
         guard let textView = editorContainer?.textView,
               allMatches.indices.contains(currentMatchIndex) else { return }
