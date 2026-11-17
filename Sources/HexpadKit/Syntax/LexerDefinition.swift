@@ -235,7 +235,12 @@ public enum LexerDefinitions {
         .clojure,
         .dart,
         .ocaml,
-        .erlang
+        .erlang,
+        .racket,
+        .fsharp,
+        .groovy,
+        .nim,
+        .zig
     ]
 
     private static let byLanguage: [Language: LexerDefinition] = {

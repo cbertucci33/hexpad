@@ -66,6 +66,13 @@ public enum Language: String, CaseIterable, Identifiable {
     case dart = "Dart"
     case ocaml = "OCaml"
     case erlang = "Erlang"
+    // L21a-3 language batch (appended in declaration order; earlier cases
+    // keep their raw values and positions).
+    case racket = "Racket"
+    case fsharp = "F#"
+    case groovy = "Groovy"
+    case nim = "Nim"
+    case zig = "Zig"
     
     public var id: String { rawValue }
     
@@ -111,6 +118,12 @@ public enum Language: String, CaseIterable, Identifiable {
         case let x where x.hasSuffix(".dart"): return .dart
         case let x where x.hasSuffix(".ml") || x.hasSuffix(".mli"): return .ocaml
         case let x where x.hasSuffix(".erl") || x.hasSuffix(".hrl"): return .erlang
+        case let x where x.hasSuffix(".rkt"): return .racket
+        case let x where x.hasSuffix(".fs") || x.hasSuffix(".fsi")
+            || x.hasSuffix(".fsx"): return .fsharp
+        case let x where x.hasSuffix(".groovy") || x.hasSuffix(".gradle"): return .groovy
+        case let x where x.hasSuffix(".nim") || x.hasSuffix(".nims"): return .nim
+        case let x where x.hasSuffix(".zig"): return .zig
         default: return .plain
         }
     }

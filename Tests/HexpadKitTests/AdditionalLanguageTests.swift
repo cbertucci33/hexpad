@@ -160,6 +160,70 @@ final class AdditionalLanguageTests: XCTestCase {
         commentPrefix: "%")
     }
 
+    func testRacketFixtureTokenizes() throws {
+        try assertTokenizes("""
+        ; note
+        (define (greet name)
+          (let ([count 42])
+            (string-append "hi" name)))
+        """,
+        language: .racket,
+        keyword: "define",
+        commentPrefix: ";")
+    }
+
+    func testFSharpFixtureTokenizes() throws {
+        try assertTokenizes("""
+        // note
+        let greet name =
+            let count = 42
+            sprintf "hi %s" name
+        """,
+        language: .fsharp,
+        keyword: "let",
+        commentPrefix: "//")
+    }
+
+    func testGroovyFixtureTokenizes() throws {
+        try assertTokenizes("""
+        // note
+        class Greeter {
+            def name = "hi"
+            int count = 42
+        }
+        """,
+        language: .groovy,
+        keyword: "class",
+        commentPrefix: "//")
+    }
+
+    func testNimFixtureTokenizes() throws {
+        try assertTokenizes("""
+        # note
+        proc greet(name: string): string =
+          let count = 42
+          result = "hi"
+        """,
+        language: .nim,
+        keyword: "proc",
+        commentPrefix: "#")
+    }
+
+    func testZigFixtureTokenizes() throws {
+        try assertTokenizes("""
+        // note
+        const Greeter = struct {
+            count: i32 = 42,
+        };
+        fn greet(name: []const u8) []const u8 {
+            return "hi";
+        }
+        """,
+        language: .zig,
+        keyword: "const",
+        commentPrefix: "//")
+    }
+
     func testNewFileExtensionsMapToLanguages() {
         let expected: [(String, Language)] = [
             ("script.pl", .perl), ("Module.pm", .perl),
@@ -169,7 +233,12 @@ final class AdditionalLanguageTests: XCTestCase {
             ("core.clj", .clojure), ("ui.cljs", .clojure), ("shared.cljc", .clojure),
             ("main.dart", .dart),
             ("main.ml", .ocaml), ("main.mli", .ocaml),
-            ("server.erl", .erlang), ("server.hrl", .erlang)
+            ("server.erl", .erlang), ("server.hrl", .erlang),
+            ("main.rkt", .racket),
+            ("Program.fs", .fsharp), ("Types.fsi", .fsharp), ("Script.fsx", .fsharp),
+            ("build.gradle", .groovy), ("app.groovy", .groovy),
+            ("main.nim", .nim), ("config.nims", .nim),
+            ("main.zig", .zig)
         ]
 
         for (name, language) in expected {
