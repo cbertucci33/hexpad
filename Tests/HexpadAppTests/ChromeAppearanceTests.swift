@@ -120,4 +120,53 @@ final class ChromeAppearanceTests: XCTestCase {
         XCTAssertEqual(main.toolbarStyle, .unifiedCompact)
         XCTAssertNotNil(main.toolbar)
     }
+
+    /// Perceived luminance of `color` composited over `background`, so a
+    /// translucent system colour (labelColor in Dark) is judged by what it
+    /// actually paints, not by its raw components.
+    private func luminance(of color: NSColor?, over background: NSColor?) -> CGFloat {
+        guard let fg = color?.usingColorSpace(.sRGB),
+              let bg = background?.usingColorSpace(.sRGB) else { return -1 }
+        let alpha = fg.alphaComponent
+        func blend(_ foreground: CGFloat, _ behind: CGFloat) -> CGFloat {
+            foreground * alpha + behind * (1 - alpha)
+        }
+        let r = blend(fg.redComponent, bg.redComponent)
+        let g = blend(fg.greenComponent, bg.greenComponent)
+        let b = blend(fg.blueComponent, bg.blueComponent)
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+    }
+
+    /// The selected tab's caption must stay readable on
+    /// selectedContentBackgroundColor. Before the fix it inherited labelColor,
+    /// i.e. near-black text on the Light-mode accent background.
+    func testSelectedTabLabelResolvesLighterThanUnselected() {
+        let button = TabButton(doc: DocumentModel(text: ""),
+                               index: 0,
+                               tabWidth: 140,
+                               tabHeight: 32)
+        window.contentView?.addSubview(button)
+        button.frame = NSRect(x: 0, y: 0, width: 140, height: 32)
+        guard let label = button.subviews.compactMap({ $0 as? NSTextField }).first else {
+            return XCTFail("the tab must expose exactly one title label")
+        }
+
+        func labelLuminance(selected: Bool) -> CGFloat {
+            button.isSelected = selected
+            let background = button.layer?.backgroundColor.flatMap { NSColor(cgColor: $0) }
+            return luminance(of: label.textColor, over: background)
+        }
+
+        window.appearance = NSAppearance(named: .aqua)
+        button.viewDidChangeEffectiveAppearance()
+        XCTAssertGreaterThan(labelLuminance(selected: true),
+                             labelLuminance(selected: false),
+                             "Light: the selected caption must be lighter than the unselected one")
+
+        window.appearance = NSAppearance(named: .darkAqua)
+        button.viewDidChangeEffectiveAppearance()
+        XCTAssertGreaterThan(labelLuminance(selected: true),
+                             labelLuminance(selected: false),
+                             "Dark: the selected caption must be lighter than the unselected one")
+    }
 }

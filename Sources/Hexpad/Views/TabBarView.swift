@@ -11,6 +11,12 @@ enum ChromeColor {
         appearance.performAsCurrentDrawingAppearance { resolved = color.cgColor }
         return resolved
     }
+
+    /// Same freeze-avoidance for a dynamic colour stored on a view property
+    /// (e.g. `textColor`): resolve it to a concrete colour for `appearance`.
+    static func resolved(_ color: NSColor, for appearance: NSAppearance) -> NSColor {
+        NSColor(cgColor: cgColor(color, for: appearance)) ?? color
+    }
 }
 
 class TabBarView: NSView {
@@ -314,12 +320,18 @@ class TabButton: NSButton {
         }
     }
 
-    /// Resolves the tab's background for the current appearance. Called on
-    /// selection changes and whenever the effective appearance changes; the
-    /// CGColor snapshot would otherwise keep the old light/dark value.
+    /// Resolves the tab's background and caption for the current appearance.
+    /// Called on selection changes and whenever the effective appearance
+    /// changes; the CGColor snapshot would otherwise keep the old light/dark
+    /// value.
     func refreshChromeColors() {
         let color: NSColor = isSelected ? .selectedContentBackgroundColor : .controlBackgroundColor
         layer?.backgroundColor = ChromeColor.cgColor(color, for: effectiveAppearance)
+        // A selected tab sits on the accent background, where the stock
+        // labelColor (near-black in Light) is unreadable. White reads on the
+        // accent in both appearances; unselected tabs keep labelColor.
+        let titleColor: NSColor = isSelected ? .white : .labelColor
+        titleLabel?.textColor = ChromeColor.resolved(titleColor, for: effectiveAppearance)
     }
 
     override func viewDidChangeEffectiveAppearance() {
