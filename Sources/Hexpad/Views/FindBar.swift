@@ -8,7 +8,9 @@ class FindBar: NSView, NSSearchFieldDelegate {
     let searchField: NSSearchField
     private let replaceField: NSSearchField
     private let regexButton: NSButton
+    private let extendedButton: NSButton
     private let literalButton: NSButton
+    private let matchCaseButton: NSButton
     private let wholeWordButton: NSButton
     private let inSelectionButton: NSButton
     let matchCountLabel: NSTextField
@@ -26,6 +28,16 @@ class FindBar: NSView, NSSearchFieldDelegate {
     private var searchOptions: SearchOptions = [.wrapAround]
     private var lastQuery = ""
 
+    /// Literal / Extended / Regex are mutually exclusive, like Notepad++'s
+    /// search-mode radios. Extended is a literal search over translated
+    /// escapes, not an add-on to regex.
+    private enum SearchMode {
+        case literal
+        case extended
+        case regex
+    }
+    private var searchMode: SearchMode = .literal
+
     /// Original selection captured when "In selection" starts, so selecting a
     /// match does not shrink the search scope to that match on the next pass.
     private var selectionScope: NSRange?
@@ -41,6 +53,9 @@ class FindBar: NSView, NSSearchFieldDelegate {
 
     // Notepad++-style find history. Newest first; cap at searchHistoryLimit.
     private static let searchHistoryKey = "HexpadFindSearchHistory"
+    /// Match case is a find-bar preference, so it survives closing the bar and
+    /// relaunching the app through UserDefaults, next to the query history.
+    static let matchCaseDefaultsKey = "HexpadFindMatchCase"
     private static let searchHistoryLimit = 10
     private var searchHistory: [String] = []
     private var historyIndex: Int?
@@ -59,7 +74,9 @@ class FindBar: NSView, NSSearchFieldDelegate {
         searchField = NSSearchField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
         replaceField = NSSearchField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
         regexButton = NSButton(frame: NSRect(x: 0, y: 0, width: 60, height: 24))
+        extendedButton = NSButton(frame: NSRect(x: 0, y: 0, width: 78, height: 24))
         literalButton = NSButton(frame: NSRect(x: 0, y: 0, width: 60, height: 24))
+        matchCaseButton = NSButton(frame: NSRect(x: 0, y: 0, width: 88, height: 24))
         wholeWordButton = NSButton(frame: NSRect(x: 0, y: 0, width: 82, height: 24))
         inSelectionButton = NSButton(frame: NSRect(x: 0, y: 0, width: 86, height: 24))
         matchCountLabel = NSTextField(labelWithString: "")
@@ -107,18 +124,37 @@ class FindBar: NSView, NSSearchFieldDelegate {
         literalButton.font = font
         literalButton.state = .on
         literalButton.target = self
-        literalButton.action = #selector(searchModeToggled)
+        literalButton.action = #selector(searchModeToggled(_:))
         literalButton.frame = NSRect(x: 384, y: yCenter, width: 60, height: 24)
         addSubview(literalButton)
+        
+        extendedButton.title = "Extended"
+        extendedButton.bezelStyle = .rounded
+        extendedButton.font = font
+        extendedButton.state = .off
+        extendedButton.toolTip = "Interpret \\n, \\r, \\t, \\0, \\xHH and \\\\ escapes as literal characters"
+        extendedButton.target = self
+        extendedButton.action = #selector(searchModeToggled(_:))
+        extendedButton.frame = NSRect(x: 448, y: yCenter, width: 78, height: 24)
+        addSubview(extendedButton)
         
         regexButton.title = "Regex"
         regexButton.bezelStyle = .rounded
         regexButton.font = font
         regexButton.state = .off
         regexButton.target = self
-        regexButton.action = #selector(searchModeToggled)
-        regexButton.frame = NSRect(x: 448, y: yCenter, width: 60, height: 24)
+        regexButton.action = #selector(searchModeToggled(_:))
+        regexButton.frame = NSRect(x: 530, y: yCenter, width: 60, height: 24)
         addSubview(regexButton)
+        
+        matchCaseButton.title = "Match Case"
+        matchCaseButton.bezelStyle = .rounded
+        matchCaseButton.font = font
+        matchCaseButton.state = .off
+        matchCaseButton.target = self
+        matchCaseButton.action = #selector(matchCaseToggled)
+        addSubview(matchCaseButton)
+        restoreMatchCasePreference()
         
         wholeWordButton.title = "Whole Word"
         wholeWordButton.bezelStyle = .rounded
@@ -206,60 +242,101 @@ class FindBar: NSView, NSSearchFieldDelegate {
         loadSearchHistory()
     }
 
-    /// Height the bar needs at a given width: one row when there is room,
-    /// two compact rows when the window is narrow. Adding whole-word and
-    /// selection controls pushed the single-row minimum past 1100pt.
-    func preferredHeight(for width: CGFloat) -> CGFloat {
-        width < 1180 ? 62 : 36
+    /// Controls that flow left-to-right in the option rows, in visual order.
+    /// Widths match the titles at the 12pt system font; layout() and
+    /// preferredHeight() share this list so the bar height can never disagree
+    /// with the number of rows actually drawn.
+    private var inlineControls: [(NSView, CGFloat)] {
+        [(literalButton, 58), (extendedButton, 78), (regexButton, 58),
+         (matchCaseButton, 88), (wholeWordButton, 82), (inSelectionButton, 86),
+         (wrapButton, 62), (matchCountLabel, 80),
+         (findPrevButton, 56), (findNextButton, 56)]
     }
 
-    /// Single place that positions the control row from the real bounds width.
+    /// Replace controls hug the right edge when the single-row layout has room.
+    private var rightAlignedControls: [(NSView, CGFloat)] {
+        [(replaceButton, 70), (replaceAllButton, 80)]
+    }
+
+    /// Single row needs ~1340pt once modes, flags and replace controls share
+    /// it. Narrower windows get one option row per line.
+    private static let wideThreshold: CGFloat = 1340
+
+    /// Height the bar needs at a given width: one row when there is room, then
+    /// as many compact rows as the controls require. The match-case and
+    /// extended controls pushed the two-row minimum past 900pt.
+    func preferredHeight(for width: CGFloat) -> CGFloat {
+        if width >= Self.wideThreshold { return 36 }
+        return Self.barHeight(rows: 1 + packedOptionRows(for: width).count)
+    }
+
+    private static func barHeight(rows: Int) -> CGFloat {
+        24 * CGFloat(rows) + 6 * CGFloat(rows - 1) + 12
+    }
+
+    /// Greedy row packing with the same 8pt left inset layout() uses.
+    private func packedOptionRows(for width: CGFloat) -> [[(NSView, CGFloat)]] {
+        var rows: [[(NSView, CGFloat)]] = [[]]
+        var x: CGFloat = 8
+        let limit = max(width - 4, 8)
+        for control in inlineControls + rightAlignedControls {
+            if x > 8, x + control.1 > limit {
+                rows.append([])
+                x = 8
+            }
+            rows[rows.count - 1].append(control)
+            x += control.1 + 6
+        }
+        return rows
+    }
+
+    /// Single place that positions the control rows from the real bounds width.
     /// Runs on every bounds change (init frame, toggle, window resize).
     override func layout() {
         super.layout()
         let h: CGFloat = 24
         let closeWidth: CGFloat = 24
         let rightInset: CGFloat = 4
-        let twoRows = bounds.width < 1180
-        let row1Y: CGFloat = twoRows ? bounds.height - h - 4 : 6
-        let row2Y: CGFloat = 6
-
         let closeX = max(8, bounds.width - rightInset - closeWidth)
-        closeButton.frame = NSRect(x: closeX, y: row1Y, width: closeWidth, height: h)
+        let topInset: CGFloat = 8
+        let rowStep = h + 6
+        // Anchor from the top so extra rows grow downward when the window
+        // narrows instead of pushing the query fields out of view.
+        let topY = bounds.height - topInset - h
 
-        if twoRows {
-            // Row 1: the query and replacement fields plus close.
-            let fieldWidth = max(120, (closeX - 24) / 2)
-            searchField.frame = NSRect(x: 8, y: row1Y, width: fieldWidth, height: h)
-            replaceField.frame = NSRect(x: 12 + fieldWidth, y: row1Y, width: fieldWidth, height: h)
-            // Row 2: every other control left to right.
-            var x: CGFloat = 8
-            for (control, width) in [(literalButton, 58), (regexButton, 58), (wholeWordButton, 82),
-                                     (inSelectionButton, 86), (wrapButton, 62), (matchCountLabel, 80),
-                                     (findPrevButton, 56), (findNextButton, 56),
-                                     (replaceButton, 70), (replaceAllButton, 80)] as [(NSView, CGFloat)] {
-                control.frame = NSRect(x: x, y: row2Y, width: width, height: h)
+        if bounds.width >= Self.wideThreshold {
+            searchField.frame = NSRect(x: 8, y: topY, width: 180, height: h)
+            replaceField.frame = NSRect(x: 196, y: topY, width: 180, height: h)
+            closeButton.frame = NSRect(x: closeX, y: topY, width: closeWidth, height: h)
+
+            var x: CGFloat = 384
+            for (control, width) in inlineControls {
+                control.frame = NSRect(x: x, y: topY, width: width, height: h)
                 x += width + 6
             }
+            // Replace controls hug the close button on the right.
+            let replaceAllX = max(8, closeX - 84)
+            let replaceX = max(8, replaceAllX - 74)
+            replaceAllButton.frame = NSRect(x: replaceAllX, y: topY, width: 80, height: h)
+            replaceButton.frame = NSRect(x: replaceX, y: topY, width: 70, height: h)
             return
         }
 
-        searchField.frame = NSRect(x: 8, y: row1Y, width: 180, height: h)
-        replaceField.frame = NSRect(x: 196, y: row1Y, width: 180, height: h)
-        literalButton.frame = NSRect(x: 384, y: row1Y, width: 58, height: h)
-        regexButton.frame = NSRect(x: 446, y: row1Y, width: 58, height: h)
-        wholeWordButton.frame = NSRect(x: 508, y: row1Y, width: 82, height: h)
-        inSelectionButton.frame = NSRect(x: 594, y: row1Y, width: 86, height: h)
-        wrapButton.frame = NSRect(x: 684, y: row1Y, width: 62, height: h)
-        matchCountLabel.frame = NSRect(x: 750, y: row1Y, width: 80, height: h)
-        findPrevButton.frame = NSRect(x: 834, y: row1Y, width: 56, height: h)
-        findNextButton.frame = NSRect(x: 894, y: row1Y, width: 56, height: h)
+        // Row 1: the query and replacement fields plus close.
+        let fieldWidth = max(120, (closeX - 24) / 2)
+        searchField.frame = NSRect(x: 8, y: topY, width: fieldWidth, height: h)
+        replaceField.frame = NSRect(x: 12 + fieldWidth, y: topY, width: fieldWidth, height: h)
+        closeButton.frame = NSRect(x: closeX, y: topY, width: closeWidth, height: h)
 
-        // Replace controls hug the close button on the right.
-        let replaceAllX = max(8, closeX - 84)
-        let replaceX = max(8, replaceAllX - 74)
-        replaceAllButton.frame = NSRect(x: replaceAllX, y: row1Y, width: 80, height: h)
-        replaceButton.frame = NSRect(x: replaceX, y: row1Y, width: 70, height: h)
+        // Rows 2…n: every other control, wrapping when the width runs out.
+        for (rowIndex, row) in packedOptionRows(for: bounds.width).enumerated() {
+            let y = topY - CGFloat(rowIndex + 1) * rowStep
+            var x: CGFloat = 8
+            for (control, width) in row {
+                control.frame = NSRect(x: x, y: y, width: width, height: h)
+                x += width + 6
+            }
+        }
     }
     
     // Single source of truth for visibility. The view stays in its parent
@@ -338,15 +415,54 @@ class FindBar: NSView, NSSearchFieldDelegate {
         // No action needed
     }
     
-    @objc private func searchModeToggled() {
-        if regexButton.state == .on {
+    @objc private func searchModeToggled(_ sender: NSButton) {
+        // A radio group: the clicked mode wins and the other two clear, so
+        // Extended and Regex can never be active together.
+        if sender === extendedButton {
+            searchMode = .extended
+        } else if sender === regexButton {
+            searchMode = .regex
+        } else {
+            searchMode = .literal
+        }
+        literalButton.state = searchMode == .literal ? .on : .off
+        extendedButton.state = searchMode == .extended ? .on : .off
+        regexButton.state = searchMode == .regex ? .on : .off
+
+        if searchMode == .regex {
             searchOptions.insert(.regex)
-            literalButton.state = .off
         } else {
             searchOptions.remove(.regex)
-            literalButton.state = .on
         }
         performFind()
+    }
+
+    @objc private func matchCaseToggled() {
+        let isOn = matchCaseButton.state == .on
+        if isOn {
+            searchOptions.insert(.caseSensitive)
+        } else {
+            searchOptions.remove(.caseSensitive)
+        }
+        UserDefaults.standard.set(isOn, forKey: Self.matchCaseDefaultsKey)
+        performFind()
+    }
+
+    /// Restores the persisted match-case choice. Like the query history this
+    /// lives in UserDefaults, so the preference belongs to the app rather than
+    /// to one FindBar instance.
+    private func restoreMatchCasePreference() {
+        guard UserDefaults.standard.bool(forKey: Self.matchCaseDefaultsKey) else { return }
+        matchCaseButton.state = .on
+        searchOptions.insert(.caseSensitive)
+    }
+
+    /// The pattern handed to SearchEngine. Extended mode rewrites escapes into
+    /// the literal characters they denote and then searches literally; the
+    /// other modes pass the field through untouched.
+    private var searchPattern: String {
+        guard searchMode == .extended else { return searchField.stringValue }
+        return ExtendedSearch.translate(searchField.stringValue)
     }
 
     @objc private func wrapToggled() {
@@ -389,7 +505,7 @@ class FindBar: NSView, NSSearchFieldDelegate {
     @objc private func replaceAction() {
         guard let doc = tabStore?.selectedDocument, !searchField.stringValue.isEmpty else { return }
         commitSearchHistory()
-        let pattern = searchField.stringValue
+        let pattern = searchPattern
         let scope = activeSearchScope()
         let matches = SearchEngine.search(doc.text, pattern: pattern,
                                           options: searchOptions, range: scope)
@@ -432,10 +548,11 @@ class FindBar: NSView, NSSearchFieldDelegate {
     @objc private func replaceAllAction() {
         guard let doc = tabStore?.selectedDocument, !searchField.stringValue.isEmpty else { return }
         commitSearchHistory()
+        let pattern = searchPattern
         let scope = activeSearchScope()
-        let matches = SearchEngine.search(doc.text, pattern: searchField.stringValue,
+        let matches = SearchEngine.search(doc.text, pattern: pattern,
                                           options: searchOptions, range: scope)
-        let newContent = SearchEngine.replace(doc.text, pattern: searchField.stringValue,
+        let newContent = SearchEngine.replace(doc.text, pattern: pattern,
                                               replacement: replaceField.stringValue,
                                               options: searchOptions, range: scope)
         // Replace all goes through the shared storage as one undoable edit, so
@@ -455,7 +572,7 @@ class FindBar: NSView, NSSearchFieldDelegate {
     /// bar flags the regex button until the pattern is fixed or regex mode is
     /// turned off.
     private var isRegexPatternInvalid: Bool {
-        regexButton.state == .on
+        searchMode == .regex
             && !searchField.stringValue.isEmpty
             && !SearchEngine.isValidRegex(searchField.stringValue)
     }
@@ -501,19 +618,22 @@ class FindBar: NSView, NSSearchFieldDelegate {
     private func performFindNow(select: Bool) {
         guard let doc = tabStore?.selectedDocument, let textView = editorContainer?.textView else { return }
 
-        let pattern = searchField.stringValue
+        let rawPattern = searchField.stringValue
+        let pattern = searchPattern
         // A new query starts at the first match; navigation/edits keep the
         // current index so Replace still targets the match the user sees.
-        if pattern != lastQuery {
+        // Compare the raw field text: two different queries can translate to
+        // the same extended-mode pattern and must still reset the index.
+        if rawPattern != lastQuery {
             currentMatchIndex = 0
         }
-        lastQuery = pattern
+        lastQuery = rawPattern
         let scope = activeSearchScope()
         allMatches = SearchEngine.search(doc.text, pattern: pattern, options: searchOptions, range: scope)
         matchesDocumentID = doc.id
         matchesRevision = doc.textRevision
 
-        if pattern.isEmpty {
+        if rawPattern.isEmpty {
             // Empty query: show nothing
             matchCountLabel.stringValue = ""
             currentMatchIndex = 0
@@ -524,7 +644,7 @@ class FindBar: NSView, NSSearchFieldDelegate {
         if allMatches.isEmpty {
             // Distinguish a broken regex from an honest zero-result search:
             // SearchEngine silently degrades invalid regex to a literal pass.
-            if searchOptions.contains(.regex), !SearchEngine.isValidRegex(pattern) {
+            if searchMode == .regex, !SearchEngine.isValidRegex(rawPattern) {
                 matchCountLabel.stringValue = "Bad regex"
             } else {
                 matchCountLabel.stringValue = "No matches"

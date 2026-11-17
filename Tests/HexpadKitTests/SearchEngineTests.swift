@@ -278,3 +278,99 @@ extension SearchEngineTests {
                              "the shared cache still compiles")
     }
 }
+
+/// Notepad++ "Extended" mode: a literal query with a fixed set of backslash
+/// escapes expanded. These tests pin the translation independently of the find
+/// bar so the AppKit layer only has to pass the translated string through.
+final class ExtendedSearchTests: XCTestCase {
+
+    func testPlainTextIsUnchanged() {
+        XCTAssertEqual(ExtendedSearch.translate("alpha .*"), "alpha .*")
+        XCTAssertEqual(ExtendedSearch.translate(""), "")
+    }
+
+    func testControlEscapes() {
+        XCTAssertEqual(ExtendedSearch.translate("\\n"), "\n")
+        XCTAssertEqual(ExtendedSearch.translate("\\r"), "\r")
+        XCTAssertEqual(ExtendedSearch.translate("\\t"), "\t")
+        XCTAssertEqual(ExtendedSearch.translate("\\0"), "\0")
+    }
+
+    func testEscapedBackslash() {
+        XCTAssertEqual(ExtendedSearch.translate("\\\\"), "\\")
+        XCTAssertEqual(ExtendedSearch.translate("a\\\\b"), "a\\b")
+        XCTAssertEqual(ExtendedSearch.translate("\\\\n"), "\\n",
+                       "an escaped backslash must not start a \\n escape")
+    }
+
+    func testHexEscapes() {
+        XCTAssertEqual(ExtendedSearch.translate("\\x41"), "A")
+        XCTAssertEqual(ExtendedSearch.translate("\\x09"), "\t")
+        XCTAssertEqual(ExtendedSearch.translate("\\x00"), "\0")
+        XCTAssertEqual(ExtendedSearch.translate("\\xE9"), "\u{E9}")
+        XCTAssertEqual(ExtendedSearch.translate("a\\x42c"), "aBc")
+    }
+
+    func testUnknownEscapesStayVerbatim() {
+        XCTAssertEqual(ExtendedSearch.translate("\\d+"), "\\d+")
+        XCTAssertEqual(ExtendedSearch.translate("C:\\winpath"), "C:\\winpath")
+        XCTAssertEqual(ExtendedSearch.translate("\\q"), "\\q")
+    }
+
+    func testMalformedHexStaysVerbatim() {
+        XCTAssertEqual(ExtendedSearch.translate("\\xZZ"), "\\xZZ")
+        XCTAssertEqual(ExtendedSearch.translate("\\x4"), "\\x4")
+        XCTAssertEqual(ExtendedSearch.translate("\\x"), "\\x")
+    }
+
+    func testTrailingBackslashStaysVerbatim() {
+        XCTAssertEqual(ExtendedSearch.translate("abc\\"), "abc\\")
+    }
+
+    // The translated pattern is searched literally: \x2E is a dot, not "any
+    // character", and \x2A is an asterisk, not a quantifier.
+    func testTranslatedPatternSearchesLiterally() {
+        let dotMatches = SearchEngine.search("a.b axb", pattern: ExtendedSearch.translate("\\x2E"),
+                                             options: [])
+        XCTAssertEqual(dotMatches.count, 1)
+        XCTAssertEqual(dotMatches.first?.text, ".")
+
+        let starMatches = SearchEngine.search("a*b axb ab", pattern: ExtendedSearch.translate("a\\x2Ab"),
+                                              options: [])
+        XCTAssertEqual(starMatches.count, 1)
+        XCTAssertEqual(starMatches.first?.text, "a*b")
+    }
+
+    func testNewlineSearchFindsLineBreak() {
+        let matches = SearchEngine.search("one\ntwo", pattern: ExtendedSearch.translate("\\n"),
+                                          options: [])
+        XCTAssertEqual(matches.count, 1)
+        XCTAssertEqual(matches.first?.range, NSRange(location: 3, length: 1))
+    }
+
+    func testNulSearchFindsNulCharacter() {
+        let matches = SearchEngine.search("a\u{0}b", pattern: ExtendedSearch.translate("\\0"),
+                                          options: [])
+        XCTAssertEqual(matches.count, 1)
+        XCTAssertEqual(matches.first?.range, NSRange(location: 1, length: 1))
+    }
+
+    func testEscapesComposeWithMatchCaseAndWholeWord() {
+        let hexCase = SearchEngine.search("Alpha alpha",
+                                          pattern: ExtendedSearch.translate("\\x41lpha"),
+                                          options: [.caseSensitive])
+        XCTAssertEqual(hexCase.count, 1)
+        XCTAssertEqual(hexCase.first?.text, "Alpha")
+
+        let wholeWord = SearchEngine.search("foo foobar",
+                                            pattern: ExtendedSearch.translate("foo"),
+                                            options: [.wholeWord])
+        XCTAssertEqual(wholeWord.count, 1)
+    }
+
+    func testReplaceUsesTranslatedPattern() {
+        let replaced = SearchEngine.replace("a\tb", pattern: ExtendedSearch.translate("\\t"),
+                                            replacement: " ", options: [])
+        XCTAssertEqual(replaced, "a b")
+    }
+}
