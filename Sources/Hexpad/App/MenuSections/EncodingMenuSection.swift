@@ -24,6 +24,28 @@ extension HexpadAppDelegate {
             encodingMenu.addItem(sectionItem)
         }
 
+        // Notepad++-style "Character sets" group: one submenu per language group,
+        // items encode the current buffer in the chosen charset. The charset
+        // name rides along as representedObject, same as the sections above.
+        let charsetsMenu = NSMenu(title: "Character sets")
+        for group in EncodingDetective.characterSets {
+            let groupMenu = NSMenu(title: group.group)
+            for charset in group.charsets {
+                let item = NSMenuItem(title: charset.title,
+                                      action: #selector(MainWindowController.encodeIn(_:)),
+                                      keyEquivalent: "")
+                item.target = nil
+                item.representedObject = charset.title
+                groupMenu.addItem(item)
+            }
+            let groupItem = NSMenuItem(title: group.group, action: nil, keyEquivalent: "")
+            groupItem.submenu = groupMenu
+            charsetsMenu.addItem(groupItem)
+        }
+        let charsetsItem = NSMenuItem(title: "Character sets", action: nil, keyEquivalent: "")
+        charsetsItem.submenu = charsetsMenu
+        encodingMenu.addItem(charsetsItem)
+
         // EOL submenu lived in the model (convertEOL) but had no UI at all.
         encodingMenu.addItem(.separator())
         let eolMenu = NSMenu(title: "Line Endings")

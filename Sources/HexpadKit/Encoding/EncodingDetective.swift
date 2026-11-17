@@ -2,7 +2,89 @@ import Foundation
 
 /// Encoding detective for detecting file encoding from raw bytes
 public final class EncodingDetective {
-    
+
+    /// Notepad++-style "Character sets" menu table: groups in menu order, each
+    /// holding the encodings that group exposes. Titles are used both as the
+    /// menu item names and as the canonical names resolved by `nsEncoding(from:)`.
+    public static let characterSets: [(group: String, charsets: [(title: String, rawValue: UInt)])] = [
+        ("Western European", [
+            ("ISO 8859-1", String.Encoding.isoLatin1.rawValue),
+            ("ISO 8859-15", 2147484175),
+            ("Windows-1252", String.Encoding.windowsCP1252.rawValue),
+            ("OEM 437", 2147484672),
+            ("OEM 850", 2147484688),
+            ("OEM 860", 2147484693),
+            ("OEM 861", 2147484694),
+            ("OEM 862", 2147484695),
+            ("OEM 863", 2147484696),
+            ("OEM 865", 2147484698),
+        ]),
+        ("Central European", [
+            ("ISO 8859-2", String.Encoding.isoLatin2.rawValue),
+            ("OEM 852", 2147484690),
+            ("Windows-1250", String.Encoding.windowsCP1250.rawValue),
+        ]),
+        ("Baltic", [
+            ("ISO 8859-4", 2147484164),
+            ("ISO 8859-13", 2147484173),
+            ("OEM 775", 2147484678),
+            ("Windows-1257", 2147484935),
+        ]),
+        ("Cyrillic", [
+            ("ISO 8859-5", 2147484165),
+            ("KOI8-R", 2147486210),
+            ("KOI8-U", 2147486216),
+            ("OEM 855", 2147484691),
+            ("OEM 866", 2147484699),
+            ("Windows-1251", String.Encoding.windowsCP1251.rawValue),
+        ]),
+        ("Greek", [
+            ("ISO 8859-7", 2147484167),
+            ("OEM 737", 2147484677),
+            ("OEM 869", 2147484700),
+            ("Windows-1253", String.Encoding.windowsCP1253.rawValue),
+        ]),
+        ("Turkish", [
+            ("ISO 8859-9", 2147484169),
+            ("ISO 8859-3", 2147484163),
+            ("OEM 857", 2147484692),
+            ("Windows-1254", String.Encoding.windowsCP1254.rawValue),
+        ]),
+        ("Hebrew", [
+            ("ISO 8859-8", 2147484168),
+            ("OEM 862", 2147484695),
+            ("Windows-1255", 2147484933),
+        ]),
+        ("Arabic", [
+            ("ISO 8859-6", 2147484166),
+            ("Windows-1256", 2147484934),
+        ]),
+        ("North European", [
+            ("OEM 861", 2147484694),
+            ("OEM 865", 2147484698),
+        ]),
+        ("Vietnamese", [
+            ("Windows-1258", 2147484936),
+        ]),
+        ("Thai", [
+            ("TIS-620", 2147484701),
+        ]),
+        ("Japanese", [
+            ("Shift-JIS", String.Encoding.shiftJIS.rawValue),
+            ("Shift-JIS X0213", 2147486209),
+        ]),
+        ("Korean", [
+            ("Windows 949", 2147484706),
+            ("EUC-KR", 2147486016),
+        ]),
+        ("Chinese", [
+            ("Big5", 2147486211),
+            ("GB2312", 2147486000),
+            ("GBK", 2147484705),
+            ("GB18030", 2147485234),
+        ]),
+    ]
+
     /// Detect the encoding of raw data
     public static func detect(_ data: Data) -> String {
         guard data.count > 2 else {
@@ -229,6 +311,46 @@ public final class EncodingDetective {
         case String.Encoding.iso2022JP.rawValue: return "ISO-2022-JP"
         case String.Encoding.macOSRoman.rawValue: return "MacRoman"
         case String.Encoding.nonLossyASCII.rawValue: return "Non-Lossy ASCII"
+        // Character sets menu table (see `characterSets`).
+        case 2147484175: return "ISO 8859-15"
+        case 2147484173: return "ISO 8859-13"
+        case 2147484672: return "OEM 437"
+        case 2147484688: return "OEM 850"
+        case 2147484693: return "OEM 860"
+        case 2147484694: return "OEM 861"
+        case 2147484695: return "OEM 862"
+        case 2147484696: return "OEM 863"
+        case 2147484698: return "OEM 865"
+        case String.Encoding.windowsCP1250.rawValue: return "Windows-1250"
+        case 2147484690: return "OEM 852"
+        case 2147484164: return "ISO 8859-4"
+        case 2147484678: return "OEM 775"
+        case 2147484935: return "Windows-1257"
+        case 2147484165: return "ISO 8859-5"
+        case 2147486210: return "KOI8-R"
+        case 2147486216: return "KOI8-U"
+        case 2147484691: return "OEM 855"
+        case 2147484699: return "OEM 866"
+        case 2147484167: return "ISO 8859-7"
+        case 2147484677: return "OEM 737"
+        case 2147484700: return "OEM 869"
+        case String.Encoding.windowsCP1253.rawValue: return "Windows-1253"
+        case 2147484169: return "ISO 8859-9"
+        case 2147484163: return "ISO 8859-3"
+        case 2147484692: return "OEM 857"
+        case 2147484168: return "ISO 8859-8"
+        case 2147484933: return "Windows-1255"
+        case 2147484166: return "ISO 8859-6"
+        case 2147484934: return "Windows-1256"
+        case 2147484936: return "Windows-1258"
+        case 2147484701: return "TIS-620"
+        case 2147486209: return "Shift-JIS X0213"
+        case 2147484706: return "Windows 949"
+        case 2147486016: return "EUC-KR"
+        case 2147486211: return "Big5"
+        case 2147486000: return "GB2312"
+        case 2147484705: return "GBK"
+        case 2147485234: return "GB18030"
         default: return "UTF-8"
         }
     }
@@ -257,6 +379,46 @@ public final class EncodingDetective {
         case "ISO2022JP": return String.Encoding.iso2022JP.rawValue
         case "MACROMAN": return String.Encoding.macOSRoman.rawValue
         case "NONLOSSYASCII": return String.Encoding.nonLossyASCII.rawValue
+        // Character sets menu table (see `characterSets`).
+        case "ISO885915": return 2147484175
+        case "OEM437": return 2147484672
+        case "OEM850": return 2147484688
+        case "OEM860": return 2147484693
+        case "OEM861": return 2147484694
+        case "OEM862": return 2147484695
+        case "OEM863": return 2147484696
+        case "OEM865": return 2147484698
+        case "WINDOWS1250": return String.Encoding.windowsCP1250.rawValue
+        case "OEM852": return 2147484690
+        case "ISO88594": return 2147484164
+        case "ISO885913": return 2147484173
+        case "OEM775": return 2147484678
+        case "WINDOWS1257": return 2147484935
+        case "ISO88595": return 2147484165
+        case "KOI8R": return 2147486210
+        case "KOI8U": return 2147486216
+        case "OEM855": return 2147484691
+        case "OEM866": return 2147484699
+        case "ISO88597": return 2147484167
+        case "OEM737": return 2147484677
+        case "OEM869": return 2147484700
+        case "WINDOWS1253": return String.Encoding.windowsCP1253.rawValue
+        case "ISO88599": return 2147484169
+        case "ISO88593": return 2147484163
+        case "OEM857": return 2147484692
+        case "ISO88598": return 2147484168
+        case "WINDOWS1255": return 2147484933
+        case "ISO88596": return 2147484166
+        case "WINDOWS1256": return 2147484934
+        case "WINDOWS1258": return 2147484936
+        case "TIS620": return 2147484701
+        case "SHIFTJISX0213": return 2147486209
+        case "WINDOWS949": return 2147484706
+        case "EUCKR": return 2147486016
+        case "BIG5": return 2147486211
+        case "GB2312": return 2147486000
+        case "GBK": return 2147484705
+        case "GB18030": return 2147485234
         default: return String.Encoding.utf8.rawValue
         }
     }

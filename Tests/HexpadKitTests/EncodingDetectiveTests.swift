@@ -89,4 +89,54 @@ final class EncodingDetectiveTests: XCTestCase {
         XCTAssertEqual(EncodingDetective.nsEncoding(from: "MacRoman"), String.Encoding.macOSRoman.rawValue)
         XCTAssertEqual(EncodingDetective.nsEncoding(from: "Non-Lossy ASCII"), String.Encoding.nonLossyASCII.rawValue)
     }
+
+    // Every entry in the Character sets menu table must resolve to its encoding
+    // and survive a name -> raw -> name round-trip.
+    func testCharacterSetTableRoundTrips() {
+        XCTAssertFalse(EncodingDetective.characterSets.isEmpty)
+        for group in EncodingDetective.characterSets {
+            for charset in group.charsets {
+                XCTAssertEqual(EncodingDetective.nsEncoding(from: charset.title), charset.rawValue,
+                               "name '\(charset.title)' did not resolve to \(charset.rawValue)")
+                XCTAssertEqual(EncodingDetective.nsEncoding(from: EncodingDetective.encodingName(from: charset.rawValue)),
+                               charset.rawValue,
+                               "raw \(charset.rawValue) ('\(charset.title)') did not round-trip")
+            }
+        }
+    }
+
+    private func assertRoundTrip(_ name: String, _ text: String,
+                                 file: StaticString = #filePath, line: UInt = #line) {
+        let encoding = String.Encoding(rawValue: EncodingDetective.nsEncoding(from: name))
+        guard let encoded = text.data(using: encoding) else {
+            XCTFail("could not encode test string with \(name)", file: file, line: line)
+            return
+        }
+        XCTAssertEqual(String(data: encoded, encoding: encoding), text,
+                       "\(name) did not round-trip", file: file, line: line)
+    }
+
+    func testWindows1251RoundTrip() {
+        assertRoundTrip("Windows-1251", "Привет, мир!")
+    }
+
+    func testKOI8RRoundTrip() {
+        assertRoundTrip("KOI8-R", "Привет, мир!")
+    }
+
+    func testShiftJISRoundTrip() {
+        assertRoundTrip("Shift-JIS", "こんにちは世界")
+    }
+
+    func testBig5RoundTrip() {
+        assertRoundTrip("Big5", "你好，世界")
+    }
+
+    func testGB2312RoundTrip() {
+        assertRoundTrip("GB2312", "你好，世界")
+    }
+
+    func testWindows1250RoundTrip() {
+        assertRoundTrip("Windows-1250", "Příliš žluťoučký kůň")
+    }
 }
