@@ -22,10 +22,10 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     private var extraWindowControllers: [MainWindowController] = []
     private var preferencesWindowController: PreferencesWindowController?
     private let recentFilesManager = RecentFilesManager()
-    private var openRecentMenu: NSMenu?
-    private var appearanceMenu: NSMenu?
-    private var playMacroMenu: NSMenu?
-    private var deleteMacroMenu: NSMenu?
+    var openRecentMenu: NSMenu?
+    var appearanceMenu: NSMenu?
+    var playMacroMenu: NSMenu?
+    var deleteMacroMenu: NSMenu?
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         restoreAppearance()
@@ -146,590 +146,52 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     
     func buildMainMenu() -> NSMenu {
         let menu = NSMenu()
-        
-        // App menu
+
         let appItem = NSMenuItem()
-        let appSubMenu = NSMenu()
-        let aboutItem = NSMenuItem(title: "About Hexpad", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
-        let preferencesItem = NSMenuItem(title: "Preferences…", action: #selector(showPreferences), keyEquivalent: ",")
-        preferencesItem.target = self
-        let hideItem = NSMenuItem(title: "Hide Hexpad", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
-        let hideOthersItem = NSMenuItem(title: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
-        hideOthersItem.keyEquivalentModifierMask = [.command, .option]
-        let showAllItem = NSMenuItem(title: "Show All", action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "")
-        let quitItem = NSMenuItem(title: "Quit Hexpad", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        
-        appSubMenu.addItem(aboutItem)
-        appSubMenu.addItem(.separator())
-        appSubMenu.addItem(preferencesItem)
-        appSubMenu.addItem(.separator())
-        appSubMenu.addItem(hideItem)
-        appSubMenu.addItem(hideOthersItem)
-        appSubMenu.addItem(showAllItem)
-        appSubMenu.addItem(.separator())
-        appSubMenu.addItem(quitItem)
-        appItem.submenu = appSubMenu
+        appItem.submenu = makeAppMenu()
         menu.addItem(appItem)
-        
-        // File menu
-        let fileMenu = NSMenu(title: "File")
-        let newWindowItem = NSMenuItem(title: "New Window", action: #selector(newWindow), keyEquivalent: "n")
-        newWindowItem.target = self
-        let newItem = NSMenuItem(title: "New Tab", action: #selector(newTab), keyEquivalent: "t")
-        newItem.target = self
-        let openItem = NSMenuItem(title: "Open...", action: #selector(openFile), keyEquivalent: "o")
-        openItem.target = self
-        let saveItem = NSMenuItem(title: "Save", action: #selector(saveFile), keyEquivalent: "s")
-        saveItem.target = self
-        let saveAsItem = NSMenuItem(title: "Save As...", action: #selector(saveAsFile), keyEquivalent: "S")
-        saveAsItem.target = self
-        // Nil-targeted so MainWindowController validates against the focused
-        // group's selected document.
-        let printItem = NSMenuItem(title: "Print…",
-                                   action: #selector(MainWindowController.printDocument(_:)),
-                                   keyEquivalent: "p")
-        printItem.target = nil
-        let closeTabItem = NSMenuItem(title: "Close Tab", action: #selector(closeTab), keyEquivalent: "w")
-        closeTabItem.target = self
-        let closeAllItem = NSMenuItem(title: "Close All Tabs", action: #selector(closeAllTabs), keyEquivalent: "W")
-        closeAllItem.target = self
-        
-        // Open Recent submenu
-        let openRecentItem = NSMenuItem(title: "Open Recent", action: nil, keyEquivalent: "")
-        let openRecentMenu = NSMenu(title: "Open Recent")
-        openRecentMenu.delegate = self
-        openRecentItem.submenu = openRecentMenu
-        self.openRecentMenu = openRecentMenu
-        
-        fileMenu.addItem(newWindowItem)
-        fileMenu.addItem(newItem)
-        fileMenu.addItem(openItem)
-        fileMenu.addItem(openRecentItem)
-        fileMenu.addItem(saveItem)
-        fileMenu.addItem(saveAsItem)
-        fileMenu.addItem(printItem)
-        fileMenu.addItem(.separator())
-        fileMenu.addItem(closeTabItem)
-        fileMenu.addItem(closeAllItem)
-        menu.addItem((NSMenuItem(title: "File", action: nil, keyEquivalent: "").apply { $0.submenu = fileMenu }))
-        
-        // Edit menu
-        let editMenu = NSMenu(title: "Edit")
-        let undoItem = NSMenuItem(title: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
-        let redoItem = NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
-        let cutItem = NSMenuItem(title: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-        let copyItem = NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-        let pasteItem = NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-        let selectAllItem = NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
-        let findItem = NSMenuItem(title: "Find...", action: #selector(toggleFindBar), keyEquivalent: "f")
-        findItem.target = self
-        
-        editMenu.addItem(undoItem)
-        editMenu.addItem(redoItem)
-        editMenu.addItem(.separator())
-        editMenu.addItem(cutItem)
-        editMenu.addItem(copyItem)
-        editMenu.addItem(pasteItem)
-        editMenu.addItem(selectAllItem)
-        editMenu.addItem(.separator())
-        editMenu.addItem(findItem)
-        menu.addItem((NSMenuItem(title: "Edit", action: nil, keyEquivalent: "").apply { $0.submenu = editMenu }))
 
-        // Text menu: the Kit-owned command registry drives both the items and
-        // the identifiers used by the first-responder action. Separators group
-        // line edits, moves, comments, and case changes like Notepad++.
-        let textMenu = NSMenu(title: "Text")
-        let textMenuSeparatorsAfter: Set<String> = ["delete-line", "move-line-down", "toggle-line-comment"]
-        for command in CommandRegistry.default.commands {
-            let item = NSMenuItem(title: command.title,
-                                  action: #selector(MainWindowController.performCommand(withIdentifier:)),
-                                  keyEquivalent: "")
-            item.target = nil
-            item.representedObject = command.identifier
-            if let binding = KeybindingStore.resolvedBinding(for: command.identifier) {
-                item.keyEquivalent = binding.keyEquivalent
-                item.keyEquivalentModifierMask = binding.modifierMask
-            }
-            textMenu.addItem(item)
-            if textMenuSeparatorsAfter.contains(command.identifier) {
-                textMenu.addItem(.separator())
-            }
-        }
-        textMenu.addItem(.separator())
-        // Bookmark commands share the registry and the controller's
-        // DocumentState path, but use their own selector so the line-editing
-        // group stays a contiguous, iterable block (and so menu validation can
-        // distinguish the two groups). Chords follow Notepad++: Cmd+F2 toggle,
-        // F2 next, Shift+F2 previous.
-        for command in CommandRegistry.default.bookmarkCommands {
-            let item = NSMenuItem(title: command.title,
-                                  action: #selector(MainWindowController.performBookmarkCommand(withIdentifier:)),
-                                  keyEquivalent: "")
-            item.target = nil
-            item.representedObject = command.identifier
-            if let binding = KeybindingStore.resolvedBinding(for: command.identifier) {
-                item.keyEquivalent = binding.keyEquivalent
-                item.keyEquivalentModifierMask = binding.modifierMask
-            }
-            textMenu.addItem(item)
-        }
-        textMenu.addItem(.separator())
-        textMenu.addItem(keybindingsMenuItem())
-        menu.addItem((NSMenuItem(title: "Text", action: nil, keyEquivalent: "").apply { $0.submenu = textMenu }))
-        
-        // Search menu
-        let searchMenu = NSMenu(title: "Search")
-        let findInDocItem = NSMenuItem(title: "Find...", action: #selector(toggleFindBar), keyEquivalent: "f")
-        findInDocItem.target = self
-        let findNextItem = NSMenuItem(title: "Find Next", action: #selector(findNext), keyEquivalent: "g")
-        findNextItem.target = self
-        let findPrevItem = NSMenuItem(title: "Find Previous", action: #selector(findPrevious), keyEquivalent: "g")
-        findPrevItem.keyEquivalentModifierMask = [.command, .shift]
-        findPrevItem.target = self
-        
-        searchMenu.addItem(findInDocItem)
-        searchMenu.addItem(findNextItem)
-        searchMenu.addItem(findPrevItem)
-        searchMenu.addItem(.separator())
-        let findInFilesItem = NSMenuItem(title: "Find in Files...", action: #selector(findInFiles), keyEquivalent: "F")
-        findInFilesItem.keyEquivalentModifierMask = [.command, .shift]
-        findInFilesItem.target = self
-        searchMenu.addItem(findInFilesItem)
-        menu.addItem((NSMenuItem(title: "Search", action: nil, keyEquivalent: "").apply { $0.submenu = searchMenu }))
+        menu.addItem(topLevelMenuItem(title: "File", submenu: makeFileMenu()))
+        menu.addItem(topLevelMenuItem(title: "Edit", submenu: makeEditMenu()))
+        menu.addItem(topLevelMenuItem(title: "Text", submenu: makeTextMenu()))
+        menu.addItem(topLevelMenuItem(title: "Search", submenu: makeSearchMenu()))
+        menu.addItem(topLevelMenuItem(title: "View", submenu: makeViewMenu()))
+        menu.addItem(topLevelMenuItem(title: "Encoding", submenu: makeEncodingMenu()))
+        menu.addItem(topLevelMenuItem(title: "Line Ops", submenu: makeLineOpsMenu()))
+        menu.addItem(topLevelMenuItem(title: "Language", submenu: makeLanguageMenu()))
+        menu.addItem(topLevelMenuItem(title: "Macro", submenu: makeMacroMenu()))
+        menu.addItem(topLevelMenuItem(title: "Run", submenu: makeRunMenu()))
+        menu.addItem(topLevelMenuItem(title: "Tools", submenu: makeToolsMenu()))
+        menu.addItem(topLevelMenuItem(title: "Window", submenu: makeWindowMenu()))
+        menu.addItem(topLevelMenuItem(title: "Help", submenu: makeHelpMenu()))
 
-        // View menu
-        let viewMenu = NSMenu(title: "View")
-        let wordWrapItem = NSMenuItem(title: "Word Wrap", action: #selector(toggleWordWrap), keyEquivalent: "y")
-        wordWrapItem.target = self
-        // These three view actions are registry identifiers too, so a saved
-        // keybinding override applies even though the items keep their stable
-        // selectors (and Fold All/Unfold All keep nil targets for validation).
-        wordWrapItem.representedObject = "toggle-word-wrap"
-        if let binding = KeybindingStore.resolvedBinding(for: "toggle-word-wrap") {
-            wordWrapItem.keyEquivalent = binding.keyEquivalent
-            wordWrapItem.keyEquivalentModifierMask = binding.modifierMask
-        }
-        // Notepad++ toggles the Function List with Ctrl+F12; the macOS
-        // convention is the same chord with Command. F12 alone is left to the
-        // system (Mission Control/Launchpad on some setups). The item is
-        // nil-targeted so MainWindowController validates it against the open
-        // document and can check it while the panel is visible.
-        let functionListItem = NSMenuItem(title: "Function List",
-                                          action: #selector(MainWindowController.toggleFunctionList(_:)),
-                                          keyEquivalent: "\u{F70F}")
-        functionListItem.keyEquivalentModifierMask = [.command]
-        functionListItem.target = nil
-        // Notepad++ folding convention (Alt+0 / Alt+Shift+0) expressed with
-        // Option. Both are nil-targeted so MainWindowController disables them
-        // when the selected document has no foldable ranges.
-        let foldAllItem = NSMenuItem(title: "Fold All",
-                                     action: #selector(MainWindowController.foldAll(_:)),
-                                     keyEquivalent: "0")
-        foldAllItem.keyEquivalentModifierMask = [.option]
-        foldAllItem.target = nil
-        foldAllItem.representedObject = "fold-all"
-        if let binding = KeybindingStore.resolvedBinding(for: "fold-all") {
-            foldAllItem.keyEquivalent = binding.keyEquivalent
-            foldAllItem.keyEquivalentModifierMask = binding.modifierMask
-        }
-        let unfoldAllItem = NSMenuItem(title: "Unfold All",
-                                       action: #selector(MainWindowController.unfoldAll(_:)),
-                                       keyEquivalent: "0")
-        unfoldAllItem.keyEquivalentModifierMask = [.option, .shift]
-        unfoldAllItem.target = nil
-        unfoldAllItem.representedObject = "unfold-all"
-        if let binding = KeybindingStore.resolvedBinding(for: "unfold-all") {
-            unfoldAllItem.keyEquivalent = binding.keyEquivalent
-            unfoldAllItem.keyEquivalentModifierMask = binding.modifierMask
-        }
-        let zoomInItem = NSMenuItem(title: "Zoom In", action: #selector(zoomIn), keyEquivalent: "+")
-        zoomInItem.target = self
-        let zoomOutItem = NSMenuItem(title: "Zoom Out", action: #selector(zoomOut), keyEquivalent: "-")
-        zoomOutItem.target = self
-        let resetZoomItem = NSMenuItem(title: "Reset Zoom", action: #selector(resetZoom), keyEquivalent: "0")
-        resetZoomItem.target = self
-        
-        // Appearance submenu
-        let appearanceItem = NSMenuItem(title: "Appearance", action: nil, keyEquivalent: "")
-        let appearanceMenu = NSMenu(title: "Appearance")
-        let useSystemItem = NSMenuItem(title: "Use System", action: #selector(setAppearanceSystem), keyEquivalent: "")
-        useSystemItem.target = self
-        useSystemItem.tag = 0
-        let lightItem = NSMenuItem(title: "Light", action: #selector(setAppearanceLight), keyEquivalent: "")
-        lightItem.target = self
-        lightItem.tag = 1
-        let darkItem = NSMenuItem(title: "Dark", action: #selector(setAppearanceDark), keyEquivalent: "")
-        darkItem.target = self
-        darkItem.tag = 2
-        appearanceMenu.addItem(useSystemItem)
-        appearanceMenu.addItem(lightItem)
-        appearanceMenu.addItem(darkItem)
-        appearanceItem.submenu = appearanceMenu
-        self.appearanceMenu = appearanceMenu
-        updateAppearanceCheckmarks()
-        
-        viewMenu.addItem(wordWrapItem)
-        // Off by default (Notepad++'s Document Map is opt-in). Routed like
-        // Word Wrap; the checkmark comes from menu validation.
-        let documentMapItem = NSMenuItem(title: "Document Map",
-                                         action: #selector(toggleDocumentMap),
-                                         keyEquivalent: "")
-        documentMapItem.target = self
-        viewMenu.addItem(documentMapItem)
-        viewMenu.addItem(functionListItem)
-        viewMenu.addItem(.separator())
-        viewMenu.addItem(foldAllItem)
-        viewMenu.addItem(unfoldAllItem)
-        viewMenu.addItem(.separator())
-        viewMenu.addItem(zoomInItem)
-        viewMenu.addItem(zoomOutItem)
-        viewMenu.addItem(resetZoomItem)
-        viewMenu.addItem(.separator())
-        // Split view: group 2 starts empty and tabs are dragged into it. The
-        // item is nil-targeted so MainWindowController owns both the action and
-        // the open/closed checkmark.
-        let splitViewItem = NSMenuItem(title: "Toggle Split View",
-                                       action: #selector(MainWindowController.toggleSplitView(_:)),
-                                       keyEquivalent: "2")
-        splitViewItem.keyEquivalentModifierMask = [.command, .shift]
-        splitViewItem.target = nil
-        viewMenu.addItem(splitViewItem)
-        // Both are nil-targeted too: validation disables them while the split
-        // is closed (sync has nothing to pair, and there is no other view).
-        let synchronizeScrollItem = NSMenuItem(title: "Synchronize Scrolling",
-                                               action: #selector(MainWindowController.toggleSynchronizeScrolling(_:)),
-                                               keyEquivalent: "")
-        synchronizeScrollItem.target = nil
-        viewMenu.addItem(synchronizeScrollItem)
-        let moveToOtherViewItem = NSMenuItem(title: "Move to Other View",
-                                             action: #selector(MainWindowController.moveToOtherView(_:)),
-                                             keyEquivalent: "")
-        moveToOtherViewItem.target = nil
-        viewMenu.addItem(moveToOtherViewItem)
-        // Notepad++-style document switcher. Ctrl+Tab is the native in-app
-        // chord (Cmd+Tab belongs to the system app switcher).
-        let documentSwitcherItem = NSMenuItem(title: "Document Switcher…",
-                                              action: #selector(MainWindowController.showDocumentSwitcher(_:)),
-                                              keyEquivalent: "\t")
-        documentSwitcherItem.keyEquivalentModifierMask = [.control]
-        documentSwitcherItem.target = nil
-        viewMenu.addItem(documentSwitcherItem)
-        // AppKit allows one chord per menu item, so Ctrl+Shift+Tab is a second,
-        // hidden item with the same action. `allowsKeyEquivalentWhenHidden`
-        // keeps it live without cluttering the menu.
-        let documentSwitcherBackItem = NSMenuItem(title: "Document Switcher",
-                                                  action: #selector(MainWindowController.showDocumentSwitcher(_:)),
-                                                  keyEquivalent: "\t")
-        documentSwitcherBackItem.keyEquivalentModifierMask = [.control, .shift]
-        documentSwitcherBackItem.target = nil
-        documentSwitcherBackItem.isHidden = true
-        documentSwitcherBackItem.allowsKeyEquivalentWhenHidden = true
-        viewMenu.addItem(documentSwitcherBackItem)
-        viewMenu.addItem(.separator())
-        viewMenu.addItem(appearanceItem)
-        menu.addItem((NSMenuItem(title: "View", action: nil, keyEquivalent: "").apply { $0.submenu = viewMenu }))
-        
-        // Encoding menu: Notepad++ separates "Encode in" (reinterpret the raw
-        // bytes, no transcoding) from "Convert to" (retarget the bytes the next
-        // save writes). Items are nil-targeted so MainWindowController's
-        // validation supplies enabled state and the current-encoding checkmarks.
-        let encodingMenu = NSMenu(title: "Encoding")
-        let encodingSections: [(title: String, action: Selector)] = [
-            ("Encode in", #selector(MainWindowController.encodeIn(_:))),
-            ("Convert to", #selector(MainWindowController.convertToEncoding(_:)))
-        ]
-        for section in encodingSections {
-            let submenu = NSMenu(title: section.title)
-            for option in MainWindowController.encodingOptions {
-                let item = NSMenuItem(title: option.title, action: section.action, keyEquivalent: "")
-                item.target = nil
-                item.representedObject = option.name
-                submenu.addItem(item)
-            }
-            let sectionItem = NSMenuItem(title: section.title, action: nil, keyEquivalent: "")
-            sectionItem.submenu = submenu
-            encodingMenu.addItem(sectionItem)
-        }
-
-        // EOL submenu lived in the model (convertEOL) but had no UI at all.
-        encodingMenu.addItem(.separator())
-        let eolMenu = NSMenu(title: "Line Endings")
-        for (title, sel) in [("LF (Unix)", #selector(setEOLLF)),
-                             ("CRLF (Windows)", #selector(setEOLCRLF)),
-                             ("CR (Classic Mac)", #selector(setEOLCR))] {
-            let item = NSMenuItem(title: title, action: sel, keyEquivalent: "")
-            item.target = self
-            eolMenu.addItem(item)
-        }
-        let eolItem = NSMenuItem(title: "Line Endings", action: nil, keyEquivalent: "")
-        eolItem.submenu = eolMenu
-        encodingMenu.addItem(eolItem)
-        menu.addItem((NSMenuItem(title: "Encoding", action: nil, keyEquivalent: "").apply { $0.submenu = encodingMenu }))
-
-        // Line operations menu: the registry owns these commands, so the menu
-        // items share the same identifiers, macro capture and keybinding
-        // override path as the Text menu.
-        let lineOpsMenu = NSMenu(title: "Line Operations")
-        for command in CommandRegistry.default.lineOpCommands {
-            let item = NSMenuItem(title: command.title,
-                                  action: #selector(MainWindowController.performCommand(withIdentifier:)),
-                                  keyEquivalent: "")
-            item.target = nil
-            item.representedObject = command.identifier
-            if let binding = KeybindingStore.resolvedBinding(for: command.identifier) {
-                item.keyEquivalent = binding.keyEquivalent
-                item.keyEquivalentModifierMask = binding.modifierMask
-            }
-            lineOpsMenu.addItem(item)
-        }
-        menu.addItem((NSMenuItem(title: "Line Ops", action: nil, keyEquivalent: "").apply { $0.submenu = lineOpsMenu }))
-        
-        // Language menu
-        let languageMenu = NSMenu(title: "Language")
-        for lang in Language.allCases {
-            let item = NSMenuItem(title: lang.rawValue, action: #selector(setLanguage(_:)), keyEquivalent: "")
-            item.target = self
-            item.tag = Language.allCases.firstIndex(of: lang) ?? 0
-            languageMenu.addItem(item)
-        }
-        menu.addItem((NSMenuItem(title: "Language", action: nil, keyEquivalent: "").apply { $0.submenu = languageMenu }))
-
-        // Macro menu: recording, replay, and saved-macro management. Every
-        // action is nil-targeted so MainWindowController (the owner of the
-        // recorder state) handles both the action and its enabled state. The
-        // two name-list submenus are rebuilt by this delegate on open, like
-        // Open Recent, so they always mirror macros.json.
-        let macroMenu = NSMenu(title: "Macro")
-        let recordItem = NSMenuItem(title: "Record Macro",
-                                    action: #selector(MainWindowController.toggleMacroRecording(_:)),
-                                    keyEquivalent: "")
-        recordItem.target = nil
-        let stopRecordingItem = NSMenuItem(title: "Stop Recording",
-                                           action: #selector(MainWindowController.stopRecordingMacro(_:)),
-                                           keyEquivalent: "")
-        stopRecordingItem.target = nil
-        let playLastItem = NSMenuItem(title: "Play Last Macro",
-                                      action: #selector(MainWindowController.playLastMacro(_:)),
-                                      keyEquivalent: "")
-        playLastItem.target = nil
-
-        let playMacroMenu = macroListMenu(title: "Play Macro",
-                                          action: #selector(MainWindowController.playSavedMacro(_:)))
-        let playMacroItem = NSMenuItem(title: "Play Macro", action: nil, keyEquivalent: "")
-        playMacroItem.submenu = playMacroMenu
-        playMacroMenu.delegate = self
-        self.playMacroMenu = playMacroMenu
-
-        let saveRecordingItem = NSMenuItem(title: "Save Recording As…",
-                                           action: #selector(MainWindowController.saveRecordingAs(_:)),
-                                           keyEquivalent: "")
-        saveRecordingItem.target = nil
-
-        let deleteMacroMenu = macroListMenu(title: "Delete Macro",
-                                            action: #selector(MainWindowController.deleteMacro(_:)))
-        let deleteMacroItem = NSMenuItem(title: "Delete Macro", action: nil, keyEquivalent: "")
-        deleteMacroItem.submenu = deleteMacroMenu
-        deleteMacroMenu.delegate = self
-        self.deleteMacroMenu = deleteMacroMenu
-
-        macroMenu.addItem(recordItem)
-        macroMenu.addItem(stopRecordingItem)
-        macroMenu.addItem(.separator())
-        macroMenu.addItem(playLastItem)
-        macroMenu.addItem(playMacroItem)
-        macroMenu.addItem(.separator())
-        macroMenu.addItem(saveRecordingItem)
-        macroMenu.addItem(deleteMacroItem)
-        menu.addItem((NSMenuItem(title: "Macro", action: nil, keyEquivalent: "").apply { $0.submenu = macroMenu }))
-
-        // Run menu: Notepad++ gives Run… its own top-level Run menu with F5,
-        // rather than nesting it under Tools, so Hexpad mirrors that layout.
-        // The item is nil-targeted so MainWindowController supplies both the
-        // action and the no-document validation. A bare function key means an
-        // empty modifier mask: the default would be Command.
-        let runMenu = NSMenu(title: "Run")
-        let runItem = NSMenuItem(title: "Run…",
-                                 action: #selector(MainWindowController.showRunCommandDialog(_:)),
-                                 keyEquivalent: "\u{F708}")
-        runItem.keyEquivalentModifierMask = []
-        runItem.target = nil
-        runMenu.addItem(runItem)
-        menu.addItem((NSMenuItem(title: "Run", action: nil, keyEquivalent: "").apply { $0.submenu = runMenu }))
-
-        // Tools menu: hashing and date/time insertion. Both groups are registry
-        // commands, so the items use the shared performCommand action and the
-        // full identifier/keybinding/macro path. They stay nil-targeted so the
-        // controller owns the no-document validation.
-        let toolsMenu = NSMenu(title: "Tools")
-        let toolCommands = CommandRegistry.default.toolCommands
-        for command in toolCommands where command.identifier.hasPrefix("hash-") {
-            let item = NSMenuItem(title: command.title,
-                                  action: #selector(MainWindowController.performCommand(withIdentifier:)),
-                                  keyEquivalent: "")
-            item.target = nil
-            item.representedObject = command.identifier
-            if let binding = KeybindingStore.resolvedBinding(for: command.identifier) {
-                item.keyEquivalent = binding.keyEquivalent
-                item.keyEquivalentModifierMask = binding.modifierMask
-            }
-            toolsMenu.addItem(item)
-        }
-        toolsMenu.addItem(.separator())
-
-        let dateTimeMenu = NSMenu(title: "Insert Date/Time")
-        for command in toolCommands where command.identifier.hasPrefix("insert-") {
-            let item = NSMenuItem(title: command.title,
-                                  action: #selector(MainWindowController.performCommand(withIdentifier:)),
-                                  keyEquivalent: "")
-            item.target = nil
-            item.representedObject = command.identifier
-            if let binding = KeybindingStore.resolvedBinding(for: command.identifier) {
-                item.keyEquivalent = binding.keyEquivalent
-                item.keyEquivalentModifierMask = binding.modifierMask
-            }
-            dateTimeMenu.addItem(item)
-        }
-        let dateTimeItem = NSMenuItem(title: "Insert Date/Time", action: nil, keyEquivalent: "")
-        dateTimeItem.submenu = dateTimeMenu
-        toolsMenu.addItem(dateTimeItem)
-        menu.addItem((NSMenuItem(title: "Tools", action: nil, keyEquivalent: "").apply { $0.submenu = toolsMenu }))
-        
-        // Window menu
-        let windowMenu = NSMenu(title: "Window")
-        let minimizeItem = NSMenuItem(title: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
-        let zoomItem = NSMenuItem(title: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
-        let fullscreenItem = NSMenuItem(title: "Enter Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
-        fullscreenItem.keyEquivalentModifierMask = [.command, .control]
-        
-        windowMenu.addItem(minimizeItem)
-        windowMenu.addItem(zoomItem)
-        windowMenu.addItem(.separator())
-        windowMenu.addItem(fullscreenItem)
-
-        // Tab navigation lives in the Window menu (Safari's convention). The
-        // actions are nil-targeted so the controller participates in the first
-        // responder chain and can validate them against the current tab count.
-        windowMenu.addItem(.separator())
-        let nextTabItem = NSMenuItem(title: "Next Tab",
-                                     action: #selector(MainWindowController.selectNextTab(_:)),
-                                     keyEquivalent: "]")
-        nextTabItem.keyEquivalentModifierMask = [.command, .shift]
-        nextTabItem.target = nil
-        let previousTabItem = NSMenuItem(title: "Previous Tab",
-                                         action: #selector(MainWindowController.selectPreviousTab(_:)),
-                                         keyEquivalent: "[")
-        previousTabItem.keyEquivalentModifierMask = [.command, .shift]
-        previousTabItem.target = nil
-        windowMenu.addItem(nextTabItem)
-        windowMenu.addItem(previousTabItem)
-        windowMenu.addItem(.separator())
-        for number in 1...9 {
-            let item = NSMenuItem(title: "Tab \(number)",
-                                  action: #selector(MainWindowController.selectTabByNumber(_:)),
-                                  keyEquivalent: "\(number)")
-            item.tag = number
-            item.target = nil
-            windowMenu.addItem(item)
-        }
-        menu.addItem((NSMenuItem(title: "Window", action: nil, keyEquivalent: "").apply { $0.submenu = windowMenu }))
-        
-        // Help menu
-        let helpMenu = NSMenu(title: "Help")
-        let aboutHexpad = NSMenuItem(title: "About Hexpad", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
-        helpMenu.addItem(aboutHexpad)
-        menu.addItem((NSMenuItem(title: "Help", action: nil, keyEquivalent: "").apply { $0.submenu = helpMenu }))
-        
         NSApplication.shared.menu = menu
         return menu
     }
 
-    /// A Macro submenu that lists saved macros by name. Built from
-    /// ``MacroStore`` so the same data drives the menu and playback; the
-    /// controller validates each nil-targeted item through the responder chain.
-    private func macroListMenu(title: String, action: Selector) -> NSMenu {
-        let menu = NSMenu(title: title)
-        populateMacroList(menu, action: action)
-        return menu
-    }
-
-    /// Rebuilds `menu` from the current saved macros. A disabled
-    /// "No Saved Macros" placeholder keeps the submenu well-formed when empty,
-    /// matching the Open Recent convention.
-    private func populateMacroList(_ menu: NSMenu, action: Selector) {
-        menu.removeAllItems()
-
-        let macros = MacroStore.load()
-        guard !macros.isEmpty else {
-            let emptyItem = NSMenuItem(title: "No Saved Macros", action: nil, keyEquivalent: "")
-            emptyItem.isEnabled = false
-            menu.addItem(emptyItem)
-            return
-        }
-
-        let isPlay = action == #selector(MainWindowController.playSavedMacro(_:))
-        for macro in macros {
-            let item = NSMenuItem(title: macro.name, action: action, keyEquivalent: "")
-            item.target = nil
-            item.representedObject = macro.name
-            // An empty macro can still be deleted, but there is nothing to play.
-            if isPlay && macro.isEmpty {
-                item.isEnabled = false
-            }
-            menu.addItem(item)
-        }
-    }
-
-    /// The Keybindings submenu is also the editor: each command row records a
-    /// new chord on click (Option-click works too), and Reset restores every
-    /// built-in binding.
-    private func keybindingsMenuItem() -> NSMenuItem {
-        let keybindingsMenu = NSMenu(title: "Keybindings")
-
-        let hintItem = NSMenuItem(title: "Click a command, then press a new shortcut",
-                                  action: nil,
-                                  keyEquivalent: "")
-        hintItem.isEnabled = false
-        keybindingsMenu.addItem(hintItem)
-        keybindingsMenu.addItem(.separator())
-
-        for command in CommandRegistry.default.commands {
-            let binding = KeybindingStore.resolvedBinding(for: command.identifier)
-            let title = "\(command.title)    \(KeybindingStore.displayString(for: binding))"
-            let item = NSMenuItem(title: title,
-                                  action: #selector(editKeybinding(_:)),
-                                  keyEquivalent: "")
-            item.target = self
-            item.representedObject = command.identifier
-            keybindingsMenu.addItem(item)
-        }
-
-        keybindingsMenu.addItem(.separator())
-        let resetItem = NSMenuItem(title: "Reset to Defaults",
-                                   action: #selector(resetKeybindings),
-                                   keyEquivalent: "")
-        resetItem.target = self
-        keybindingsMenu.addItem(resetItem)
-
-        let keybindingsItem = NSMenuItem(title: "Keybindings", action: nil, keyEquivalent: "")
-        keybindingsItem.submenu = keybindingsMenu
-        return keybindingsItem
+    /// Wraps a section's submenu in the untitled, actionless top-level item
+    /// AppKit expects, under the title the menu bar shows.
+    private func topLevelMenuItem(title: String, submenu: NSMenu) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.submenu = submenu
+        return item
     }
     
     // MARK: - Appearance
     
-    @objc private func setAppearanceSystem() {
+    @objc func setAppearanceSystem() {
         NSApp.appearance = nil
         UserDefaults.standard.set("system", forKey: "appearanceMode")
         updateAppearanceCheckmarks()
     }
     
-    @objc private func setAppearanceLight() {
+    @objc func setAppearanceLight() {
         NSApp.appearance = NSAppearance(named: .aqua)
         UserDefaults.standard.set("light", forKey: "appearanceMode")
         updateAppearanceCheckmarks()
     }
     
-    @objc private func setAppearanceDark() {
+    @objc func setAppearanceDark() {
         NSApp.appearance = NSAppearance(named: .darkAqua)
         UserDefaults.standard.set("dark", forKey: "appearanceMode")
         updateAppearanceCheckmarks()
@@ -747,7 +209,7 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
-    private func updateAppearanceCheckmarks() {
+    func updateAppearanceCheckmarks() {
         guard let menu = appearanceMenu else { return }
         let mode = UserDefaults.standard.string(forKey: "appearanceMode") ?? "system"
         for item in menu.items {
@@ -762,11 +224,11 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     
     // MARK: - Menu Actions
     
-    @objc private func newTab() {
+    @objc func newTab() {
         activeController?.addNewTab()
     }
     
-    @objc private func newWindow() {
+    @objc func newWindow() {
         // A real second window (Notepad++ File > New Window), not another tab.
         // It owns its own tab groups, editors and watchers; the primary
         // controller keeps the session writes and the quit path merges all
@@ -782,55 +244,55 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         controller.applyPreferences()
     }
     
-    @objc private func openFile() {
+    @objc func openFile() {
         activeController?.openFile()
     }
     
-    @objc private func saveFile() {
+    @objc func saveFile() {
         activeController?.saveFile()
     }
     
-    @objc private func saveAsFile() {
+    @objc func saveAsFile() {
         activeController?.saveAsFile()
     }
     
-    @objc private func closeTab() {
+    @objc func closeTab() {
         activeController?.closeSelectedTab()
     }
     
-    @objc private func closeAllTabs() {
+    @objc func closeAllTabs() {
         activeController?.closeAllTabs()
     }
     
-    @objc private func toggleFindBar() {
+    @objc func toggleFindBar() {
         activeController?.toggleFindBar()
     }
     
-    @objc private func findNext() {
+    @objc func findNext() {
         activeController?.findNext()
     }
     
-    @objc private func findPrevious() {
+    @objc func findPrevious() {
         activeController?.findPrevious()
     }
     
-    @objc private func toggleWordWrap() {
+    @objc func toggleWordWrap() {
         activeController?.toggleWordWrap()
     }
 
-    @objc private func toggleDocumentMap() {
+    @objc func toggleDocumentMap() {
         activeController?.toggleDocumentMap()
     }
     
-    @objc private func zoomIn() {
+    @objc func zoomIn() {
         activeController?.zoomIn()
     }
     
-    @objc private func zoomOut() {
+    @objc func zoomOut() {
         activeController?.zoomOut()
     }
     
-    @objc private func resetZoom() {
+    @objc func resetZoom() {
         activeController?.resetZoom()
     }
 
@@ -839,7 +301,7 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     /// Standard Cmd+, entry point. The delegate owns the controller, so the
     /// same window is reused for the lifetime of the app instead of stacking
     /// up duplicate preferences windows.
-    @objc private func showPreferences() {
+    @objc func showPreferences() {
         if preferencesWindowController == nil {
             preferencesWindowController = PreferencesWindowController()
         }
@@ -849,9 +311,9 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    @objc private func setEOLLF() { activeController?.setEOL("LF") }
-    @objc private func setEOLCRLF() { activeController?.setEOL("CRLF") }
-    @objc private func setEOLCR() { activeController?.setEOL("CR") }
+    @objc func setEOLLF() { activeController?.setEOL("LF") }
+    @objc func setEOLCRLF() { activeController?.setEOL("CRLF") }
+    @objc func setEOLCR() { activeController?.setEOL("CR") }
 
     @objc private func sortLinesAscending() { activeController?.sortLinesAscending() }
     @objc private func sortLinesDescending() { activeController?.sortLinesDescending() }
@@ -866,7 +328,7 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.mainMenu = buildMainMenu()
     }
 
-    @objc private func editKeybinding(_ sender: NSMenuItem) {
+    @objc func editKeybinding(_ sender: NSMenuItem) {
         guard let identifier = sender.representedObject as? String,
               let command = CommandRegistry.default.command(for: identifier) else {
             return
@@ -887,7 +349,7 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func resetKeybindings() {
+    @objc func resetKeybindings() {
         do {
             try KeybindingStore.resetToDefaults()
         } catch {
@@ -907,7 +369,7 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
 
     private var findInFilesController: FindInFilesWindowController?
 
-    @objc private func findInFiles() {
+    @objc func findInFiles() {
         if findInFilesController == nil {
             let controller = FindInFilesWindowController()
             controller.onOpenMatch = { [weak self] url, range in
@@ -919,7 +381,7 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         findInFilesController?.window?.makeKeyAndOrderFront(nil)
     }
     
-    @objc private func setLanguage(_ sender: NSMenuItem) {
+    @objc func setLanguage(_ sender: NSMenuItem) {
         let langs = Language.allCases
         guard sender.tag >= 0, sender.tag < langs.count else { return }
         activeController?.setLanguage(langs[sender.tag])
@@ -1013,13 +475,6 @@ extension HexpadAppDelegate: NSMenuDelegate {
             }
             menu.addItem(item)
         }
-    }
-}
-
-private extension NSObject {
-    func apply(_ block: (Self) -> Void) -> Self {
-        block(self)
-        return self
     }
 }
 
