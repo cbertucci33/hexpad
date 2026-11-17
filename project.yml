@@ -18,6 +18,18 @@ targets:
         MACOSX_DEPLOYMENT_TARGET: 14.0
         PRODUCT_BUNDLE_IDENTIFIER: com.hexpad.Hexpad
         GENERATE_INFOPLIST_FILE: YES
+    info:
+      path: Hexpad-Info.plist
+      properties:
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Plain Text
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [public.plain-text, public.utf8-plain-text, public.text, public.source-code, public.script, public.python-script, public.swift-source, public.shell-script, public.json, public.xml, public.data]
+          - CFBundleTypeName: All Files
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: None
+            LSItemContentTypes: [public.item]
     preBuildScripts:
       - name: "Validate Swift Package"
         script: |

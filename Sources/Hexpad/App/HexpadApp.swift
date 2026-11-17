@@ -920,6 +920,30 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         guard let path = sender.representedObject as? String else { return }
         activeController?.openFile(atPath: path)
     }
+
+    // MARK: - External open (Finder, `open`, drag onto dock icon)
+
+    /// Files handed to us by Launch Services. Without this the bundle has no
+    /// open handler, so `open -a Hexpad file.txt` fails with "cannot open
+    /// files in the ... format" before our code ever runs.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        // Ensure at least one window exists so a cold `open -a Hexpad x.py`
+        // lands the file in a real editor rather than nowhere (app can launch
+        // without windows when launched directly with files and no session).
+        if windowController == nil {
+            let window = MainWindow()
+            mainWindow = window
+            let controller = MainWindowController(window: window)
+            window.contentViewController = controller
+            controller.recentFilesManager = recentFilesManager
+            controller.applyPreferences()
+            window.makeKeyAndOrderFront(nil)
+            windowController = controller
+        }
+        for url in urls {
+            activeController?.openFile(atPath: url.path)
+        }
+    }
 }
 
 // MARK: - NSWindowDelegate (additional windows)

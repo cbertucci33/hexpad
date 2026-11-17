@@ -2570,10 +2570,15 @@ extension MainWindowController: NSTextViewDelegate {
     func undoManager(for textView: NSTextView) -> UndoManager? {
         // Each group has its own bound document, so undo must resolve against
         // the text view that asked rather than whichever group is focused.
-        if let pane = pane(containing: textView) {
-            return pane.boundDocument?.undoManager ?? textView.undoManager
+        if let pane = pane(containing: textView), let docUndo = pane.boundDocument?.undoManager {
+            return docUndo
         }
-        return textView.undoManager
+        // Never fall back to textView.undoManager: NSTextView re-enters this
+        // delegate method, so the fallback recurses until the stack overflows
+        // (launch crash when menu validation asks before any pane binds the
+        // view). The window's undo manager is the same object NSTextView would
+        // resolve to, obtained without re-entrancy.
+        return view.window?.undoManager
     }
 
     func textView(_ textView: NSTextView,
