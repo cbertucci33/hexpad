@@ -67,6 +67,7 @@ final class BookmarkCommandTests: XCTestCase {
                        + registry.toolCommands.map(\.identifier)
                        + registry.lineOpCommands.map(\.identifier)
                        + registry.caseCommands.map(\.identifier)
+                       + registry.indentCommands.map(\.identifier)
                        + registry.viewCommands.map(\.identifier))
         // Contract: the line-editing group stays first and unchanged, then
         // bookmarks, then Tools, Line Ops, case and view commands in registry
@@ -106,6 +107,8 @@ final class BookmarkCommandTests: XCTestCase {
             "case-sentence-blend",
             "case-invert",
             "case-random",
+            "indent-increase",
+            "indent-decrease",
             "fold-all",
             "unfold-all",
             "toggle-word-wrap"

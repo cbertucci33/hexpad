@@ -215,8 +215,9 @@ public struct EditorCommand {
 /// The default registry contains the line-editing commands from `LineOps` in
 /// ``commands``, the bookmark commands in ``bookmarkCommands``, the
 /// Tools/Line Ops commands in ``toolCommands`` and ``lineOpCommands``, the
-/// Edit > Convert Case to commands in ``caseCommands``, and the view-only
-/// fold/wrap commands in ``viewCommands``. All groups share identifier lookup
+/// Edit > Convert Case to commands in ``caseCommands``, the Edit > Indent
+/// commands in ``indentCommands``, and the view-only fold/wrap commands in
+/// ``viewCommands``. All groups share identifier lookup
 /// and the ``execute(_:on:)`` state-aware path. Menu and keybinding wiring is
 /// intentionally left to a later layer: this type only describes and runs the
 /// commands.
@@ -241,6 +242,9 @@ public struct CommandRegistry {
     /// The Edit > Convert Case to commands, in menu order.
     public let caseCommands: [EditorCommand]
 
+    /// The Edit > Indent commands, in menu order.
+    public let indentCommands: [EditorCommand]
+
     /// The view-only commands (folding and word wrap), in menu order.
     public let viewCommands: [EditorCommand]
 
@@ -249,24 +253,29 @@ public struct CommandRegistry {
     /// All commands offered by this registry, line-editing commands first.
     public var allCommands: [EditorCommand] {
         commands + bookmarkCommands + toolCommands + lineOpCommands
-            + caseCommands + viewCommands
+            + caseCommands + indentCommands + viewCommands
     }
 
     /// Creates a registry containing the default command groups.
     ///
     /// - Parameters:
     ///   - lineCommentPrefix: Prefix used by `toggle-line-comment`.
+    ///   - indentSettings: Fallback whitespace policy for the Edit > Indent
+    ///     commands when they run without a macro parameter. The app supplies
+    ///     its Preferences policy through the parameter instead.
     ///   - now: Clock used by the `insert-date`/`insert-time`/`insert-datetime`
     ///     commands. It is read at execution time, so replay inserts a fresh
     ///     timestamp instead of the one captured while recording. Tests pass a
     ///     fixed closure for deterministic output.
     public init(lineCommentPrefix: String = "//",
+                indentSettings: IndentSettings = .default,
                 now: @escaping () -> Date = Date.init) {
         self.init(commands: CommandRegistry.defaultCommands(lineCommentPrefix: lineCommentPrefix),
                   bookmarkCommands: CommandRegistry.defaultBookmarkCommands(),
                   toolCommands: CommandRegistry.defaultToolCommands(now: now),
                   lineOpCommands: CommandRegistry.defaultLineOpCommands(),
                   caseCommands: CommandRegistry.defaultCaseCommands(),
+                  indentCommands: CommandRegistry.defaultIndentCommands(settings: indentSettings),
                   viewCommands: CommandRegistry.defaultViewCommands())
     }
 
@@ -278,16 +287,18 @@ public struct CommandRegistry {
                 toolCommands: [EditorCommand] = [],
                 lineOpCommands: [EditorCommand] = [],
                 caseCommands: [EditorCommand] = [],
+                indentCommands: [EditorCommand] = [],
                 viewCommands: [EditorCommand] = []) {
         self.commands = commands
         self.bookmarkCommands = bookmarkCommands
         self.toolCommands = toolCommands
         self.lineOpCommands = lineOpCommands
         self.caseCommands = caseCommands
+        self.indentCommands = indentCommands
         self.viewCommands = viewCommands
         var lookup: [String: EditorCommand] = [:]
         for command in commands + bookmarkCommands + toolCommands + lineOpCommands
-            + caseCommands + viewCommands
+            + caseCommands + indentCommands + viewCommands
         where lookup[command.identifier] == nil {
             lookup[command.identifier] = command
         }
@@ -558,6 +569,44 @@ public struct CommandRegistry {
                 identifier: "case-random",
                 title: "ranDOm CasE",
                 execute: CaseOps.randomCase
+            )
+        ]
+    }
+
+    /// The Edit > Indent commands, in Notepad++ menu order.
+    ///
+    /// Both operate on every line touched by the selection, or the caret's
+    /// line when the selection is collapsed. `indentSettings` is the fallback
+    /// policy; the app passes its live Preferences through the macro-style
+    /// parameter ("tabs:4" / "spaces:4") so the command follows the user's
+    /// tabs-vs-spaces choice and tab width.
+    public static func defaultIndentCommands(settings: IndentSettings = .default) -> [EditorCommand] {
+        [
+            EditorCommand(
+                identifier: "indent-increase",
+                title: "Increase Line Indent",
+                execute: { text, selection in
+                    IndentOps.indentLines(text, selection: selection, settings: settings)
+                },
+                parameterizedExecute: { parameter in
+                    let resolved = IndentSettings(parameter: parameter) ?? settings
+                    return { text, selection in
+                        IndentOps.indentLines(text, selection: selection, settings: resolved)
+                    }
+                }
+            ),
+            EditorCommand(
+                identifier: "indent-decrease",
+                title: "Decrease Line Indent",
+                execute: { text, selection in
+                    IndentOps.dedentLines(text, selection: selection, settings: settings)
+                },
+                parameterizedExecute: { parameter in
+                    let resolved = IndentSettings(parameter: parameter) ?? settings
+                    return { text, selection in
+                        IndentOps.dedentLines(text, selection: selection, settings: resolved)
+                    }
+                }
             )
         ]
     }

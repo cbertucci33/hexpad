@@ -94,7 +94,36 @@ extension HexpadAppDelegate {
             convertCaseMenu.addItem(item)
         }
         convertCaseItem.submenu = convertCaseMenu
-        
+
+        // Notepad++ nests Increase/Decrease Line Indent under Edit > Indent.
+        // Cmd+] / Cmd+[ are the standard Mac editor chords; the Window menu's
+        // Cmd+Shift+] / Cmd+Shift+[ previous/next-tab items are the shifted
+        // variants, so there is no collision. The target reads the focused
+        // controller's Preferences at action time and passes the tabs-vs-spaces
+        // policy through the command's macro-style parameter, keeping the
+        // single registry/undo path.
+        let indentItem = NSMenuItem(title: "Indent", action: nil, keyEquivalent: "")
+        let indentMenu = NSMenu(title: "Indent")
+        for command in CommandRegistry.default.indentCommands {
+            let item = NSMenuItem(title: command.title,
+                                  action: #selector(performIndentCommand(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.representedObject = command.identifier
+            switch command.identifier {
+            case "indent-increase":
+                item.keyEquivalent = "]"
+                item.keyEquivalentModifierMask = [.command]
+            case "indent-decrease":
+                item.keyEquivalent = "["
+                item.keyEquivalentModifierMask = [.command]
+            default:
+                break
+            }
+            indentMenu.addItem(item)
+        }
+        indentItem.submenu = indentMenu
+
         editMenu.addItem(undoItem)
         editMenu.addItem(redoItem)
         editMenu.addItem(.separator())
@@ -105,8 +134,37 @@ extension HexpadAppDelegate {
         editMenu.addItem(selectAllItem)
         editMenu.addItem(.separator())
         editMenu.addItem(convertCaseItem)
+        editMenu.addItem(indentItem)
         editMenu.addItem(.separator())
         editMenu.addItem(findItem)
         return editMenu
+    }
+
+    /// Runs an Edit > Indent item against the focused window with the user's
+    /// live tab policy.
+    ///
+    /// The menu item keeps the registry identifier in `representedObject`; the
+    /// Preferences policy is encoded as the command parameter so macro replay
+    /// reproduces the same indentation without the Kit reading app state.
+    @objc private func performIndentCommand(_ sender: NSMenuItem) {
+        guard let identifier = sender.representedObject as? String,
+              let controller = indentTargetController else {
+            return
+        }
+        let settings = IndentSettings(tabSize: controller.preferences.tabSize,
+                                      useTabs: controller.preferences.useTabs)
+        controller.performCommand(identifier: identifier, parameter: settings.parameter)
+    }
+
+    /// The controller for the focused window, falling back to the main window
+    /// and then any open Hexpad window when a panel owns key status.
+    private var indentTargetController: MainWindowController? {
+        if let controller = NSApp.keyWindow?.contentViewController as? MainWindowController {
+            return controller
+        }
+        if let controller = NSApp.mainWindow?.contentViewController as? MainWindowController {
+            return controller
+        }
+        return NSApp.windows.lazy.compactMap { $0.contentViewController as? MainWindowController }.first
     }
 }
