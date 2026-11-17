@@ -322,6 +322,20 @@ enum MinimapGeometry {
         return height / CGFloat(lineCount)
     }
 
+    /// Rows never grow past this height.
+    ///
+    /// Fitting the document into the strip is only meaningful while a row is a
+    /// thin sliver. A handful of lines fitted into a tall editor would each
+    /// become a huge bar that reads as a rendering defect, so a short document
+    /// uses the top of the strip and leaves the rest as background.
+    static let maximumRowHeight: CGFloat = 3
+
+    /// Height at which the view actually paints a row: the fitted
+    /// ``rowHeight(lineCount:height:)`` clamped to ``maximumRowHeight``.
+    static func drawnRowHeight(lineCount: Int, height: CGFloat) -> CGFloat {
+        min(rowHeight(lineCount: lineCount, height: height), maximumRowHeight)
+    }
+
     /// Normalised position of `y` inside the minimap, clamped to 0...1.
     static func fraction(atY y: CGFloat, height: CGFloat) -> CGFloat {
         guard height > 0 else { return 0 }
@@ -351,11 +365,15 @@ enum MinimapGeometry {
     /// Uses logical line numbers (not laid-out pixel heights) so the overlay
     /// and the per-line rows share one coordinate system, including when lines
     /// wrap or folded content changes the layout height.
+    ///
+    /// `rowHeightOverride` lets the view pass the capped row height it paints
+    /// with, so the band always lines up with the rows actually drawn.
     static func viewportRect(visibleCharacterRange: NSRange,
                              text: String,
                              lineCount: Int,
                              width: CGFloat,
-                             height: CGFloat) -> NSRect? {
+                             height: CGFloat,
+                             rowHeightOverride: CGFloat? = nil) -> NSRect? {
         guard lineCount > 0, height > 0 else { return nil }
 
         let textLength = (text as NSString).length
@@ -372,7 +390,8 @@ enum MinimapGeometry {
             ? GutterGeometry.logicalLine(of: lastChar, in: text)
             : firstLine
 
-        let rowHeight = self.rowHeight(lineCount: lineCount, height: height)
+        let rowHeight = rowHeightOverride
+            ?? self.rowHeight(lineCount: lineCount, height: height)
         let rawHeight = CGFloat(max(1, lastLine - firstLine + 1)) * rowHeight
         let overlayHeight = min(height, max(rawHeight, minimumViewportHeight))
         let rawY = CGFloat(max(0, firstLine - 1)) * rowHeight
@@ -744,6 +763,13 @@ final class MinimapView: NSView {
         return GutterGeometry.lineCount(in: textView.string)
     }
 
+    /// Height this view paints one row at. See
+    /// ``MinimapGeometry/drawnRowHeight(lineCount:height:)``: rows are capped so
+    /// a short document does not stretch into a few giant bars.
+    private var paintedRowHeight: CGFloat {
+        MinimapGeometry.drawnRowHeight(lineCount: lineCount, height: bounds.height)
+    }
+
     private func viewportRect() -> NSRect? {
         guard let textView, bounds.width > 0, bounds.height > 0 else { return nil }
         return MinimapGeometry.viewportRect(
@@ -751,7 +777,8 @@ final class MinimapView: NSView {
             text: textView.string,
             lineCount: lineCount,
             width: bounds.width,
-            height: bounds.height
+            height: bounds.height,
+            rowHeightOverride: paintedRowHeight
         )
     }
 
@@ -762,8 +789,7 @@ final class MinimapView: NSView {
         let location = min(max(0, textView.selectedRange().location),
                            (text as NSString).length)
         let line = GutterGeometry.logicalLine(of: location, in: text)
-        let rowHeight = MinimapGeometry.rowHeight(lineCount: lineCount,
-                                                  height: bounds.height)
+        let rowHeight = paintedRowHeight
         let height = max(1.5, rowHeight)
         let y = min(max(0, CGFloat(line - 1) * rowHeight),
                     max(0, bounds.height - height))
@@ -782,25 +808,33 @@ final class MinimapView: NSView {
         super.draw(dirtyRect)
         guard !isHidden, bounds.width > 0, bounds.height > 0 else { return }
 
+        // AppKit forwards a whole-window invalidation to every subview without
+        // intersecting it with the subview's frame, so `dirtyRect` can reach far
+        // outside these bounds. This view fills its dirty band opaquely and is
+        // the last sibling in the container, so painting the raw rect used to
+        // erase the gutter and the text view on every full repaint. Never draw
+        // outside our own bounds.
+        let dirty = dirtyRect.intersection(bounds)
+        guard !dirty.isEmpty else { return }
+
         // Only the dirty band is cleared; scroll repaints therefore cannot
         // erase rows outside their overlay union.
         let background = theme.background.blended(withFraction: 0.08, of: .black)
             ?? theme.background
         background.setFill()
-        dirtyRect.fill()
+        dirty.fill()
 
         NSColor.separatorColor.withAlphaComponent(0.5).setFill()
-        NSRect(x: 0, y: dirtyRect.minY, width: 1, height: dirtyRect.height).fill()
+        NSRect(x: 0, y: dirty.minY, width: 1, height: dirty.height).fill()
 
         if let model = lineModel, !model.lines.isEmpty {
-            drawLines(model, in: dirtyRect)
+            drawLines(model, in: dirty)
         }
-        drawOverlay(in: dirtyRect)
+        drawOverlay(in: dirty)
     }
 
     private func drawLines(_ model: MinimapLineModel, in dirtyRect: NSRect) {
-        let rowHeight = MinimapGeometry.rowHeight(lineCount: model.lines.count,
-                                                  height: bounds.height)
+        let rowHeight = paintedRowHeight
         guard rowHeight > 0 else { return }
         let drawHeight = max(1, rowHeight)
         let usableWidth = max(0, bounds.width - Self.horizontalInset * 2)
