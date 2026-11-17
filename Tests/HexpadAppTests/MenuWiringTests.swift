@@ -539,4 +539,32 @@ final class MenuWiringTests: XCTestCase {
         controller.selectTab(at: 0)
         XCTAssertEqual(bar.matchCountLabel.stringValue, "1 of 2")
     }
+
+    // MARK: - Help menu
+
+    /// Help carries the two N++-parity links after About, and each item holds a
+    /// real URL for the shared browser action. No NSWorkspace call here: the
+    /// test only inspects wiring, never opens a browser.
+    func testHelpMenuHasManualAndProjectLinks() throws {
+        let delegate = HexpadAppDelegate()
+        let helpMenu = delegate.makeHelpMenu()
+
+        XCTAssertEqual(helpMenu.items.first?.title, "About Hexpad")
+
+        let manual = try XCTUnwrap(helpMenu.item(withTitle: "Hexpad Online Manual"))
+        let project = try XCTUnwrap(helpMenu.item(withTitle: "Hexpad Project Page"))
+
+        let manualURL = try XCTUnwrap(manual.representedObject as? URL)
+        let projectURL = try XCTUnwrap(project.representedObject as? URL)
+        XCTAssertEqual(manualURL.absoluteString, HexpadAppDelegate.onlineManualURL)
+        XCTAssertEqual(projectURL.absoluteString, HexpadAppDelegate.projectPageURL)
+        XCTAssertEqual(manualURL.scheme, "https")
+        XCTAssertEqual(projectURL.scheme, "https")
+
+        for item in [manual, project] {
+            XCTAssertEqual(item.action, #selector(HexpadAppDelegate.openHelpLink(_:)))
+            XCTAssertTrue(item.target is HexpadAppDelegate)
+            XCTAssertTrue(item.isEnabled, "a parsed URL keeps the link enabled")
+        }
+    }
 }

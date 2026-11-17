@@ -345,6 +345,15 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         activeController?.resetZoom()
     }
 
+    // MARK: - Help
+
+    /// Help menu browser links. The URL travels in `representedObject`; the
+    /// menu builder only creates an item for a URL that parsed.
+    @objc func openHelpLink(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     // MARK: - Preferences
 
     /// Standard Cmd+, entry point. The delegate owns the controller, so the
@@ -546,6 +555,9 @@ extension HexpadAppDelegate: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if let scope = closeScope(for: menuItem.action) {
             return activeController?.canCloseMultipleDocuments(scope) ?? false
+        }
+        if menuItem.action == #selector(HexpadAppDelegate.openHelpLink(_:)) {
+            return menuItem.representedObject is URL
         }
         if menuItem.action == #selector(HexpadAppDelegate.toggleDocumentMap) {
             menuItem.state = (activeController?.preferences.minimapVisible ?? false) ? .on : .off
