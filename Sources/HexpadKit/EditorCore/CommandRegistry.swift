@@ -241,6 +241,13 @@ public struct CommandRegistry {
     /// The Tools commands (hash digests and date/time insertion), in menu order.
     public let toolCommands: [EditorCommand]
 
+    /// The Edit > Insert > Date Time commands, in menu order.
+    ///
+    /// Separate from ``toolCommands`` so the legacy Tools date items keep
+    /// their identifiers while the N++-shaped Edit submenu gets its own three
+    /// commands, including the user-customized format.
+    public let dateCommands: [EditorCommand]
+
     /// The bulk line operations, in menu order.
     public let lineOpCommands: [EditorCommand]
 
@@ -260,7 +267,7 @@ public struct CommandRegistry {
 
     /// All commands offered by this registry, line-editing commands first.
     public var allCommands: [EditorCommand] {
-        commands + bookmarkCommands + toolCommands + lineOpCommands
+        commands + bookmarkCommands + toolCommands + dateCommands + lineOpCommands
             + caseCommands + indentCommands + viewCommands + tokenStyleCommands
     }
 
@@ -281,6 +288,7 @@ public struct CommandRegistry {
         self.init(commands: CommandRegistry.defaultCommands(lineCommentPrefix: lineCommentPrefix),
                   bookmarkCommands: CommandRegistry.defaultBookmarkCommands(),
                   toolCommands: CommandRegistry.defaultToolCommands(now: now),
+                  dateCommands: CommandRegistry.defaultDateCommands(now: now),
                   lineOpCommands: CommandRegistry.defaultLineOpCommands(),
                   caseCommands: CommandRegistry.defaultCaseCommands(),
                   indentCommands: CommandRegistry.defaultIndentCommands(settings: indentSettings),
@@ -294,6 +302,7 @@ public struct CommandRegistry {
     public init(commands: [EditorCommand],
                 bookmarkCommands: [EditorCommand] = [],
                 toolCommands: [EditorCommand] = [],
+                dateCommands: [EditorCommand] = [],
                 lineOpCommands: [EditorCommand] = [],
                 caseCommands: [EditorCommand] = [],
                 indentCommands: [EditorCommand] = [],
@@ -302,14 +311,16 @@ public struct CommandRegistry {
         self.commands = commands
         self.bookmarkCommands = bookmarkCommands
         self.toolCommands = toolCommands
+        self.dateCommands = dateCommands
         self.lineOpCommands = lineOpCommands
         self.caseCommands = caseCommands
         self.indentCommands = indentCommands
         self.viewCommands = viewCommands
         self.tokenStyleCommands = tokenStyleCommands
         var lookup: [String: EditorCommand] = [:]
-        for command in commands + bookmarkCommands + toolCommands + lineOpCommands
-            + caseCommands + indentCommands + viewCommands + tokenStyleCommands
+        for command in commands + bookmarkCommands + toolCommands + dateCommands
+            + lineOpCommands + caseCommands + indentCommands + viewCommands
+            + tokenStyleCommands
         where lookup[command.identifier] == nil {
             lookup[command.identifier] = command
         }
@@ -492,6 +503,57 @@ public struct CommandRegistry {
                         text: text,
                         selection: selection
                     )
+                }
+            )
+        ]
+    }
+
+    /// The Edit > Insert > Date Time commands, in menu order.
+    ///
+    /// These mirror Notepad++'s three Insert > Date Time entries. The two fixed
+    /// styles read `now` when they execute, so a replayed macro inserts a fresh
+    /// timestamp. The customized command accepts the user's format pattern as
+    /// its macro-style parameter; the app passes the live Settings value, and a
+    /// plain replay without one falls back to
+    /// ``DateTimeInsert/defaultCustomPattern``.
+    ///
+    /// - Parameter now: Clock read by the commands at execution time.
+    public static func defaultDateCommands(now: @escaping () -> Date = Date.init) -> [EditorCommand] {
+        [
+            EditorCommand(
+                identifier: "insert-datetime-short",
+                title: "Date Time (short)",
+                execute: { text, selection in
+                    HashCommandOps.insertAtCaret(DateTimeInsert.shortStyle(now()),
+                                                 text: text,
+                                                 selection: selection)
+                }
+            ),
+            EditorCommand(
+                identifier: "insert-datetime-long",
+                title: "Date Time (long)",
+                execute: { text, selection in
+                    HashCommandOps.insertAtCaret(DateTimeInsert.longStyle(now()),
+                                                 text: text,
+                                                 selection: selection)
+                }
+            ),
+            EditorCommand(
+                identifier: "insert-datetime-custom",
+                title: "Date Time (customized)",
+                execute: { text, selection in
+                    HashCommandOps.insertAtCaret(
+                        DateTimeInsert.customized(now(), pattern: DateTimeInsert.defaultCustomPattern),
+                        text: text,
+                        selection: selection
+                    )
+                },
+                parameterizedExecute: { pattern in
+                    { text, selection in
+                        HashCommandOps.insertAtCaret(DateTimeInsert.customized(now(), pattern: pattern),
+                                                     text: text,
+                                                     selection: selection)
+                    }
                 }
             )
         ]

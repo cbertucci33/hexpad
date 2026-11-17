@@ -169,6 +169,11 @@ class MainWindowController: NSViewController {
     /// current by the `.preferencesDidChange` observer, so every bind and
     /// re-highlight reads one value instead of the file.
     private(set) var preferences = PreferencesStore.load()
+
+    /// Most-recently-used tab order for the focused group. Document ids (not
+    /// indices) so closing or reordering tabs cannot silently retarget an
+    /// entry. Used only when `preferences.mruTabSwitching` is on.
+    private var mruOrder = MRUOrder<UUID>()
     
     // MARK: - Init
     
@@ -343,6 +348,18 @@ class MainWindowController: NSViewController {
                     rehighlightAll(in: pane.editor, document: doc)
                 }
             }
+        }
+
+        // Tab bar chrome is applied live: hiding reserves no layout slot, and
+        // the interaction/label options take effect on the next reload.
+        if previous.showTabBar != preferences.showTabBar {
+            updateLayout()
+        }
+        if previous.showTabBar != preferences.showTabBar
+            || previous.lockTabBar != preferences.lockTabBar
+            || previous.doubleClickTabCloses != preferences.doubleClickTabCloses
+            || previous.maxTabLabelLength != preferences.maxTabLabelLength {
+            refreshTabBar()
         }
     }
     
@@ -542,10 +559,12 @@ class MainWindowController: NSViewController {
 
         // Post-It and Distraction Free collapse the tab bar and status bar to
         // zero height: the layout slot disappears, not just the paint. The
-        // views themselves are untouched apart from visibility.
+        // views themselves are untouched apart from visibility. The Settings
+        // "Show tab bar" preference collapses only the tab bar the same way.
         let chromeHidden = chromeMode != .normal
         let distractionFree = chromeMode == .distractionFree
-        let tabBarHeight: CGFloat = chromeHidden ? 0 : 32
+        let tabBarVisible = !chromeHidden && preferences.showTabBar
+        let tabBarHeight: CGFloat = tabBarVisible ? 32 : 0
         let statusHeight: CGFloat = chromeHidden ? 0 : 22
 
         // The find bar is a tool, but "only the editor" includes it while chrome
@@ -580,7 +599,7 @@ class MainWindowController: NSViewController {
                    topInset: topInset,
                    statusHeight: statusHeight,
                    tabBarHeight: tabBarHeight,
-                   hidesTabBar: chromeHidden)
+                   hidesTabBar: !tabBarVisible)
 
         let editorTop = height - topInset
         let editorHeight = max(editorTop - statusHeight, 100)
@@ -594,7 +613,7 @@ class MainWindowController: NSViewController {
                        topInset: topInset,
                        statusHeight: statusHeight,
                        tabBarHeight: tabBarHeight,
-                       hidesTabBar: chromeHidden)
+                       hidesTabBar: !tabBarVisible)
             dividerView?.isHidden = false
             dividerView?.frame = NSRect(x: contentX + primaryWidth,
                                         y: statusHeight,
@@ -676,13 +695,17 @@ class MainWindowController: NSViewController {
     // MARK: - Tab Management
     
     func addNewTab() {
-        let doc = DocumentModel(text: "")
+        let doc = DocumentModel(text: "",
+                                encoding: preferences.defaultEncoding,
+                                eolType: preferences.defaultEOL)
         // The preference is the default for a document that has no persisted
         // editor state of its own. Restored tabs keep the state the session
-        // stored; this only seeds newly created buffers.
+        // stored; this only seeds newly created buffers. The same applies to
+        // the encoding and line endings chosen in Settings > Editor.
         doc.wordWrapEnabled = preferences.wordWrap
         tabStore.addDocument(doc)
         refreshTabBar()
+        noteTabActivated()
         updateEditor()
         updateStatusBar()
         postTabSelectionDidChange()
@@ -1238,6 +1261,7 @@ class MainWindowController: NSViewController {
         guard index != tabStore.selectedIndex else { return }
         tabStore.selectDocument(at: index)
         refreshTabBar()
+        noteTabActivated()
         updateEditor()
         updateStatusBar()
         // Every tab-switch path shares this notice (FindBar and the tab bars
@@ -1256,14 +1280,34 @@ class MainWindowController: NSViewController {
 
     /// Wraps forward through the open tabs. Disabled with fewer than two tabs
     /// by menu validation, but still safe to call directly.
+    ///
+    /// With MRU tab switching on, "next" means the previously used tab rather
+    /// than the positional neighbor. The stack is a simplification: it records
+    /// activations only, so holding the chord toggles the two most recent tabs
+    /// instead of cycling through every tab in usage order.
     func selectNextTab() {
         guard tabStore.count > 1 else { return }
+        if preferences.mruTabSwitching,
+           let current = tabStore.selectedDocument,
+           let target = mruOrder.next(after: current.id),
+           let index = tabStore.documents.firstIndex(where: { $0.id == target }) {
+            selectTab(at: index)
+            return
+        }
         selectTab(at: (tabStore.selectedIndex + 1) % tabStore.count)
     }
 
-    /// Wraps backward through the open tabs.
+    /// Wraps backward through the open tabs; with MRU on, it walks the stack in
+    /// the other direction.
     func selectPreviousTab() {
         guard tabStore.count > 1 else { return }
+        if preferences.mruTabSwitching,
+           let current = tabStore.selectedDocument,
+           let target = mruOrder.previous(after: current.id),
+           let index = tabStore.documents.firstIndex(where: { $0.id == target }) {
+            selectTab(at: index)
+            return
+        }
         selectTab(at: (tabStore.selectedIndex - 1 + tabStore.count) % tabStore.count)
     }
 
@@ -1335,7 +1379,28 @@ class MainWindowController: NSViewController {
     }
     
     func refreshTabBar() {
-        allPanes.forEach { $0.tabBar.reloadTabs() }
+        allPanes.forEach { pane in
+            // Interaction and caption options are live: the bar re-reads them
+            // on every reload, and the notification handler calls this path.
+            pane.tabBar.lockTabBar = preferences.lockTabBar
+            pane.tabBar.doubleClickTabCloses = preferences.doubleClickTabCloses
+            pane.tabBar.maxTabLabelLength = preferences.maxTabLabelLength
+            pane.tabBar.reloadTabs()
+        }
+        synchronizeMRU()
+    }
+
+    /// Keeps the MRU stack aligned with the focused store (closed tabs pruned,
+    /// new tabs appended in positional order).
+    private func synchronizeMRU() {
+        mruOrder.synchronize(with: tabStore.documents.map(\.id))
+    }
+
+    /// Records the focused group's selected tab as most recently used.
+    private func noteTabActivated() {
+        synchronizeMRU()
+        guard let doc = tabStore.selectedDocument else { return }
+        mruOrder.touch(doc.id)
     }
     
     func updateEditor(forceRebind: Bool = false) {
@@ -1412,6 +1477,7 @@ class MainWindowController: NSViewController {
     /// cross-group drag). The bar has already reloaded itself; only the
     /// changed pane needs binding.
     private func handlePaneTabChange() {
+        noteTabActivated()
         updateEditor()
     }
 
@@ -1426,6 +1492,7 @@ class MainWindowController: NSViewController {
         // highlights are cleared from the buffer they belong to.
         incrementalSearchBar?.hide()
         focusedGroup = group
+        noteTabActivated()
         // Bind first, then refresh chrome. A focus change can be the first thing
         // to happen after a store's selection moved (Move to Other View and a
         // cross-group drop both select the incoming tab before focusing its

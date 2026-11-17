@@ -124,6 +124,27 @@ extension HexpadAppDelegate {
         }
         indentItem.submenu = indentMenu
 
+        // Notepad++ nests its three Date Time inserts under Edit > Insert >
+        // Date Time. The short/long commands format the current clock when they
+        // run; the customized one receives the live Settings pattern through
+        // the same parameter path the Indent commands use, so a macro replay
+        // reproduces the format the user had at record time.
+        let insertItem = NSMenuItem(title: "Insert", action: nil, keyEquivalent: "")
+        let insertMenu = NSMenu(title: "Insert")
+        let dateTimeItem = NSMenuItem(title: "Date Time", action: nil, keyEquivalent: "")
+        let dateTimeMenu = NSMenu(title: "Date Time")
+        for command in CommandRegistry.default.dateCommands {
+            let item = NSMenuItem(title: command.title,
+                                  action: #selector(performDateInsertCommand(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.representedObject = command.identifier
+            dateTimeMenu.addItem(item)
+        }
+        dateTimeItem.submenu = dateTimeMenu
+        insertMenu.addItem(dateTimeItem)
+        insertItem.submenu = insertMenu
+
         editMenu.addItem(undoItem)
         editMenu.addItem(redoItem)
         editMenu.addItem(.separator())
@@ -135,6 +156,7 @@ extension HexpadAppDelegate {
         editMenu.addItem(.separator())
         editMenu.addItem(convertCaseItem)
         editMenu.addItem(indentItem)
+        editMenu.addItem(insertItem)
         editMenu.addItem(.separator())
         editMenu.addItem(findItem)
         return editMenu
@@ -154,6 +176,18 @@ extension HexpadAppDelegate {
         let settings = IndentSettings(tabSize: controller.preferences.tabSize,
                                       useTabs: controller.preferences.useTabs)
         controller.performCommand(identifier: identifier, parameter: settings.parameter)
+    }
+
+    /// Runs an Edit > Insert > Date Time item against the focused window. The
+    /// customized entry passes the live Settings pattern to the registry; the
+    /// two fixed styles read only the clock.
+    @objc func performDateInsertCommand(_ sender: NSMenuItem) {
+        guard let identifier = sender.representedObject as? String,
+              let controller = indentTargetController else { return }
+        let parameter = identifier == "insert-datetime-custom"
+            ? controller.preferences.dateFormatString
+            : nil
+        controller.performCommand(identifier: identifier, parameter: parameter)
     }
 
     /// The controller for the focused window, falling back to the main window

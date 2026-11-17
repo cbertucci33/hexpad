@@ -89,6 +89,10 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     /// own scheduled writes (`isAdditionalWindow`), so this is the only path
     /// that can persist their buffers.
     private func saveMergedSession() {
+        // The Backup preference can turn session snapshots off entirely: quitting
+        // then leaves the previous file untouched and the next launch starts
+        // empty instead of restoring stale tabs.
+        guard PreferencesStore.load().sessionSnapshotEnabled else { return }
         let controllers = allWindowControllers
         guard !controllers.isEmpty else { return }
         for controller in controllers {
@@ -720,6 +724,11 @@ extension HexpadAppDelegate: NSMenuItemValidation {
                 // (or no file) is found, in which case the item stays enabled.
                 defaultApplication: NSWorkspace.shared.urlForApplication(toOpen: url),
                 selfApplication: Bundle.main.bundleURL)
+        }
+        if menuItem.action == #selector(HexpadAppDelegate.performDateInsertCommand(_:)) {
+            // The date inserts need an editor to land in, exactly like the
+            // controller-owned Tools items.
+            return activeController?.tabStore.selectedDocument != nil
         }
         if menuItem.action == #selector(HexpadAppDelegate.restoreRecentClosedFile)
             || menuItem.action == #selector(HexpadAppDelegate.openAllRecentFiles)

@@ -52,6 +52,12 @@ struct Preferences: Codable, Equatable {
     /// Bounds shared by the store and the Font pane controls.
     static let fontSizeRange: ClosedRange<CGFloat> = 8...72
     static let tabSizeRange: ClosedRange<Int> = 1...16
+    /// Recent Files list cap; 0 disables the list.
+    static let recentFilesMaxRange: ClosedRange<Int> = 0...100
+    /// Tab caption truncation; 0 means unlimited.
+    static let maxTabLabelLengthRange: ClosedRange<Int> = 0...200
+    /// Line-ending styles a new document can be seeded with.
+    static let eolOptions = ["LF", "CRLF", "CR"]
 
     /// Version 2 introduced the System theme and made explicit Light
     /// distinguishable from the old implicit Light default. Files written by
@@ -85,6 +91,40 @@ struct Preferences: Codable, Equatable {
     /// explicit Light choice (version 2+) from the legacy Light default.
     var version: Int
 
+    // MARK: Tab bar
+
+    /// Whether the tab bar reserves layout space. False hides it; the tabs
+    /// still exist and remain reachable through Window > Next/Previous Tab.
+    var showTabBar: Bool
+    /// Whether drag reordering is disabled. The tabs still select and close.
+    var lockTabBar: Bool
+    /// Whether a double-click on a tab closes it.
+    var doubleClickTabCloses: Bool
+    /// Maximum tab caption length; 0 is unlimited. Longer names are truncated
+    /// with an ellipsis.
+    var maxTabLabelLength: Int
+
+    // MARK: New documents
+
+    /// Encoding seeded into a new untitled tab ("UTF-8", "UTF-16LE", ...).
+    var defaultEncoding: String
+    /// Line ending seeded into a new untitled tab: `"LF"`, `"CRLF"` or `"CR"`.
+    var defaultEOL: String
+
+    // MARK: Backup / recents / navigation
+
+    /// Whether quitting writes the tab session. Off means a relaunch starts
+    /// with no restored tabs.
+    var sessionSnapshotEnabled: Bool
+    /// File > Open Recent cap; 0 disables the list. Clamped to 0...100.
+    var recentFilesMax: Int
+    /// Whether Cmd+Shift+] / [ walk tabs in most-recently-used order instead of
+    /// positional order.
+    var mruTabSwitching: Bool
+
+    /// Unicode pattern used by Edit > Insert > Date Time (customized).
+    var dateFormatString: String
+
     init(fontFamily: String = "Menlo",
          fontSize: CGFloat = 13,
          wordWrap: Bool = false,
@@ -97,7 +137,17 @@ struct Preferences: Codable, Equatable {
          tabSize: Int = 4,
          useTabs: Bool = false,
          theme: String = ThemePreference.system.rawValue,
-         version: Int = Preferences.currentVersion) {
+         version: Int = Preferences.currentVersion,
+         showTabBar: Bool = true,
+         lockTabBar: Bool = false,
+         doubleClickTabCloses: Bool = false,
+         maxTabLabelLength: Int = 0,
+         defaultEncoding: String = "UTF-8",
+         defaultEOL: String = "LF",
+         sessionSnapshotEnabled: Bool = true,
+         recentFilesMax: Int = 10,
+         mruTabSwitching: Bool = false,
+         dateFormatString: String = DateTimeInsert.defaultCustomPattern) {
         self.fontFamily = fontFamily
         self.fontSize = fontSize
         self.wordWrap = wordWrap
@@ -111,6 +161,16 @@ struct Preferences: Codable, Equatable {
         self.useTabs = useTabs
         self.theme = theme
         self.version = version
+        self.showTabBar = showTabBar
+        self.lockTabBar = lockTabBar
+        self.doubleClickTabCloses = doubleClickTabCloses
+        self.maxTabLabelLength = maxTabLabelLength
+        self.defaultEncoding = defaultEncoding
+        self.defaultEOL = defaultEOL
+        self.sessionSnapshotEnabled = sessionSnapshotEnabled
+        self.recentFilesMax = recentFilesMax
+        self.mruTabSwitching = mruTabSwitching
+        self.dateFormatString = dateFormatString
     }
 
     /// The values a fresh install starts with. Tests compare against this, so
@@ -147,6 +207,24 @@ struct Preferences: Codable, Equatable {
         if ThemePreference(rawValue: result.theme) == nil {
             result.theme = ThemePreference.system.rawValue
         }
+
+        let maxLabel = min(max(result.maxTabLabelLength,
+                               Preferences.maxTabLabelLengthRange.lowerBound),
+                           Preferences.maxTabLabelLengthRange.upperBound)
+        result.maxTabLabelLength = maxLabel
+        result.recentFilesMax = min(max(result.recentFilesMax,
+                                        Preferences.recentFilesMaxRange.lowerBound),
+                                    Preferences.recentFilesMaxRange.upperBound)
+
+        if result.defaultEncoding.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            result.defaultEncoding = Preferences.defaults.defaultEncoding
+        }
+        if !Preferences.eolOptions.contains(result.defaultEOL) {
+            result.defaultEOL = Preferences.defaults.defaultEOL
+        }
+        if result.dateFormatString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            result.dateFormatString = Preferences.defaults.dateFormatString
+        }
         result.version = Preferences.currentVersion
 
         return result
@@ -160,6 +238,10 @@ struct Preferences: Codable, Equatable {
         case showWhitespace, showEOL, showIndentGuide
         case minimapVisible
         case tabSize, useTabs, theme, version
+        case showTabBar, lockTabBar, doubleClickTabCloses, maxTabLabelLength
+        case defaultEncoding, defaultEOL
+        case sessionSnapshotEnabled, recentFilesMax, mruTabSwitching
+        case dateFormatString
     }
 
     init(from decoder: Decoder) throws {
@@ -200,6 +282,24 @@ struct Preferences: Codable, Equatable {
             theme = ThemePreference.system.rawValue
         }
         version = Preferences.currentVersion
+
+        showTabBar = (try? container.decode(Bool.self, forKey: .showTabBar)) ?? fallback.showTabBar
+        lockTabBar = (try? container.decode(Bool.self, forKey: .lockTabBar)) ?? fallback.lockTabBar
+        doubleClickTabCloses = (try? container.decode(Bool.self, forKey: .doubleClickTabCloses))
+            ?? fallback.doubleClickTabCloses
+        maxTabLabelLength = (try? container.decode(Int.self, forKey: .maxTabLabelLength))
+            ?? fallback.maxTabLabelLength
+        defaultEncoding = (try? container.decode(String.self, forKey: .defaultEncoding))
+            ?? fallback.defaultEncoding
+        defaultEOL = (try? container.decode(String.self, forKey: .defaultEOL)) ?? fallback.defaultEOL
+        sessionSnapshotEnabled = (try? container.decode(Bool.self, forKey: .sessionSnapshotEnabled))
+            ?? fallback.sessionSnapshotEnabled
+        recentFilesMax = (try? container.decode(Int.self, forKey: .recentFilesMax))
+            ?? fallback.recentFilesMax
+        mruTabSwitching = (try? container.decode(Bool.self, forKey: .mruTabSwitching))
+            ?? fallback.mruTabSwitching
+        dateFormatString = (try? container.decode(String.self, forKey: .dateFormatString))
+            ?? fallback.dateFormatString
 
         self = normalized()
     }
@@ -466,15 +566,36 @@ final class PreferencesWindowController: NSWindowController {
     private let tabSizeStepper = NSStepper()
     private let useTabsPopup = NSPopUpButton()
 
+    // Editor pane: Tab Bar group
+    private let showTabBarCheckbox = NSButton(checkboxWithTitle: "Show tab bar",
+                                              target: nil, action: nil)
+    private let lockTabBarCheckbox = NSButton(checkboxWithTitle: "Lock tab bar (disable drag reorder)",
+                                              target: nil, action: nil)
+    private let doubleClickTabClosesCheckbox = NSButton(checkboxWithTitle: "Double-click a tab to close it",
+                                                        target: nil, action: nil)
+    private let maxTabLabelLengthField = NSTextField()
+    private let maxTabLabelLengthStepper = NSStepper()
+    private let mruTabSwitchingCheckbox = NSButton(checkboxWithTitle: "Most-recently-used tab switching",
+                                                   target: nil, action: nil)
+
+    // Editor pane: New Document group
+    private let defaultEncodingPopup = NSPopUpButton()
+    private let defaultEOLPopup = NSPopUpButton()
+
     // Appearance pane
     private let themePopup = NSPopUpButton()
 
     // Advanced pane
+    private let sessionSnapshotCheckbox = NSButton(checkboxWithTitle: "Save tab session on quit",
+                                                   target: nil, action: nil)
+    private let recentFilesMaxField = NSTextField()
+    private let recentFilesMaxStepper = NSStepper()
+    private let dateFormatField = NSTextField()
     private let preferencesPathLabel = NSTextField(labelWithString: "")
     private let resetButton = NSButton(title: "Restore Defaults", target: nil, action: nil)
 
     convenience init() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 420),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 660),
                               styleMask: [.titled, .closable],
                               backing: .buffered,
                               defer: false)
@@ -648,10 +769,55 @@ final class PreferencesWindowController: NSWindowController {
         useTabsPopup.action = #selector(useTabsChanged)
         pane.addArrangedSubview(row("Indent with:", useTabsPopup))
 
+        // Tab Bar group (P18i). The hide/lock/label options apply live through
+        // the preferences notification; the MRU choice changes navigation order.
+        pane.addArrangedSubview(sectionLabel("Tab Bar"))
+        for checkbox in [showTabBarCheckbox, lockTabBarCheckbox,
+                         doubleClickTabClosesCheckbox, mruTabSwitchingCheckbox] {
+            checkbox.target = self
+            checkbox.action = #selector(tabBarCheckboxChanged)
+            pane.addArrangedSubview(checkbox)
+        }
+
+        maxTabLabelLengthField.alignment = .right
+        maxTabLabelLengthField.target = self
+        maxTabLabelLengthField.action = #selector(maxTabLabelLengthChanged)
+        let labelFormatter = NumberFormatter()
+        labelFormatter.allowsFloats = false
+        labelFormatter.minimum = NSNumber(value: Preferences.maxTabLabelLengthRange.lowerBound)
+        labelFormatter.maximum = NSNumber(value: Preferences.maxTabLabelLengthRange.upperBound)
+        maxTabLabelLengthField.formatter = labelFormatter
+        maxTabLabelLengthField.widthAnchor.constraint(equalToConstant: 52).isActive = true
+
+        maxTabLabelLengthStepper.minValue = Double(Preferences.maxTabLabelLengthRange.lowerBound)
+        maxTabLabelLengthStepper.maxValue = Double(Preferences.maxTabLabelLengthRange.upperBound)
+        maxTabLabelLengthStepper.increment = 1
+        maxTabLabelLengthStepper.target = self
+        maxTabLabelLengthStepper.action = #selector(maxTabLabelLengthChanged)
+
+        let labelLengthRow = NSStackView(views: [maxTabLabelLengthField, maxTabLabelLengthStepper])
+        labelLengthRow.orientation = .horizontal
+        labelLengthRow.spacing = 4
+        pane.addArrangedSubview(row("Max label:", labelLengthRow))
+        pane.addArrangedSubview(hintLabel("0 means no limit; longer names end with an ellipsis."))
+
+        // New Document group (P18i).
+        pane.addArrangedSubview(sectionLabel("New Document"))
+        defaultEncodingPopup.addItems(withTitles: MainWindowController.encodingOptions.map(\.title))
+        defaultEncodingPopup.target = self
+        defaultEncodingPopup.action = #selector(defaultEncodingChanged)
+        pane.addArrangedSubview(row("Encoding:", defaultEncodingPopup))
+
+        defaultEOLPopup.addItems(withTitles: ["LF", "CRLF", "CR"])
+        defaultEOLPopup.target = self
+        defaultEOLPopup.action = #selector(defaultEOLChanged)
+        pane.addArrangedSubview(row("Line endings:", defaultEOLPopup))
+
         pane.addArrangedSubview(hintLabel("Word wrap applies to the active editor immediately and "
             + "becomes the default for new documents. Each open document keeps its own setting. "
             + "The document map and the Show Symbol options are global, off by default, and apply "
-            + "to every tab. "
+            + "to every tab. New documents are seeded with the encoding and line endings chosen "
+            + "above. "
             + "Auto-indent, auto-close, tab width, and the spaces/tabs choice are saved now and "
             + "will be wired into the editor in the follow-up slice."))
         return pane
@@ -676,6 +842,48 @@ final class PreferencesWindowController: NSWindowController {
 
     private func makeAdvancedPane() -> NSView {
         let pane = makePane()
+        pane.addArrangedSubview(sectionLabel("Session & Recents"))
+
+        sessionSnapshotCheckbox.target = self
+        sessionSnapshotCheckbox.action = #selector(advancedCheckboxChanged)
+        pane.addArrangedSubview(sessionSnapshotCheckbox)
+        pane.addArrangedSubview(hintLabel("When off, quitting does not write the tab session; the "
+            + "next launch starts with a single empty tab."))
+
+        recentFilesMaxField.alignment = .right
+        recentFilesMaxField.target = self
+        recentFilesMaxField.action = #selector(recentFilesMaxChanged)
+        let recentFormatter = NumberFormatter()
+        recentFormatter.allowsFloats = false
+        recentFormatter.minimum = NSNumber(value: Preferences.recentFilesMaxRange.lowerBound)
+        recentFormatter.maximum = NSNumber(value: Preferences.recentFilesMaxRange.upperBound)
+        recentFilesMaxField.formatter = recentFormatter
+        recentFilesMaxField.widthAnchor.constraint(equalToConstant: 52).isActive = true
+
+        recentFilesMaxStepper.minValue = Double(Preferences.recentFilesMaxRange.lowerBound)
+        recentFilesMaxStepper.maxValue = Double(Preferences.recentFilesMaxRange.upperBound)
+        recentFilesMaxStepper.increment = 1
+        recentFilesMaxStepper.target = self
+        recentFilesMaxStepper.action = #selector(recentFilesMaxChanged)
+
+        let recentRow = NSStackView(views: [recentFilesMaxField, recentFilesMaxStepper])
+        recentRow.orientation = .horizontal
+        recentRow.spacing = 4
+        pane.addArrangedSubview(row("Recent files:", recentRow))
+        pane.addArrangedSubview(hintLabel("Maximum entries in File > Open Recent; 0 disables the "
+            + "list. New entries trim it immediately."))
+
+        pane.addArrangedSubview(sectionLabel("Date & Time"))
+        dateFormatField.target = self
+        dateFormatField.action = #selector(dateFormatChanged)
+        dateFormatField.placeholderString = DateTimeInsert.defaultCustomPattern
+        dateFormatField.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        dateFormatField.widthAnchor.constraint(greaterThanOrEqualToConstant: 240).isActive = true
+        pane.addArrangedSubview(row("Custom format:", dateFormatField))
+        pane.addArrangedSubview(hintLabel("Used by Edit > Insert > Date Time (customized). Unicode "
+            + "date patterns: yyyy year, MM month, dd day, HH hour, mm minute, ss second. "
+            + "An empty value falls back to \(DateTimeInsert.defaultCustomPattern)."))
+
         pane.addArrangedSubview(sectionLabel("Advanced"))
 
         let threshold = NumberFormatter.localizedString(
@@ -727,7 +935,26 @@ final class PreferencesWindowController: NSWindowController {
         tabSizeStepper.integerValue = preferences.tabSize
         useTabsPopup.selectItem(at: preferences.useTabs ? 1 : 0)
 
+        showTabBarCheckbox.state = preferences.showTabBar ? .on : .off
+        lockTabBarCheckbox.state = preferences.lockTabBar ? .on : .off
+        doubleClickTabClosesCheckbox.state = preferences.doubleClickTabCloses ? .on : .off
+        mruTabSwitchingCheckbox.state = preferences.mruTabSwitching ? .on : .off
+        maxTabLabelLengthField.integerValue = preferences.maxTabLabelLength
+        maxTabLabelLengthStepper.integerValue = preferences.maxTabLabelLength
+
+        if let encodingTitle = MainWindowController.encodingOptions
+            .first(where: { $0.name == preferences.defaultEncoding })?.title {
+            defaultEncodingPopup.selectItem(withTitle: encodingTitle)
+        } else {
+            defaultEncodingPopup.selectItem(withTitle: MainWindowController.encodingOptions[0].title)
+        }
+        defaultEOLPopup.selectItem(withTitle: preferences.defaultEOL)
+
         themePopup.selectItem(withTitle: preferences.themePreference.rawValue)
+        sessionSnapshotCheckbox.state = preferences.sessionSnapshotEnabled ? .on : .off
+        recentFilesMaxField.integerValue = preferences.recentFilesMax
+        recentFilesMaxStepper.integerValue = preferences.recentFilesMax
+        dateFormatField.stringValue = preferences.dateFormatString
         preferencesPathLabel.stringValue = PreferencesStore.preferencesFileURL.path
     }
 
@@ -775,6 +1002,46 @@ final class PreferencesWindowController: NSWindowController {
 
     @objc private func useTabsChanged() {
         persist { $0.useTabs = useTabsPopup.indexOfSelectedItem == 1 }
+    }
+
+    @objc private func tabBarCheckboxChanged() {
+        persist {
+            $0.showTabBar = showTabBarCheckbox.state == .on
+            $0.lockTabBar = lockTabBarCheckbox.state == .on
+            $0.doubleClickTabCloses = doubleClickTabClosesCheckbox.state == .on
+            $0.mruTabSwitching = mruTabSwitchingCheckbox.state == .on
+        }
+    }
+
+    @objc private func maxTabLabelLengthChanged(_ sender: NSControl) {
+        let value = sender === maxTabLabelLengthStepper ? maxTabLabelLengthStepper.integerValue
+                                                        : maxTabLabelLengthField.integerValue
+        persist { $0.maxTabLabelLength = value }
+    }
+
+    @objc private func defaultEncodingChanged() {
+        let index = defaultEncodingPopup.indexOfSelectedItem
+        guard index >= 0, index < MainWindowController.encodingOptions.count else { return }
+        persist { $0.defaultEncoding = MainWindowController.encodingOptions[index].name }
+    }
+
+    @objc private func defaultEOLChanged() {
+        guard let title = defaultEOLPopup.titleOfSelectedItem else { return }
+        persist { $0.defaultEOL = title }
+    }
+
+    @objc private func advancedCheckboxChanged() {
+        persist { $0.sessionSnapshotEnabled = sessionSnapshotCheckbox.state == .on }
+    }
+
+    @objc private func recentFilesMaxChanged(_ sender: NSControl) {
+        let value = sender === recentFilesMaxStepper ? recentFilesMaxStepper.integerValue
+                                                     : recentFilesMaxField.integerValue
+        persist { $0.recentFilesMax = value }
+    }
+
+    @objc private func dateFormatChanged() {
+        persist { $0.dateFormatString = dateFormatField.stringValue }
     }
 
     @objc private func themeChanged() {

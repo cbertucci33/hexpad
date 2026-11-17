@@ -222,4 +222,34 @@ final class ToolsTests: XCTestCase {
         let second = DateTimeInsert.shortDateTime(date, locale: posix, timeZone: utc)
         XCTAssertEqual(first, second)
     }
+
+    // MARK: - Notepad++ date-time styles
+
+    func testShortStyleIs24HourTimeOnly() throws {
+        let date = try fixedDate()
+        XCTAssertEqual(DateTimeInsert.shortStyle(date, locale: posix, timeZone: utc), "05:06")
+        XCTAssertEqual(DateTimeInsert.shortStyle(date, locale: posix, timeZone: pacific), "21:06")
+    }
+
+    func testLongStyleIsSortableDateTime() throws {
+        let date = try fixedDate()
+        XCTAssertEqual(DateTimeInsert.longStyle(date, locale: posix, timeZone: utc),
+                       "2021-03-04 05:06:07")
+        XCTAssertEqual(DateTimeInsert.longStyle(date, locale: posix, timeZone: pacific),
+                       "2021-03-03 21:06:07")
+    }
+
+    func testCustomizedStyleUsesPatternAndFallsBackWhenBlank() throws {
+        let date = try fixedDate()
+        XCTAssertEqual(
+            DateTimeInsert.customized(date, pattern: "dd.MM.yyyy", locale: posix, timeZone: utc),
+            "04.03.2021"
+        )
+        XCTAssertEqual(
+            DateTimeInsert.customized(date, pattern: "   ", locale: posix, timeZone: utc),
+            "2021-03-04 05:06",
+            "a blank Settings field falls back to the default pattern"
+        )
+        XCTAssertEqual(DateTimeInsert.defaultCustomPattern, "yyyy-MM-dd HH:mm")
+    }
 }

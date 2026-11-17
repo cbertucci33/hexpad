@@ -4,8 +4,6 @@ import HexpadKit
 /// Manages the list of recently opened files and the File > Open Recent submenu.
 final class RecentFilesManager: NSObject {
     
-    static let maxRecents = 10
-    
     /// Notification posted when the recents list changes; menu rebuilds in response.
     static let didChange = Notification.Name("RecentFilesDidChange")
     
@@ -13,17 +11,17 @@ final class RecentFilesManager: NSObject {
     
     override init() {
         super.init()
-        recents = SessionStore.loadRecents()
+        recents = Self.trimmed(SessionStore.loadRecents())
     }
     
-    /// Add a file path to recents. Moves existing entry to top, no dupes, capped at maxRecents.
+    /// Add a file path to recents. Moves existing entry to top, no dupes, capped
+    /// at the Settings > Advanced `recentFilesMax` value (default 10; 0 empties
+    /// the list).
     func addRecent(_ path: String) {
         guard !path.isEmpty else { return }
         var updated = recents.filter { $0 != path }
         updated.insert(path, at: 0)
-        if updated.count > Self.maxRecents {
-            updated = Array(updated.prefix(Self.maxRecents))
-        }
+        updated = Self.trimmed(updated)
         recents = updated
         persist()
         NotificationCenter.default.post(name: Self.didChange, object: nil)
@@ -57,12 +55,20 @@ final class RecentFilesManager: NSObject {
         }
         var updated = recents.filter { $0 != newPath }
         updated.insert(newPath, at: 0)
-        if updated.count > Self.maxRecents {
-            updated = Array(updated.prefix(Self.maxRecents))
-        }
+        updated = Self.trimmed(updated)
         recents = updated
         persist()
         NotificationCenter.default.post(name: Self.didChange, object: nil)
+    }
+    
+    /// The live cap from Settings. `Preferences.normalized()` already clamps the
+    /// value, but the store is re-read here so a change applies without
+    /// relaunching.
+    private static func trimmed(_ paths: [String]) -> [String] {
+        let limit = PreferencesStore.load().recentFilesMax
+        let clamped = min(max(limit, Preferences.recentFilesMaxRange.lowerBound),
+                          Preferences.recentFilesMaxRange.upperBound)
+        return Array(paths.prefix(clamped))
     }
     
     private func persist() {

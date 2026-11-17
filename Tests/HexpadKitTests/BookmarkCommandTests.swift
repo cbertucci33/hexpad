@@ -65,6 +65,7 @@ final class BookmarkCommandTests: XCTestCase {
                        registry.commands.map(\.identifier)
                        + registry.bookmarkCommands.map(\.identifier)
                        + registry.toolCommands.map(\.identifier)
+                       + registry.dateCommands.map(\.identifier)
                        + registry.lineOpCommands.map(\.identifier)
                        + registry.caseCommands.map(\.identifier)
                        + registry.indentCommands.map(\.identifier)
@@ -96,6 +97,9 @@ final class BookmarkCommandTests: XCTestCase {
             "insert-date",
             "insert-time",
             "insert-datetime",
+            "insert-datetime-short",
+            "insert-datetime-long",
+            "insert-datetime-custom",
             "sort-lines-ascending",
             "sort-lines-descending",
             "remove-duplicate-lines",

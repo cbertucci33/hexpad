@@ -34,6 +34,13 @@ class TabBarView: NSView {
     /// rebind the affected editors.
     var onChange: (() -> Void)?
 
+    /// Settings > Tab Bar: drag reordering disabled while locked.
+    var lockTabBar = false
+    /// Settings > Tab Bar: a double-click on a tab posts the close request.
+    var doubleClickTabCloses = false
+    /// Settings > Tab Bar: caption limit; 0 is unlimited.
+    var maxTabLabelLength = 0
+
     /// Live drag-reorder preview. The store is not mutated until mouseUp; the
     /// buttons are only re-slotted for visual feedback.
     private var previewOrder: [TabButton]?
@@ -90,7 +97,11 @@ class TabBarView: NSView {
         let tabHeight = bounds.height
         
         for (index, doc) in tabStore.documents.enumerated() {
-            let button = TabButton(doc: doc, index: index, tabWidth: tabWidth, tabHeight: tabHeight)
+            let button = TabButton(doc: doc,
+                                   index: index,
+                                   tabWidth: tabWidth,
+                                   tabHeight: tabHeight,
+                                   maxLabelLength: maxTabLabelLength)
             button.frame = NSRect(x: CGFloat(index) * (tabWidth + spacing), y: 0, width: tabWidth, height: tabHeight)
             button.isSelected = index == tabStore.selectedIndex
             button.target = self
@@ -119,7 +130,8 @@ class TabBarView: NSView {
     /// so crossing many slots costs only frame changes, not a full controller
     /// rebind and tab reload per event.
     func beginDragPreview(from index: Int) {
-        guard previewOrder == nil,
+        guard !lockTabBar,
+              previewOrder == nil,
               let button = tabButtons.first(where: { $0.index == index }) else { return }
         previewOrder = tabButtons
         previewDraggedButton = button
@@ -246,6 +258,7 @@ class TabButton: NSButton {
     let index: Int
     let tabWidth: CGFloat
     let tabHeight: CGFloat
+    let maxLabelLength: Int
     
     private var titleLabel: NSTextField?
     private var dirtyIndicator: NSView?
@@ -254,11 +267,16 @@ class TabButton: NSButton {
     private var draggedOut = false
     weak var reorderDelegate: TabBarView?
     
-    init(doc: DocumentModel, index: Int, tabWidth: CGFloat, tabHeight: CGFloat) {
+    init(doc: DocumentModel,
+         index: Int,
+         tabWidth: CGFloat,
+         tabHeight: CGFloat,
+         maxLabelLength: Int = 0) {
         self.doc = doc
         self.index = index
         self.tabWidth = tabWidth
         self.tabHeight = tabHeight
+        self.maxLabelLength = maxLabelLength
         super.init(frame: .zero)
         setupUI()
     }
@@ -282,7 +300,8 @@ class TabButton: NSButton {
         title = ""
         sendAction(on: [.leftMouseUp, .rightMouseUp])
         
-        let title = NSTextField(labelWithString: doc.name)
+        let title = NSTextField(labelWithString: TabLabel.truncated(doc.name,
+                                                                    maxLength: maxLabelLength))
         title.font = NSFont.systemFont(ofSize: 12)
         title.alignment = .left
         title.frame = NSRect(x: 8, y: (tabHeight - 16) / 2, width: tabWidth - 40, height: 16)
@@ -353,6 +372,12 @@ class TabButton: NSButton {
     // MARK: - Drag reorder
 
     override func mouseDown(with event: NSEvent) {
+        // Settings > Tab Bar > double-click to close. Handled before the
+        // button's tracking so the first click does not also start a drag.
+        if event.clickCount == 2, reorderDelegate?.doubleClickTabCloses == true {
+            closeTabClicked()
+            return
+        }
         dragStart = convert(event.locationInWindow, from: nil)
         draggedOut = false
         super.mouseDown(with: event)
@@ -362,7 +387,7 @@ class TabButton: NSButton {
         guard let start = dragStart else { return }
         let here = convert(event.locationInWindow, from: nil)
         if abs(here.x - start.x) > 6 { draggedOut = true }
-        guard draggedOut, let bar = reorderDelegate else { return }
+        guard draggedOut, let bar = reorderDelegate, !bar.lockTabBar else { return }
 
         // Cross-group drop: the pointer is over the sibling bar. This runs
         // before same-bar reorder because the two bars never overlap.

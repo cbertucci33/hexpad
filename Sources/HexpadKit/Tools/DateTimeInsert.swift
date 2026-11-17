@@ -39,6 +39,49 @@ import Foundation
 /// doubled quote (`''`) emits one apostrophe.
 public enum DateTimeInsert {
 
+    /// Default pattern for Notepad++'s "Date Time (customized)" command.
+    /// Settings stores the user's own pattern; this is only the initial value.
+    public static let defaultCustomPattern = "yyyy-MM-dd HH:mm"
+
+    /// Notepad++ "Date Time (short)": time of day only, 24-hour clock.
+    ///
+    /// The pattern is fixed (`HH:mm`) rather than localized, so a short insert
+    /// stays a compact timestamp independent of the locale's 12/24-hour habit.
+    public static func shortStyle(
+        _ date: Date,
+        locale: Locale = .current,
+        timeZone: TimeZone = .current
+    ) -> String {
+        formatted(date, pattern: "HH:mm", locale: locale, timeZone: timeZone)
+    }
+
+    /// Notepad++ "Date Time (long)": sortable date followed by the time.
+    public static func longStyle(
+        _ date: Date,
+        locale: Locale = .current,
+        timeZone: TimeZone = .current
+    ) -> String {
+        formatted(date, pattern: "yyyy-MM-dd HH:mm:ss", locale: locale, timeZone: timeZone)
+    }
+
+    /// Notepad++ "Date Time (customized)", using the user's saved pattern.
+    ///
+    /// An empty or whitespace-only pattern falls back to
+    /// ``defaultCustomPattern`` so a blank Settings field still inserts a
+    /// sensible timestamp instead of an empty string.
+    public static func customized(
+        _ date: Date,
+        pattern: String,
+        locale: Locale = .current,
+        timeZone: TimeZone = .current
+    ) -> String {
+        let trimmed = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
+        return formatted(date,
+                         pattern: trimmed.isEmpty ? defaultCustomPattern : trimmed,
+                         locale: locale,
+                         timeZone: timeZone)
+    }
+
     /// Returns the locale's short date, such as `3/4/2021` in `en_US`.
     public static func shortDate(
         _ date: Date,
