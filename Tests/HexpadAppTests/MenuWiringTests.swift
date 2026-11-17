@@ -1182,3 +1182,214 @@ extension MenuWiringTests {
         ))
     }
 }
+
+// MARK: - V19e: Always on Top / Post-It / Distraction Free
+
+/// Window-mode wiring. Frame math, checkmarks and mutual exclusion are covered
+/// here. The actual NSWindow full-screen transition and the on-screen floating
+/// level are window-server behaviours and are deliberately not asserted beyond
+/// the level property; they need a visible window.
+extension MenuWiringTests {
+
+    private func modeValidationItem(_ action: Selector) -> NSMenuItem {
+        NSMenuItem(title: "mode", action: action, keyEquivalent: "")
+    }
+
+    private func statusBar(of controller: MainWindowController) throws -> StatusBar {
+        try XCTUnwrap(controller.statusBar)
+    }
+
+    func testViewMenuHasWindowModeItems() throws {
+        let menu = HexpadAppDelegate().buildMainMenu()
+        let viewMenu = try XCTUnwrap(menu.item(withTitle: "View")?.submenu)
+
+        let expected: [(title: String, action: Selector)] = [
+            ("Always on Top", #selector(MainWindowController.toggleAlwaysOnTop(_:))),
+            ("Post-It", #selector(MainWindowController.togglePostIt(_:))),
+            ("Distraction Free Mode", #selector(MainWindowController.toggleDistractionFreeMode(_:)))
+        ]
+
+        for entry in expected {
+            let item = try XCTUnwrap(viewMenu.item(withTitle: entry.title), entry.title)
+            XCTAssertEqual(item.action, entry.action, entry.title)
+            XCTAssertNil(item.target, "validation reaches the controller through the responder chain")
+            XCTAssertEqual(item.keyEquivalent, "", "menu-only: no Windows-only or F-key chord")
+            XCTAssertNil(item.submenu)
+        }
+
+        // The block sits after the zoom group, before split view.
+        let titles = viewMenu.items.map(\.title)
+        let resetZoom = try XCTUnwrap(titles.firstIndex(of: "Reset Zoom"))
+        XCTAssertEqual(Array(titles[(resetZoom + 1)...(resetZoom + 4)]),
+                       ["", "Always on Top", "Post-It", "Distraction Free Mode"])
+    }
+
+    func testAlwaysOnTopTogglesWindowLevelAndCheckmark() throws {
+        let (controller, window) = makeController()
+        let item = modeValidationItem(#selector(MainWindowController.toggleAlwaysOnTop(_:)))
+
+        XCTAssertFalse(controller.isAlwaysOnTop)
+        XCTAssertEqual(window.level, .normal)
+        XCTAssertTrue(controller.validateMenuItem(item))
+        XCTAssertEqual(item.state, .off)
+
+        controller.toggleAlwaysOnTop(nil)
+        XCTAssertTrue(controller.isAlwaysOnTop)
+        XCTAssertEqual(window.level, .floating)
+        XCTAssertTrue(controller.validateMenuItem(item))
+        XCTAssertEqual(item.state, .on)
+
+        controller.toggleAlwaysOnTop(nil)
+        XCTAssertFalse(controller.isAlwaysOnTop)
+        XCTAssertEqual(window.level, .normal)
+        XCTAssertTrue(controller.validateMenuItem(item))
+        XCTAssertEqual(item.state, .off)
+    }
+
+    func testPostItHidesChromeKeepsFrameAndRestoresExactly() throws {
+        let (controller, window) = makeController()
+        let pane = controller.allPanes[0]
+        let status = try statusBar(of: controller)
+        let originalFrame = window.frame
+        let originalToolbar = try XCTUnwrap(window.toolbar)
+
+        XCTAssertFalse(pane.tabScrollView.isHidden)
+        XCTAssertFalse(status.isHidden)
+
+        controller.togglePostIt(nil)
+        // The window's content frame settles on the next layout pass (the
+        // toolbar removal resizes it first); force that pass before reading
+        // frame math, exactly like a visible window's display cycle.
+        controller.viewDidLayout()
+        XCTAssertEqual(controller.chromeMode, .postIt)
+        XCTAssertEqual(window.frame, originalFrame, "Post-It keeps the window size and position")
+        XCTAssertNil(window.toolbar, "toolbar is removed while in Post-It")
+        XCTAssertEqual(window.titleVisibility, .hidden)
+        XCTAssertTrue(window.titlebarAppearsTransparent)
+        XCTAssertTrue(window.styleMask.contains(.fullSizeContentView))
+
+        XCTAssertTrue(pane.tabScrollView.isHidden)
+        XCTAssertEqual(pane.tabScrollView.frame, .zero, "the tab bar reserves no layout slot")
+        XCTAssertTrue(status.isHidden)
+        XCTAssertEqual(status.frame, .zero)
+
+        let bounds = controller.view.bounds
+        XCTAssertEqual(pane.editor.frame.minY, 0, accuracy: 0.5, "status bar slot collapsed")
+        XCTAssertEqual(pane.editor.frame.maxY, bounds.height, accuracy: 0.5, "tab bar slot collapsed")
+        XCTAssertEqual(pane.editor.frame.width, bounds.width, accuracy: 0.5)
+
+        controller.togglePostIt(nil)
+        controller.viewDidLayout()
+        XCTAssertEqual(controller.chromeMode, .normal)
+        XCTAssertTrue(window.toolbar === originalToolbar, "the same toolbar object comes back")
+        XCTAssertEqual(window.titleVisibility, .visible)
+        XCTAssertFalse(window.titlebarAppearsTransparent)
+        XCTAssertFalse(window.styleMask.contains(.fullSizeContentView))
+        XCTAssertFalse(pane.tabScrollView.isHidden)
+        XCTAssertEqual(pane.tabScrollView.frame.height, 32, accuracy: 0.5)
+        XCTAssertFalse(pane.tabBar.isHidden)
+        XCTAssertFalse(status.isHidden)
+        XCTAssertEqual(status.frame.height, 22, accuracy: 0.5)
+        XCTAssertEqual(pane.editor.frame.minY, 22, accuracy: 0.5)
+        // The restored toolbar means the content area is smaller than the
+        // window frame again, so read the settled bounds rather than the
+        // Post-It-mode snapshot above.
+        XCTAssertEqual(pane.editor.frame.maxY,
+                       controller.view.bounds.height - 32, accuracy: 0.5)
+    }
+
+    func testPostItEscapeExitsTheMode() throws {
+        let (controller, window) = makeController()
+        let originalToolbar = try XCTUnwrap(window.toolbar)
+
+        controller.togglePostIt(nil)
+        XCTAssertEqual(controller.chromeMode, .postIt)
+
+        // Escape reaches the controller as cancelOperation once no inner
+        // responder (find bar, incremental search, multi-caret) consumed it.
+        controller.cancelOperation(nil)
+        XCTAssertEqual(controller.chromeMode, .normal)
+        XCTAssertTrue(window.toolbar === originalToolbar)
+    }
+
+    func testDistractionFreeHidesChromeAndWidensMargins() throws {
+        let (controller, _) = makeController()
+        let pane = controller.allPanes[0]
+        let status = try statusBar(of: controller)
+
+        controller.toggleDistractionFreeMode(nil)
+        controller.viewDidLayout()
+        XCTAssertEqual(controller.chromeMode, .distractionFree)
+
+        let bounds = controller.view.bounds
+        let inset = floor(bounds.width * 0.15)
+        XCTAssertTrue(pane.tabScrollView.isHidden)
+        XCTAssertEqual(pane.tabScrollView.frame, .zero)
+        XCTAssertTrue(status.isHidden)
+        XCTAssertEqual(status.frame, .zero)
+        XCTAssertEqual(pane.editor.frame.minX, inset, accuracy: 0.5)
+        XCTAssertEqual(pane.editor.frame.width, bounds.width - inset * 2, accuracy: 0.5)
+        XCTAssertEqual(pane.editor.frame.minY, 0, accuracy: 0.5)
+        XCTAssertEqual(pane.editor.frame.maxY, bounds.height, accuracy: 0.5)
+
+        controller.toggleDistractionFreeMode(nil)
+        controller.viewDidLayout()
+        XCTAssertEqual(controller.chromeMode, .normal)
+        XCTAssertFalse(pane.tabScrollView.isHidden)
+        XCTAssertFalse(status.isHidden)
+        XCTAssertEqual(pane.editor.frame.minX, 0, accuracy: 0.5)
+        XCTAssertEqual(pane.editor.frame.width, bounds.width, accuracy: 0.5)
+    }
+
+    func testWindowsModesAreMutuallyExclusive() throws {
+        let (controller, window) = makeController()
+        let pane = controller.allPanes[0]
+        let originalToolbar = try XCTUnwrap(window.toolbar)
+
+        controller.togglePostIt(nil)
+        XCTAssertEqual(controller.chromeMode, .postIt)
+
+        // Entering Distraction Free leaves Post-It first and restores its chrome.
+        controller.toggleDistractionFreeMode(nil)
+        XCTAssertEqual(controller.chromeMode, .distractionFree)
+        XCTAssertTrue(window.toolbar === originalToolbar, "Post-It chrome was restored on exit")
+        XCTAssertEqual(window.titleVisibility, .visible)
+        XCTAssertFalse(window.titlebarAppearsTransparent)
+        XCTAssertFalse(window.styleMask.contains(.fullSizeContentView))
+
+        // Entering Post-It from Distraction Free leaves full screen first.
+        controller.togglePostIt(nil)
+        XCTAssertEqual(controller.chromeMode, .postIt)
+        XCTAssertNil(window.toolbar)
+        XCTAssertEqual(window.titleVisibility, .hidden)
+        XCTAssertTrue(pane.tabScrollView.isHidden)
+    }
+
+    func testWindowModeValidationCheckmarksReflectMode() throws {
+        let (controller, _) = makeController()
+        let always = modeValidationItem(#selector(MainWindowController.toggleAlwaysOnTop(_:)))
+        let postIt = modeValidationItem(#selector(MainWindowController.togglePostIt(_:)))
+        let distractionFree = modeValidationItem(#selector(MainWindowController.toggleDistractionFreeMode(_:)))
+
+        for item in [always, postIt, distractionFree] {
+            XCTAssertTrue(controller.validateMenuItem(item))
+            XCTAssertEqual(item.state, .off)
+        }
+
+        controller.toggleAlwaysOnTop(nil)
+        XCTAssertTrue(controller.validateMenuItem(always))
+        XCTAssertEqual(always.state, .on)
+
+        controller.togglePostIt(nil)
+        XCTAssertTrue(controller.validateMenuItem(postIt))
+        XCTAssertEqual(postIt.state, .on)
+        XCTAssertTrue(controller.validateMenuItem(distractionFree))
+        XCTAssertEqual(distractionFree.state, .off)
+
+        controller.toggleDistractionFreeMode(nil)
+        XCTAssertTrue(controller.validateMenuItem(distractionFree))
+        XCTAssertEqual(distractionFree.state, .on)
+        XCTAssertTrue(controller.validateMenuItem(postIt))
+        XCTAssertEqual(postIt.state, .off, "entering one mode clears the other's checkmark")
+    }
+}

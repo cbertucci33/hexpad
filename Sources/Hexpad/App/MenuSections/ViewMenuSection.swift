@@ -134,6 +134,26 @@ extension HexpadAppDelegate {
         viewMenu.addItem(zoomOutItem)
         viewMenu.addItem(resetZoomItem)
         viewMenu.addItem(.separator())
+        // V19e window modes (N++ View menu parity). All three are nil-targeted
+        // so MainWindowController owns both the action and the per-window
+        // checkmark. Menu-only: KEYBINDINGS.md has no Insert/Windows-only keys
+        // and these modes have no established macOS chord.
+        let alwaysOnTopItem = NSMenuItem(title: "Always on Top",
+                                         action: #selector(MainWindowController.toggleAlwaysOnTop(_:)),
+                                         keyEquivalent: "")
+        alwaysOnTopItem.target = nil
+        viewMenu.addItem(alwaysOnTopItem)
+        let postItItem = NSMenuItem(title: "Post-It",
+                                    action: #selector(MainWindowController.togglePostIt(_:)),
+                                    keyEquivalent: "")
+        postItItem.target = nil
+        viewMenu.addItem(postItItem)
+        let distractionFreeItem = NSMenuItem(title: "Distraction Free Mode",
+                                             action: #selector(MainWindowController.toggleDistractionFreeMode(_:)),
+                                             keyEquivalent: "")
+        distractionFreeItem.target = nil
+        viewMenu.addItem(distractionFreeItem)
+        viewMenu.addItem(.separator())
         // Split view: group 2 starts empty and tabs are dragged into it. The
         // item is nil-targeted so MainWindowController owns both the action and
         // the open/closed checkmark.

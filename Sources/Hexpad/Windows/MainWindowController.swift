@@ -42,6 +42,35 @@ class MainWindowController: NSViewController {
 
     var isSplitViewOpen: Bool { secondaryPane != nil }
 
+    // MARK: - Window modes (V19e)
+
+    /// N++ View menu parity. Always on Top is a plain window-level state.
+    /// Post-It and Distraction Free hide window chrome and are expressed as a
+    /// mode so `updateLayout` has one authority for bar heights and margins.
+    /// Both are per-window and reset on launch (nothing is persisted).
+    enum ChromeMode {
+        case normal
+        case postIt
+        case distractionFree
+    }
+
+    private(set) var chromeMode: ChromeMode = .normal
+    private(set) var isAlwaysOnTop = false
+
+    /// Post-It chrome captured on entry, restored verbatim on exit. The saved
+    /// frame is reapplied after the toolbar/style-mask edits, which otherwise
+    /// make AppKit resize the window to keep the content area stable.
+    private var savedWindowChrome: (toolbar: NSToolbar?,
+                                    titleVisibility: NSWindow.TitleVisibility,
+                                    titlebarAppearsTransparent: Bool,
+                                    hadFullSizeContentView: Bool,
+                                    frame: NSRect)?
+
+    /// Watches the user leaving full screen while in Distraction Free (Escape or
+    /// the green button), so the mode cannot outlive the full-screen state it
+    /// depends on.
+    private var windowModeObserver: NSObjectProtocol?
+
     private var mainWindow: MainWindow?
     var recentFilesManager: RecentFilesManager?
 
@@ -82,7 +111,9 @@ class MainWindowController: NSViewController {
     // names, so the existing command paths follow focus without a second copy
     // of each action.
     private var editorContainer: EditorContainer? { activePane.editor }
-    private var statusBar: StatusBar?
+    /// Exposed for app tests (chrome-mode layout assertions); nothing outside
+    /// this controller may mutate it.
+    private(set) var statusBar: StatusBar?
     /// Exposed for app tests (find-bar counts/highlight behaviour) and refreshed
     /// only through `refreshChrome`'s injected refs.
     private(set) var findBar: FindBar?
@@ -177,6 +208,9 @@ class MainWindowController: NSViewController {
         if let observer = textSelectionObserver {
             NotificationCenter.default.removeObserver(observer)
         }
+        if let observer = windowModeObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
     
     private func setupNotificationObservers() {
@@ -213,6 +247,16 @@ class MainWindowController: NSViewController {
         mouseDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
             self?.noteMouseDownForFocus(event)
             return event
+        }
+        // Distraction Free relies on the system full-screen transition. If the
+        // user leaves full screen some other way (Escape, green button), the
+        // mode must not stay on with chrome hidden in a windowed frame.
+        windowModeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didExitFullScreenNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            self?.handleWindowDidExitFullScreen(notification)
         }
     }
 
@@ -496,48 +540,63 @@ class MainWindowController: NSViewController {
     private func updateLayout() {
         guard let status = statusBar else { return }
 
-        let tabBarHeight: CGFloat = 32
-        let statusHeight: CGFloat = 22
+        // Post-It and Distraction Free collapse the tab bar and status bar to
+        // zero height: the layout slot disappears, not just the paint. The
+        // views themselves are untouched apart from visibility.
+        let chromeHidden = chromeMode != .normal
+        let distractionFree = chromeMode == .distractionFree
+        let tabBarHeight: CGFloat = chromeHidden ? 0 : 32
+        let statusHeight: CGFloat = chromeHidden ? 0 : 22
 
-        // The find bar always occupies its slot when visible; hidden state is
-        // expressed with isHidden, so a resize never leaves a stale rect for a
-        // bar that would then reappear in the wrong place.
-        let findVisible = findBar?.isVisible ?? false
+        // The find bar is a tool, but "only the editor" includes it while chrome
+        // is hidden. Its own `isVisible` flag is preserved so leaving the mode
+        // restores exactly what the user had open.
+        let findVisible = !chromeHidden && (findBar?.isVisible ?? false)
+        findBar?.isHidden = !findVisible
         let findHeight = findBar?.preferredHeight(for: view.bounds.width) ?? 36
         let topInset = tabBarHeight + (findVisible ? findHeight : 0)
         let height = view.bounds.height
         let width = view.bounds.width
+
+        // Distraction Free pads the text column ~15% on each side (N++'s wide
+        // margins). The inset applies to the whole content area, so a split
+        // view keeps both groups side by side inside the margins.
+        let horizontalInset = distractionFree ? floor(width * 0.15) : 0
+        let contentX = horizontalInset
+        let contentWidth = max(0, width - horizontalInset * 2)
 
         // The divider is one point of chrome between the two groups. Keeping
         // the single-group widths untouched when the split is closed preserves
         // the original layout math exactly.
         let dividerWidth: CGFloat = isSplitViewOpen ? 1 : 0
         let primaryWidth = isSplitViewOpen
-            ? max(0, floor((width - dividerWidth) / 2))
-            : width
+            ? max(0, floor((contentWidth - dividerWidth) / 2))
+            : contentWidth
 
         layoutPane(primaryPane,
-                   x: 0,
+                   x: contentX,
                    width: primaryWidth,
                    height: height,
                    topInset: topInset,
                    statusHeight: statusHeight,
-                   tabBarHeight: tabBarHeight)
+                   tabBarHeight: tabBarHeight,
+                   hidesTabBar: chromeHidden)
 
         let editorTop = height - topInset
         let editorHeight = max(editorTop - statusHeight, 100)
 
         if let secondary = secondaryPane {
-            let x = primaryWidth + dividerWidth
+            let x = contentX + primaryWidth + dividerWidth
             layoutPane(secondary,
                        x: x,
-                       width: max(0, width - x),
+                       width: max(0, contentWidth - primaryWidth - dividerWidth),
                        height: height,
                        topInset: topInset,
                        statusHeight: statusHeight,
-                       tabBarHeight: tabBarHeight)
+                       tabBarHeight: tabBarHeight,
+                       hidesTabBar: chromeHidden)
             dividerView?.isHidden = false
-            dividerView?.frame = NSRect(x: primaryWidth,
+            dividerView?.frame = NSRect(x: contentX + primaryWidth,
                                         y: statusHeight,
                                         width: dividerWidth,
                                         height: editorHeight)
@@ -545,39 +604,58 @@ class MainWindowController: NSViewController {
             dividerView?.isHidden = true
         }
 
-        findBar?.frame = NSRect(x: 0,
-                                y: max(statusHeight, height - topInset),
-                                width: width,
-                                height: findHeight)
+        findBar?.frame = findVisible
+            ? NSRect(x: contentX,
+                     y: max(statusHeight, height - topInset),
+                     width: contentWidth,
+                     height: findHeight)
+            : .zero
 
         // Incremental search floats over the focused editor's top-right corner
         // instead of reserving layout space, so opening it never reflows text.
-        if let incremental = incrementalSearchBar, incremental.isVisible {
-            let editorFrame = activePane.editor.frame
-            let barWidth = min(380, max(220, editorFrame.width - 16))
-            incremental.frame = NSRect(x: editorFrame.maxX - barWidth - 8,
-                                       y: max(statusHeight, editorFrame.maxY - IncrementalSearchBar.preferredHeight - 6),
-                                       width: barWidth,
-                                       height: IncrementalSearchBar.preferredHeight)
+        if let incremental = incrementalSearchBar {
+            incremental.isHidden = chromeHidden || !incremental.isVisible
+            if incremental.isVisible && !chromeHidden {
+                let editorFrame = activePane.editor.frame
+                let barWidth = min(380, max(220, editorFrame.width - 16))
+                incremental.frame = NSRect(x: editorFrame.maxX - barWidth - 8,
+                                           y: max(statusHeight, editorFrame.maxY - IncrementalSearchBar.preferredHeight - 6),
+                                           width: barWidth,
+                                           height: IncrementalSearchBar.preferredHeight)
+            }
         }
 
-        status.frame = NSRect(x: 0, y: 0, width: width, height: statusHeight)
+        status.isHidden = chromeHidden
+        status.frame = chromeHidden
+            ? .zero
+            : NSRect(x: 0, y: 0, width: width, height: statusHeight)
     }
 
     /// Lays out one group's tab bar and editor inside its horizontal slice.
+    /// `hidesTabBar` zeroes the tab bar container's slot: the bar keeps its own
+    /// frame so tab buttons stay correctly sized when the mode ends.
     private func layoutPane(_ pane: TabGroupPane,
                             x: CGFloat,
                             width: CGFloat,
                             height: CGFloat,
                             topInset: CGFloat,
                             statusHeight: CGFloat,
-                            tabBarHeight: CGFloat) {
-        pane.tabScrollView.frame = NSRect(x: x,
-                                          y: max(0, height - tabBarHeight),
-                                          width: width,
-                                          height: tabBarHeight)
-        pane.tabBar.frame.size.height = tabBarHeight
-        pane.tabBar.fitWidthToClip()
+                            tabBarHeight: CGFloat,
+                            hidesTabBar: Bool) {
+        if hidesTabBar {
+            pane.tabScrollView.frame = .zero
+            pane.tabScrollView.isHidden = true
+            pane.tabBar.isHidden = true
+        } else {
+            pane.tabScrollView.isHidden = false
+            pane.tabBar.isHidden = false
+            pane.tabScrollView.frame = NSRect(x: x,
+                                              y: max(0, height - tabBarHeight),
+                                              width: width,
+                                              height: tabBarHeight)
+            pane.tabBar.frame.size.height = tabBarHeight
+            pane.tabBar.fitWidthToClip()
+        }
 
         let editorTop = height - topInset
         let editorHeight = max(editorTop - statusHeight, 100)
@@ -1427,6 +1505,132 @@ class MainWindowController: NSViewController {
     private func returnFocusAfterSwitcher() {
         view.window?.makeKey()
         view.window?.makeFirstResponder(activePane.editor.textView)
+    }
+
+    // MARK: - Window modes (V19e)
+
+    private var windowForModes: NSWindow? { view.window ?? mainWindow }
+
+    /// View > Always on Top. A window-level toggle: floating above other apps
+    /// when on, ordinary level when off. Per-window and not persisted, exactly
+    /// like Notepad++ (each new window starts normal).
+    @objc func toggleAlwaysOnTop(_ sender: Any?) {
+        isAlwaysOnTop.toggle()
+        windowForModes?.level = isAlwaysOnTop ? .floating : .normal
+    }
+
+    /// View > Post-It. Hides the title/toolbar/tab bar/status bar and keeps the
+    /// window frame untouched, leaving only the editor. The menu bar stays (so
+    /// this same item, or Escape, can leave the mode), and tab switching still
+    /// works through the Window menu shortcuts.
+    @objc func togglePostIt(_ sender: Any?) {
+        applyChromeMode(chromeMode == .postIt ? .normal : .postIt)
+    }
+
+    /// View > Distraction Free Mode. Full screen plus hidden chrome plus wide
+    /// text margins. Reuses the system full-screen transition behind the
+    /// existing Window > Enter Full Screen item rather than reimplementing it.
+    @objc func toggleDistractionFreeMode(_ sender: Any?) {
+        applyChromeMode(chromeMode == .distractionFree ? .normal : .distractionFree)
+    }
+
+    /// Escape leaves Post-It, matching N++'s Post-It key. This runs only when no
+    /// inner responder (find bar, incremental search, multi-caret) already
+    /// consumed the key; the other modes keep their existing Escape behaviour.
+    override func cancelOperation(_ sender: Any?) {
+        if chromeMode == .postIt {
+            applyChromeMode(.normal)
+            return
+        }
+        super.cancelOperation(sender)
+    }
+
+    /// Single path for every mode transition. Post-It and Distraction Free are
+    /// mutually exclusive: leaving a mode restores its chrome (and full-screen
+    /// state) before the next one is entered, so entering one exits the other.
+    /// Full screen entered independently through Window > Enter Full Screen is
+    /// left alone; only Distraction Free owns that transition.
+    private func applyChromeMode(_ mode: ChromeMode) {
+        guard mode != chromeMode else { return }
+        let window = windowForModes
+
+        if chromeMode == .postIt {
+            restorePostItChrome(on: window)
+        }
+        if chromeMode == .distractionFree {
+            exitFullScreenIfNeeded(window)
+        }
+
+        chromeMode = mode
+
+        switch mode {
+        case .normal:
+            break
+        case .postIt:
+            // Post-It is a windowed mode: a window already in full screen is
+            // returned to its ordinary frame first (asynchronously).
+            exitFullScreenIfNeeded(window)
+            enterPostItChrome(on: window)
+        case .distractionFree:
+            enterFullScreenIfNeeded(window)
+        }
+
+        updateLayout()
+    }
+
+    private func enterFullScreenIfNeeded(_ window: NSWindow?) {
+        guard let window, window.isVisible,
+              !window.styleMask.contains(.fullScreen) else { return }
+        window.toggleFullScreen(nil)
+    }
+
+    private func exitFullScreenIfNeeded(_ window: NSWindow?) {
+        guard let window, window.styleMask.contains(.fullScreen) else { return }
+        window.toggleFullScreen(nil)
+    }
+
+    /// Hides the title bar controls' contents and the toolbar without dropping
+    /// `.titled` (which would lose the traffic lights and window behaviours).
+    /// `fullSizeContentView` lets the editor occupy the title-bar band, so the
+    /// content area fills the same window frame.
+    private func enterPostItChrome(on window: NSWindow?) {
+        guard let window else { return }
+        if savedWindowChrome == nil {
+            savedWindowChrome = (window.toolbar,
+                                 window.titleVisibility,
+                                 window.titlebarAppearsTransparent,
+                                 window.styleMask.contains(.fullSizeContentView),
+                                 window.frame)
+        }
+        window.toolbar = nil
+        window.styleMask.insert(.fullSizeContentView)
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        // Removing the toolbar changes the content layout and AppKit resizes
+        // the window around it; put the frame back so Post-It keeps its size.
+        if let saved = savedWindowChrome {
+            window.setFrame(saved.frame, display: false)
+        }
+    }
+
+    private func restorePostItChrome(on window: NSWindow?) {
+        guard let window, let saved = savedWindowChrome else { return }
+        window.toolbar = saved.toolbar
+        if !saved.hadFullSizeContentView {
+            window.styleMask.remove(.fullSizeContentView)
+        }
+        window.titleVisibility = saved.titleVisibility
+        window.titlebarAppearsTransparent = saved.titlebarAppearsTransparent
+        window.setFrame(saved.frame, display: false)
+        savedWindowChrome = nil
+    }
+
+    private func handleWindowDidExitFullScreen(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              window === windowForModes,
+              chromeMode == .distractionFree else { return }
+        chromeMode = .normal
+        updateLayout()
     }
 
     // MARK: - Split view
@@ -3316,6 +3520,18 @@ extension MainWindowController: NSMenuItemValidation {
             // Needs a focused buffer to search; stays enabled while open so the
             // same item can close it.
             return tabStore.selectedDocument != nil
+        }
+        if menuItem.action == #selector(MainWindowController.toggleAlwaysOnTop(_:)) {
+            menuItem.state = isAlwaysOnTop ? .on : .off
+            return windowForModes != nil
+        }
+        if menuItem.action == #selector(MainWindowController.togglePostIt(_:)) {
+            menuItem.state = chromeMode == .postIt ? .on : .off
+            return windowForModes != nil
+        }
+        if menuItem.action == #selector(MainWindowController.toggleDistractionFreeMode(_:)) {
+            menuItem.state = chromeMode == .distractionFree ? .on : .off
+            return windowForModes != nil
         }
         if menuItem.action == #selector(MainWindowController.toggleSplitView(_:)) {
             menuItem.state = isSplitViewOpen ? .on : .off
