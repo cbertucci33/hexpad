@@ -24,6 +24,12 @@ public struct DocumentEditorState: Equatable {
     /// Editor zoom as a multiplier of the base font size (1.0 = 100%).
     public var zoomScale: CGFloat
 
+    /// The user's five token styles for this document. Like the other fields
+    /// this is a plain value: the editor view paints it and the controller
+    /// remaps it on edits. It is persisted with the rest of `editorState`, so
+    /// styles survive a session restart with the document that owns them.
+    public var tokenStyleState: TokenStyleState
+
     /// Restored defaults. These intentionally match the app's startup state,
     /// so a session written before per-document editor state existed restores
     /// exactly as it did previously.
@@ -32,11 +38,13 @@ public struct DocumentEditorState: Equatable {
     public init(caretRange: NSRange = NSRange(location: 0, length: 0),
                 scrollOffset: CGPoint = .zero,
                 wordWrapEnabled: Bool = false,
-                zoomScale: CGFloat = 1.0) {
+                zoomScale: CGFloat = 1.0,
+                tokenStyleState: TokenStyleState = TokenStyleState()) {
         self.caretRange = caretRange
         self.scrollOffset = scrollOffset
         self.wordWrapEnabled = wordWrapEnabled
         self.zoomScale = zoomScale
+        self.tokenStyleState = tokenStyleState
     }
 }
 
@@ -54,7 +62,8 @@ extension DocumentEditorState {
             "scrollX": Double(scrollOffset.x),
             "scrollY": Double(scrollOffset.y),
             "wordWrap": wordWrapEnabled,
-            "zoomScale": Double(zoomScale)
+            "zoomScale": Double(zoomScale),
+            "tokenStyles": tokenStyleState.toSessionData()
         ]
     }
 
@@ -84,6 +93,11 @@ extension DocumentEditorState {
         if let scale = doubleValue(data["zoomScale"]), scale.isFinite, scale > 0 {
             state.zoomScale = CGFloat(scale)
         }
+
+        // Sessions written before token styles existed have no "tokenStyles"
+        // key and restore as an empty state. Ranges are clipped against the
+        // live text when the editor builds its TokenStyleModel.
+        state.tokenStyleState = TokenStyleState.fromSessionData(data["tokenStyles"] as? [String: Any])
 
         return state
     }

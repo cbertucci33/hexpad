@@ -186,6 +186,11 @@ class MainWindowController: NSViewController {
         // storage directly, so they never reach the NSTextView delegate. Watch
         // the model to refresh highlighting, dirty dots, and the status bar.
         NotificationCenter.default.addObserver(self, selector: #selector(handleModelTextChange(_:)), name: DocumentModel.textDidChangeNotification, object: nil)
+        // Token style ranges are offsets, so every character edit must move
+        // them: typing, programmatic edits, undo and multi-caret all reach this
+        // storage notice. Watching the storage (rather than only the text
+        // delegate) keeps the ranges aligned with the buffer the model owns.
+        NotificationCenter.default.addObserver(self, selector: #selector(handleTokenStyleEdit(_:)), name: NSTextStorage.didProcessEditingNotification, object: nil)
         // Any close path (menu toggle, Escape, × button) must restore the
         // editor to full height. Previously nothing observed this notice.
         NotificationCenter.default.addObserver(self, selector: #selector(handleFindBarClosed(_:)), name: NSNotification.Name("FindBarClosed"), object: nil)
@@ -356,6 +361,41 @@ class MainWindowController: NSViewController {
         refreshDirtyIndicators()
         updateStatusBar()
         updateWindowTitle()
+    }
+
+    /// Keeps token style ranges aligned with character edits.
+    ///
+    /// Mirrors ``EditorContainer``'s bookmark remapping: NSTextStorage reports
+    /// the post-edit range plus the length delta, which gives the pre-edit
+    /// ``FoldTextEdit``. A whole-buffer replacement has no meaningful range
+    /// mapping, so the styles are revalidated (clipped/dropped) instead.
+    @objc private func handleTokenStyleEdit(_ notification: Notification) {
+        guard let storage = notification.object as? NSTextStorage,
+              storage.editedMask.contains(.editedCharacters) else { return }
+
+        let documents = allPanes.flatMap { $0.tabStore.documents }
+        guard let doc = documents.first(where: { $0.textStorage === storage }),
+              !doc.editorState.tokenStyleState.isEmpty else { return }
+
+        let insertedLength = storage.editedRange.length
+        let replacedLength = max(0, insertedLength - storage.changeInLength)
+        let edit = FoldTextEdit(location: storage.editedRange.location,
+                                replacedLength: replacedLength,
+                                insertedLength: insertedLength)
+        let oldLength = storage.length - storage.changeInLength
+
+        if edit.location == 0, edit.replacedLength > 0, edit.replacedLength >= oldLength {
+            doc.editorState.tokenStyleState = doc.editorState.tokenStyleState
+                .revalidated(in: doc.text)
+        } else {
+            doc.editorState.tokenStyleState = doc.editorState.tokenStyleState
+                .remapped(from: doc.text, for: edit, to: doc.text)
+        }
+
+        if let pane = allPanes.first(where: { $0.editor.textView.textStorage === storage }) {
+            pane.editor.textView.applyTokenStyles(doc.editorState.tokenStyleState,
+                                                  theme: theme(for: pane.editor))
+        }
     }
 
     @objc private func handleModelTextChange(_ notification: Notification) {
@@ -1548,6 +1588,10 @@ class MainWindowController: NSViewController {
         let textLength = (text as NSString).length
         let theme = theme(for: editor)
         editor.apply(theme: theme)
+        // Temporary-attribute backgrounds are independent of the text-storage
+        // attribute rewrite below, but the theme (and the palette derived from
+        // it) can change with the document, so re-apply them on every pass.
+        editor.textView.applyTokenStyles(doc.editorState.tokenStyleState, theme: theme)
 
         let docChanged = highlightedDoc !== doc
         if docChanged {
@@ -2422,9 +2466,15 @@ class MainWindowController: NSViewController {
         default:
             break
         }
+        if let applicable = tokenStyleApplicability(identifier: identifier,
+                                                    doc: doc,
+                                                    editor: editor) {
+            return applicable
+        }
         let state = DocumentState(text: doc.text,
                                   selection: editor.textView.selectedRange,
-                                  bookmarkState: doc.bookmarkState)
+                                  bookmarkState: doc.bookmarkState,
+                                  tokenStyleState: doc.editorState.tokenStyleState)
         if let result = commandRegistry.execute(identifier, on: state), command.documentExecute != nil {
             // Bookmark commands can change only the bookmarks or only the
             // selection; compare the whole state so those are not reported as
@@ -2445,6 +2495,56 @@ class MainWindowController: NSViewController {
         case "toggle-word-wrap": return editorContainer != nil
         default: return false
         }
+    }
+
+    /// Applicability for the Search > token style commands, or `nil` when
+    /// `identifier` is not one of them.
+    ///
+    /// The pure transform cannot express these rules: Copy only changes the
+    /// pasteboard, and the style commands are enabled by what the document
+    /// currently has, not by whether running them would move the caret.
+    private func tokenStyleApplicability(identifier: String,
+                                         doc: DocumentModel,
+                                         editor: EditorContainer) -> Bool? {
+        let selection = editor.textView.selectedRange
+        let styles = doc.editorState.tokenStyleState
+
+        if let style = tokenStyleNumber(identifier, prefix: "style-all-occurrences-") {
+            return style > 0 && SearchEngine.selectionSearchRange(text: doc.text,
+                                                                  selection: selection) != nil
+        }
+        if let style = tokenStyleNumber(identifier, prefix: "style-one-token-") {
+            return style > 0 && SearchEngine.selectionSearchRange(text: doc.text,
+                                                                  selection: selection) != nil
+        }
+        if identifier == "clear-style-all" {
+            return !styles.isEmpty
+        }
+        if let style = tokenStyleNumber(identifier, prefix: "clear-style-") {
+            return styles.hasRanges(for: style)
+        }
+        if let style = tokenStyleNumber(identifier, prefix: "jump-up-") {
+            return styles.hasRanges(for: style)
+        }
+        if let style = tokenStyleNumber(identifier, prefix: "jump-down-") {
+            return styles.hasRanges(for: style)
+        }
+        if let style = tokenStyleNumber(identifier, prefix: "copy-styled-text-") {
+            return styles.hasRanges(for: style)
+        }
+        if identifier == "copy-styled-text-all" {
+            return !doc.text.isEmpty
+        }
+        return nil
+    }
+
+    /// The style number encoded in `identifier` after `prefix`, if valid.
+    private func tokenStyleNumber(_ identifier: String, prefix: String) -> Int? {
+        guard identifier.hasPrefix(prefix) else { return nil }
+        let suffix = identifier.dropFirst(prefix.count)
+        guard let style = Int(suffix),
+              TokenStyleState.styleNumbers.contains(style) else { return nil }
+        return style
     }
 
     /// Runs a registry command against the selected document.
@@ -2516,13 +2616,15 @@ class MainWindowController: NSViewController {
                                editor: EditorContainer) -> (state: DocumentState, wroteClipboard: Bool)? {
         let state = DocumentState(text: doc.text,
                                   selection: editor.textView.selectedRange,
-                                  bookmarkState: doc.bookmarkState)
+                                  bookmarkState: doc.bookmarkState,
+                                  tokenStyleState: doc.editorState.tokenStyleState)
         guard let command = commandRegistry.command(for: identifier) else { return nil }
         if let parameter, let makeAction = command.parameterizedExecute {
             let result = makeAction(parameter)(state.text, state.selection)
             return (DocumentState(text: result.text,
                                   selection: result.selection,
-                                  bookmarkState: state.bookmarkState), false)
+                                  bookmarkState: state.bookmarkState,
+                                  tokenStyleState: state.tokenStyleState), false)
         }
         if command.clipboardExecute != nil {
             let pasteboard = NSPasteboard.general
@@ -2550,6 +2652,7 @@ class MainWindowController: NSViewController {
                                     to doc: DocumentModel,
                                     editor: EditorContainer) -> Bool {
         let original = doc.text
+        let originalTokenStyles = doc.editorState.tokenStyleState
         var didChange = false
 
         if result.text != original {
@@ -2569,6 +2672,18 @@ class MainWindowController: NSViewController {
         if result.bookmarkState != doc.bookmarkState {
             doc.bookmarkState = result.bookmarkState
             editor.applyBookmarkState(result.bookmarkState)
+            didChange = true
+        }
+
+        // Token styles live in the document's editor state. When the command
+        // changed them (the style/clear commands), adopt the result. When the
+        // command left them untouched but its text edit moved ranges, the
+        // storage observer has already remapped the document's state, so the
+        // stale pre-edit value must not be written back.
+        if result.tokenStyleState != originalTokenStyles {
+            doc.editorState.tokenStyleState = result.tokenStyleState
+            editor.textView.applyTokenStyles(result.tokenStyleState,
+                                             theme: theme(for: editor))
             didChange = true
         }
 
@@ -2608,6 +2723,16 @@ class MainWindowController: NSViewController {
     /// selector only keeps the menu groups distinguishable for validation and
     /// for callers that iterate the line-editing items.
     @objc func performBookmarkCommand(withIdentifier sender: Any?) {
+        guard let item = sender as? NSMenuItem,
+              let identifier = item.representedObject as? String else { return }
+        performCommand(identifier: identifier)
+    }
+
+    /// First-responder entry point for the Search > token style items.
+    ///
+    /// They share ``performCommand(identifier:)`` with every other registry
+    /// command; the separate selector only groups them for menu validation.
+    @objc func performTokenStyleCommand(withIdentifier sender: Any?) {
         guard let item = sender as? NSMenuItem,
               let identifier = item.representedObject as? String else { return }
         performCommand(identifier: identifier)
@@ -2724,7 +2849,8 @@ class MainWindowController: NSViewController {
 
         let result = DocumentState(text: replay.text,
                                    selection: replay.selection,
-                                   bookmarkState: doc.bookmarkState)
+                                   bookmarkState: doc.bookmarkState,
+                                   tokenStyleState: doc.editorState.tokenStyleState)
         let applied = applyCommandResult(result, to: doc, editor: editor)
 
         if replay.skippedCount > 0 {
@@ -3013,7 +3139,8 @@ class MainWindowController: NSViewController {
 extension MainWindowController: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(MainWindowController.performCommand(withIdentifier:))
-            || menuItem.action == #selector(MainWindowController.performBookmarkCommand(withIdentifier:)) {
+            || menuItem.action == #selector(MainWindowController.performBookmarkCommand(withIdentifier:))
+            || menuItem.action == #selector(MainWindowController.performTokenStyleCommand(withIdentifier:)) {
             guard let identifier = menuItem.representedObject as? String else { return false }
             return canPerformCommand(identifier: identifier)
         }

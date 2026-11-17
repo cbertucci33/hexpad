@@ -17,12 +17,17 @@ public struct DocumentState: Equatable {
     /// The document's bookmarks.
     public var bookmarkState: BookmarkState
 
+    /// The document's five token styles.
+    public var tokenStyleState: TokenStyleState
+
     public init(text: String,
                 selection: NSRange,
-                bookmarkState: BookmarkState = BookmarkState()) {
+                bookmarkState: BookmarkState = BookmarkState(),
+                tokenStyleState: TokenStyleState = TokenStyleState()) {
         self.text = text
         self.selection = selection
         self.bookmarkState = bookmarkState
+        self.tokenStyleState = tokenStyleState
     }
 }
 
@@ -248,12 +253,15 @@ public struct CommandRegistry {
     /// The view-only commands (folding and word wrap), in menu order.
     public let viewCommands: [EditorCommand]
 
+    /// The Search > token style commands, in menu order.
+    public let tokenStyleCommands: [EditorCommand]
+
     private let lookup: [String: EditorCommand]
 
     /// All commands offered by this registry, line-editing commands first.
     public var allCommands: [EditorCommand] {
         commands + bookmarkCommands + toolCommands + lineOpCommands
-            + caseCommands + indentCommands + viewCommands
+            + caseCommands + indentCommands + viewCommands + tokenStyleCommands
     }
 
     /// Creates a registry containing the default command groups.
@@ -276,7 +284,8 @@ public struct CommandRegistry {
                   lineOpCommands: CommandRegistry.defaultLineOpCommands(),
                   caseCommands: CommandRegistry.defaultCaseCommands(),
                   indentCommands: CommandRegistry.defaultIndentCommands(settings: indentSettings),
-                  viewCommands: CommandRegistry.defaultViewCommands())
+                  viewCommands: CommandRegistry.defaultViewCommands(),
+                  tokenStyleCommands: CommandRegistry.defaultTokenStyleCommands())
     }
 
     /// Creates a registry from explicit command lists. When identifiers
@@ -288,7 +297,8 @@ public struct CommandRegistry {
                 lineOpCommands: [EditorCommand] = [],
                 caseCommands: [EditorCommand] = [],
                 indentCommands: [EditorCommand] = [],
-                viewCommands: [EditorCommand] = []) {
+                viewCommands: [EditorCommand] = [],
+                tokenStyleCommands: [EditorCommand] = []) {
         self.commands = commands
         self.bookmarkCommands = bookmarkCommands
         self.toolCommands = toolCommands
@@ -296,9 +306,10 @@ public struct CommandRegistry {
         self.caseCommands = caseCommands
         self.indentCommands = indentCommands
         self.viewCommands = viewCommands
+        self.tokenStyleCommands = tokenStyleCommands
         var lookup: [String: EditorCommand] = [:]
         for command in commands + bookmarkCommands + toolCommands + lineOpCommands
-            + caseCommands + indentCommands + viewCommands
+            + caseCommands + indentCommands + viewCommands + tokenStyleCommands
         where lookup[command.identifier] == nil {
             lookup[command.identifier] = command
         }
@@ -631,6 +642,80 @@ public struct CommandRegistry {
         ]
     }
 
+    /// The Search > token style commands, in Notepad++ menu order.
+    ///
+    /// Each style is a document command: the pure text path is an identity
+    /// transform because styles live in ``DocumentState/tokenStyleState``.
+    /// Copy commands only write the pasteboard, so they provide a
+    /// ``EditorCommand/clipboardExecute`` action.
+    public static func defaultTokenStyleCommands() -> [EditorCommand] {
+        var commands: [EditorCommand] = []
+
+        for style in TokenStyleState.styleNumbers {
+            commands.append(EditorCommand(
+                identifier: "style-all-occurrences-\(style)",
+                title: "Style \(style)",
+                execute: { text, selection in (text, selection) },
+                documentExecute: TokenStyleCommandOps.styleAllOccurrences(style: style)
+            ))
+        }
+        for style in TokenStyleState.styleNumbers {
+            commands.append(EditorCommand(
+                identifier: "style-one-token-\(style)",
+                title: "Style \(style)",
+                execute: { text, selection in (text, selection) },
+                documentExecute: TokenStyleCommandOps.styleOneToken(style: style)
+            ))
+        }
+        for style in TokenStyleState.styleNumbers {
+            commands.append(EditorCommand(
+                identifier: "clear-style-\(style)",
+                title: "Clear Style \(style)",
+                execute: { text, selection in (text, selection) },
+                documentExecute: TokenStyleCommandOps.clear(style: style)
+            ))
+        }
+        commands.append(EditorCommand(
+            identifier: "clear-style-all",
+            title: "Clear All Styles",
+            execute: { text, selection in (text, selection) },
+            documentExecute: TokenStyleCommandOps.clearAll
+        ))
+        for style in TokenStyleState.styleNumbers {
+            commands.append(EditorCommand(
+                identifier: "jump-up-\(style)",
+                title: "Style \(style)",
+                execute: { text, selection in (text, selection) },
+                documentExecute: TokenStyleCommandOps.jumpUp(style: style)
+            ))
+        }
+        for style in TokenStyleState.styleNumbers {
+            commands.append(EditorCommand(
+                identifier: "jump-down-\(style)",
+                title: "Style \(style)",
+                execute: { text, selection in (text, selection) },
+                documentExecute: TokenStyleCommandOps.jumpDown(style: style)
+            ))
+        }
+        for style in TokenStyleState.styleNumbers {
+            commands.append(EditorCommand(
+                identifier: "copy-styled-text-\(style)",
+                title: "Style \(style)",
+                execute: { text, selection in (text, selection) },
+                documentExecute: { $0 },
+                clipboardExecute: TokenStyleCommandOps.copyStyledText(style: style)
+            ))
+        }
+        commands.append(EditorCommand(
+            identifier: "copy-styled-text-all",
+            title: "All Styles",
+            execute: { text, selection in (text, selection) },
+            documentExecute: { $0 },
+            clipboardExecute: TokenStyleCommandOps.copyAllStyledText
+        ))
+        return commands
+    }
+
     /// Returns the command registered under `identifier`, if any.
     public func command(for identifier: String) -> EditorCommand? {
         lookup[identifier]
@@ -680,7 +765,8 @@ public struct CommandRegistry {
         let result = command.execute(state.text, state.selection)
         return DocumentState(text: result.text,
                              selection: result.selection,
-                             bookmarkState: state.bookmarkState)
+                             bookmarkState: state.bookmarkState,
+                             tokenStyleState: state.tokenStyleState)
     }
 
     /// Runs the command registered under `identifier` with a clipboard
@@ -918,6 +1004,128 @@ enum BookmarkCommandOps {
             location: GutterGeometry.firstCharIndex(of: bookmark.line, in: state.text),
             length: 0
         )
+        return updated
+    }
+}
+
+/// Implementations of the Search > token style commands.
+///
+/// Styles live in ``DocumentState/tokenStyleState``; these operations only
+/// mutate that value or the selection, never the text. Target resolution for
+/// the style commands is shared with Select and Find Next: the selection when
+/// it has length, otherwise the word at the caret.
+enum TokenStyleCommandOps {
+
+    /// Styles every occurrence of the selection-or-word-at-caret.
+    static func styleAllOccurrences(style: Int) -> EditorCommand.DocumentAction {
+        { state in
+            guard let target = targetRange(in: state) else { return state }
+            let token = (state.text as NSString).substring(with: target)
+            var model = TokenStyleModel(text: state.text,
+                                        tokenStyleState: state.tokenStyleState)
+            guard model.styleAllOccurrences(of: token, as: style) else { return state }
+            return replacingStyles(in: state, with: model.tokenStyleState)
+        }
+    }
+
+    /// Styles only the exact current selection-or-word range.
+    static func styleOneToken(style: Int) -> EditorCommand.DocumentAction {
+        { state in
+            guard let target = targetRange(in: state) else { return state }
+            var model = TokenStyleModel(text: state.text,
+                                        tokenStyleState: state.tokenStyleState)
+            guard model.style(target, as: style) else { return state }
+            return replacingStyles(in: state, with: model.tokenStyleState)
+        }
+    }
+
+    /// Removes every range carrying `style`.
+    static func clear(style: Int) -> EditorCommand.DocumentAction {
+        { state in
+            var model = TokenStyleModel(text: state.text,
+                                        tokenStyleState: state.tokenStyleState)
+            guard model.removeAll(style: style) else { return state }
+            return replacingStyles(in: state, with: model.tokenStyleState)
+        }
+    }
+
+    /// Removes every styled range in every style.
+    static func clearAll(_ state: DocumentState) -> DocumentState {
+        var model = TokenStyleModel(text: state.text,
+                                    tokenStyleState: state.tokenStyleState)
+        guard model.removeAll() else { return state }
+        return replacingStyles(in: state, with: model.tokenStyleState)
+    }
+
+    /// Moves the caret to the previous `style` range, wrapping.
+    static func jumpUp(style: Int) -> EditorCommand.DocumentAction {
+        { state in
+            let model = TokenStyleModel(text: state.text,
+                                        tokenStyleState: state.tokenStyleState)
+            guard let range = model.previousRange(for: style, before: caret(in: state)) else {
+                return state
+            }
+            return moved(to: range, from: state)
+        }
+    }
+
+    /// Moves the caret to the next `style` range, wrapping.
+    static func jumpDown(style: Int) -> EditorCommand.DocumentAction {
+        { state in
+            let model = TokenStyleModel(text: state.text,
+                                        tokenStyleState: state.tokenStyleState)
+            guard let range = model.nextRange(for: style, after: caret(in: state)) else {
+                return state
+            }
+            return moved(to: range, from: state)
+        }
+    }
+
+    /// Copies every range carrying `style` to the pasteboard.
+    static func copyStyledText(style: Int) -> EditorCommand.ClipboardAction {
+        { state, _ in
+            let model = TokenStyleModel(text: state.text,
+                                        tokenStyleState: state.tokenStyleState)
+            guard let text = model.styledText(for: style) else { return (state, nil) }
+            return (state, text)
+        }
+    }
+
+    /// Copies every styled range across all styles to the pasteboard.
+    static func copyAllStyledText(_ state: DocumentState,
+                                  _ clipboard: String?) -> (state: DocumentState, clipboard: String?) {
+        let model = TokenStyleModel(text: state.text,
+                                    tokenStyleState: state.tokenStyleState)
+        guard let text = model.allStyledText() else { return (state, nil) }
+        return (state, text)
+    }
+
+    // MARK: - Helpers
+
+    /// The selection when it has length, otherwise the word at the caret.
+    private static func targetRange(in state: DocumentState) -> NSRange? {
+        SearchEngine.selectionSearchRange(text: state.text, selection: state.selection)
+    }
+
+    /// The selection's location, clamped to a caret position.
+    private static func caret(in state: DocumentState) -> Int {
+        let length = (state.text as NSString).length
+        guard state.selection.location != NSNotFound else { return 0 }
+        return min(max(0, state.selection.location), length)
+    }
+
+    /// Returns `state` with the token styles replaced and everything else intact.
+    private static func replacingStyles(in state: DocumentState,
+                                        with styles: TokenStyleState) -> DocumentState {
+        var updated = state
+        updated.tokenStyleState = styles
+        return updated
+    }
+
+    /// Returns `state` with a collapsed caret at the start of `range`.
+    private static func moved(to range: NSRange, from state: DocumentState) -> DocumentState {
+        var updated = state
+        updated.selection = NSRange(location: range.location, length: 0)
         return updated
     }
 }

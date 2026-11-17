@@ -68,6 +68,114 @@ final class MultiCaretTextView: NSTextView {
         needsDisplay = true
     }
 
+    // MARK: - Token styles
+    //
+    // The five Search > Style commands paint persistent backgrounds. They are
+    // temporary attributes with a dedicated key, not text-storage attributes,
+    // because the syntax highlighter rewrites the visible band's attributes on
+    // every keystroke and the FindBar clears every *background* temporary
+    // attribute when it closes. A private key belongs to neither pipeline, and
+    // the backgrounds are drawn in drawViewBackground(in:), below the glyphs and
+    // below the FindBar's own background highlights.
+
+    /// Temporary-attribute key carrying a style number (1...5).
+    static let tokenStyleAttribute = NSAttributedString.Key("HexpadTokenStyle")
+
+    private(set) var tokenStyleState = TokenStyleState()
+    private var tokenStyleColors: [NSColor] = []
+
+    /// Adopts `state` and repaints the styled ranges with the theme palette.
+    ///
+    /// The temporary attributes are rewritten over the current buffer's full
+    /// length, so switching tabs cannot leave another document's ranges behind.
+    func applyTokenStyles(_ state: TokenStyleState, theme: Theme) {
+        tokenStyleState = state
+        tokenStyleColors = TokenStylePalette.colors(for: theme)
+        guard let layoutManager else { return }
+
+        let length = (string as NSString).length
+        if length > 0 {
+            layoutManager.removeTemporaryAttribute(
+                Self.tokenStyleAttribute,
+                forCharacterRange: NSRange(location: 0, length: length)
+            )
+        }
+        for entry in state.styledRanges {
+            guard entry.range.location != NSNotFound, entry.range.length > 0 else { continue }
+            let start = min(entry.range.location, length)
+            let end = min(entry.range.location + entry.range.length, length)
+            guard end > start else { continue }
+            layoutManager.addTemporaryAttributes(
+                [Self.tokenStyleAttribute: NSNumber(value: entry.style)],
+                forCharacterRange: NSRange(location: start, length: end - start)
+            )
+        }
+        needsDisplay = true
+    }
+
+    /// Paints the styled backgrounds before the glyphs are drawn.
+    /// (NSTextView's drawViewBackgroundInRect: is Swift-renamed to drawBackground(in:).)
+    override func drawBackground(in rect: NSRect) {
+        super.drawBackground(in: rect)
+        drawTokenStyleBackgrounds(in: rect)
+    }
+
+    private func drawTokenStyleBackgrounds(in dirtyRect: NSRect) {
+        guard !tokenStyleState.isEmpty, !tokenStyleColors.isEmpty,
+              let layoutManager, let textContainer else { return }
+
+        let length = (string as NSString).length
+        guard length > 0 else { return }
+
+        let origin = textContainerOrigin
+        let containerDirty = dirtyRect.offsetBy(dx: -origin.x, dy: -origin.y)
+        let visibleGlyphs = layoutManager.glyphRange(forBoundingRect: containerDirty,
+                                                     in: textContainer)
+        guard visibleGlyphs.length > 0 else { return }
+        let visibleChars = layoutManager.characterRange(forGlyphRange: visibleGlyphs,
+                                                       actualGlyphRange: nil)
+        let bufferRange = NSRange(location: 0, length: length)
+
+        // Read the same temporary attributes the rest of the editor can inspect,
+        // so the drawn layer can never disagree with the stored marks.
+        var index = visibleChars.location
+        while index < visibleChars.location + visibleChars.length {
+            var effective = NSRange(location: index, length: 1)
+            let value = layoutManager.temporaryAttribute(
+                Self.tokenStyleAttribute,
+                atCharacterIndex: index,
+                effectiveRange: &effective
+            )
+            let effectiveLength = max(1, effective.length)
+            if let number = value as? NSNumber {
+                let style = number.intValue
+                let clipped = NSIntersectionRange(effective, bufferRange)
+                if clipped.length > 0,
+                   style >= 1, style <= tokenStyleColors.count {
+                    fillTokenStyleBackground(color: tokenStyleColors[style - 1],
+                                             for: clipped)
+                }
+            }
+            index += effectiveLength
+        }
+    }
+
+    private func fillTokenStyleBackground(color: NSColor, for characterRange: NSRange) {
+        guard let layoutManager, let textContainer else { return }
+        let glyphRange = layoutManager.glyphRange(forCharacterRange: characterRange,
+                                                  actualCharacterRange: nil)
+        guard glyphRange.length > 0 else { return }
+        let origin = textContainerOrigin
+        color.setFill()
+        layoutManager.enumerateEnclosingRects(
+            forGlyphRange: glyphRange,
+            withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0),
+            in: textContainer
+        ) { rect, _ in
+            rect.offsetBy(dx: origin.x, dy: origin.y).fill()
+        }
+    }
+
     // MARK: - Mouse gestures
 
     override func mouseDown(with event: NSEvent) {

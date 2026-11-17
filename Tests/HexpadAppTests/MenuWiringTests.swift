@@ -909,4 +909,128 @@ extension MenuWiringTests {
         XCTAssertTrue(controller.validateMenuItem(moveToStart))
         XCTAssertTrue(controller.validateMenuItem(moveToEnd))
     }
+
+    // MARK: - Token styles (Search > Style ...)
+
+    /// The six N++ Search submenus exist, in order, with nil-targeted items
+    /// carrying registry identifiers 1-5 (plus All/Clear All where N++ has it).
+    func testSearchMenuHasTokenStyleSubmenus() throws {
+        let menu = HexpadAppDelegate().buildMainMenu()
+        let search = try XCTUnwrap(menu.item(withTitle: "Search")?.submenu)
+
+        let expected: [(title: String, identifiers: [String])] = [
+            ("Style All Occurrences of Token",
+             TokenStyleState.styleNumbers.map { "style-all-occurrences-\($0)" }),
+            ("Style One Token",
+             TokenStyleState.styleNumbers.map { "style-one-token-\($0)" }),
+            ("Clear Style",
+             TokenStyleState.styleNumbers.map { "clear-style-\($0)" } + ["clear-style-all"]),
+            ("Jump Up",
+             TokenStyleState.styleNumbers.map { "jump-up-\($0)" }),
+            ("Jump Down",
+             TokenStyleState.styleNumbers.map { "jump-down-\($0)" }),
+            ("Copy Styled Text",
+             TokenStyleState.styleNumbers.map { "copy-styled-text-\($0)" } + ["copy-styled-text-all"])
+        ]
+
+        let titles = search.items.compactMap { $0.submenu?.title }
+        XCTAssertEqual(Array(titles.prefix(6)), expected.map(\.title))
+
+        for entry in expected {
+            let submenu = try XCTUnwrap(search.item(withTitle: entry.title)?.submenu,
+                                        entry.title)
+            let items = submenu.items.filter {
+                $0.action == #selector(MainWindowController.performTokenStyleCommand(withIdentifier:))
+            }
+            XCTAssertEqual(items.compactMap { $0.representedObject as? String },
+                           entry.identifiers,
+                           entry.title)
+            for item in items {
+                XCTAssertNil(item.target, entry.title)
+            }
+        }
+    }
+
+    /// Style commands need a selection or word at the caret; clear/jump/copy
+    /// need the matching style to hold ranges (copy-all only needs text).
+    func testTokenStyleMenuValidationTracksSelectionAndStyledRanges() throws {
+        let (controller, _) = makeController()
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        doc.replaceAllText(with: "alpha beta alpha")
+        let textView = controller.allPanes[0].editor.textView
+        textView.setSelectedRange(NSRange(location: 0, length: 5))
+
+        func item(_ identifier: String) -> NSMenuItem {
+            let created = NSMenuItem(
+                title: identifier,
+                action: #selector(MainWindowController.performTokenStyleCommand(withIdentifier:)),
+                keyEquivalent: ""
+            )
+            created.representedObject = identifier
+            return created
+        }
+
+        XCTAssertTrue(controller.validateMenuItem(item("style-all-occurrences-1")))
+        XCTAssertTrue(controller.validateMenuItem(item("style-one-token-1")))
+        XCTAssertFalse(controller.validateMenuItem(item("clear-style-1")))
+        XCTAssertFalse(controller.validateMenuItem(item("clear-style-all")))
+        XCTAssertFalse(controller.validateMenuItem(item("jump-up-1")))
+        XCTAssertFalse(controller.validateMenuItem(item("jump-down-1")))
+        XCTAssertFalse(controller.validateMenuItem(item("copy-styled-text-1")))
+        XCTAssertTrue(controller.validateMenuItem(item("copy-styled-text-all")))
+
+        XCTAssertTrue(controller.performCommand(identifier: "style-all-occurrences-1"))
+
+        XCTAssertTrue(controller.validateMenuItem(item("clear-style-1")))
+        XCTAssertTrue(controller.validateMenuItem(item("clear-style-all")))
+        XCTAssertTrue(controller.validateMenuItem(item("jump-up-1")))
+        XCTAssertTrue(controller.validateMenuItem(item("jump-down-1")))
+        XCTAssertTrue(controller.validateMenuItem(item("copy-styled-text-1")))
+
+        XCTAssertTrue(controller.performCommand(identifier: "clear-style-all"))
+        XCTAssertFalse(controller.validateMenuItem(item("clear-style-1")))
+        XCTAssertFalse(controller.validateMenuItem(item("clear-style-all")))
+    }
+
+    /// A style command must leave persistent background marks on exactly the
+    /// styled ranges, and those marks must not live in text storage (the syntax
+    /// highlighter rewrites it).
+    func testStyleCommandRendersTemporaryAttributesOnStyledRanges() throws {
+        let (controller, _) = makeController()
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        doc.replaceAllText(with: "alpha beta alpha")
+        let editor = controller.allPanes[0].editor
+        let textView = editor.textView
+        textView.setSelectedRange(NSRange(location: 0, length: 5))
+
+        XCTAssertTrue(controller.performCommand(identifier: "style-all-occurrences-2"))
+        XCTAssertEqual(doc.editorState.tokenStyleState.ranges(for: 2).map(\.location),
+                       [0, 11])
+        XCTAssertEqual(textView.tokenStyleState.ranges(for: 2).map(\.location),
+                       [0, 11])
+
+        let layoutManager = try XCTUnwrap(textView.layoutManager)
+        let storage = try XCTUnwrap(textView.textStorage)
+
+        // Simulate the highlighter's viewport rewrite and the FindBar's
+        // background-only clear; the token marks use a private key.
+        storage.setAttributes([.font: NSFont.systemFont(ofSize: 12)],
+                              range: NSRange(location: 0, length: storage.length))
+        layoutManager.removeTemporaryAttribute(.backgroundColor,
+                                               forCharacterRange: NSRange(location: 0,
+                                                                          length: storage.length))
+
+        for location in [0, 11] {
+            XCTAssertNotNil(layoutManager.temporaryAttribute(
+                MultiCaretTextView.tokenStyleAttribute,
+                atCharacterIndex: location,
+                effectiveRange: nil
+            ), "styled range at \(location) lost its mark")
+        }
+        XCTAssertNil(layoutManager.temporaryAttribute(
+            MultiCaretTextView.tokenStyleAttribute,
+            atCharacterIndex: 6,
+            effectiveRange: nil
+        ))
+    }
 }

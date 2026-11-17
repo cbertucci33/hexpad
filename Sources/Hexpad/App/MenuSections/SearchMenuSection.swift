@@ -89,6 +89,71 @@ extension HexpadAppDelegate {
         searchMenu.addItem(previousResultItem)
         searchMenu.addItem(.separator())
 
+        // Search > Style All Occurrences of Token / Style One Token / Clear
+        // Style / Jump Up / Jump Down / Copy Styled Text mirror Notepad++'s
+        // five-style workflow. Every item is nil-targeted so the focused
+        // window's controller supplies the selection and validation, and the
+        // registry identifier rides in representedObject like the bookmark
+        // group.
+        let registry = CommandRegistry.default
+        func tokenStyleTitle(_ identifier: String) -> String {
+            registry.command(for: identifier)?.title ?? identifier
+        }
+        func addTokenStyleSubmenu(title: String,
+                                  identifiers: [String],
+                                  trailingIdentifier: String? = nil,
+                                  trailingTitle: String? = nil) {
+            let submenu = NSMenu(title: title)
+            func addItem(identifier: String, title: String) {
+                let item = NSMenuItem(
+                    title: title,
+                    action: #selector(MainWindowController.performTokenStyleCommand(withIdentifier:)),
+                    keyEquivalent: ""
+                )
+                item.target = nil
+                item.representedObject = identifier
+                submenu.addItem(item)
+            }
+            for identifier in identifiers {
+                addItem(identifier: identifier, title: tokenStyleTitle(identifier))
+            }
+            if let trailingIdentifier {
+                submenu.addItem(.separator())
+                addItem(identifier: trailingIdentifier,
+                        title: trailingTitle ?? tokenStyleTitle(trailingIdentifier))
+            }
+            let parent = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            parent.submenu = submenu
+            searchMenu.addItem(parent)
+        }
+        let styleNumbers = Array(TokenStyleState.styleNumbers)
+        addTokenStyleSubmenu(
+            title: "Style All Occurrences of Token",
+            identifiers: styleNumbers.map { "style-all-occurrences-\($0)" }
+        )
+        addTokenStyleSubmenu(
+            title: "Style One Token",
+            identifiers: styleNumbers.map { "style-one-token-\($0)" }
+        )
+        addTokenStyleSubmenu(
+            title: "Clear Style",
+            identifiers: styleNumbers.map { "clear-style-\($0)" },
+            trailingIdentifier: "clear-style-all"
+        )
+        addTokenStyleSubmenu(
+            title: "Jump Up",
+            identifiers: styleNumbers.map { "jump-up-\($0)" }
+        )
+        addTokenStyleSubmenu(
+            title: "Jump Down",
+            identifiers: styleNumbers.map { "jump-down-\($0)" }
+        )
+        addTokenStyleSubmenu(
+            title: "Copy Styled Text",
+            identifiers: styleNumbers.map { "copy-styled-text-\($0)" },
+            trailingIdentifier: "copy-styled-text-all"
+        )
+
         // Search > Bookmark mirrors the registry's bookmark group. The group
         // already owns key chords through the Text menu, so these items carry
         // no duplicate equivalents; validation still runs through the

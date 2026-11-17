@@ -68,7 +68,8 @@ final class BookmarkCommandTests: XCTestCase {
                        + registry.lineOpCommands.map(\.identifier)
                        + registry.caseCommands.map(\.identifier)
                        + registry.indentCommands.map(\.identifier)
-                       + registry.viewCommands.map(\.identifier))
+                       + registry.viewCommands.map(\.identifier)
+                       + registry.tokenStyleCommands.map(\.identifier))
         // Contract: the line-editing group stays first and unchanged, then
         // bookmarks, then Tools, Line Ops, case and view commands in registry
         // order.
@@ -111,7 +112,39 @@ final class BookmarkCommandTests: XCTestCase {
             "indent-decrease",
             "fold-all",
             "unfold-all",
-            "toggle-word-wrap"
+            "toggle-word-wrap",
+            "style-all-occurrences-1",
+            "style-all-occurrences-2",
+            "style-all-occurrences-3",
+            "style-all-occurrences-4",
+            "style-all-occurrences-5",
+            "style-one-token-1",
+            "style-one-token-2",
+            "style-one-token-3",
+            "style-one-token-4",
+            "style-one-token-5",
+            "clear-style-1",
+            "clear-style-2",
+            "clear-style-3",
+            "clear-style-4",
+            "clear-style-5",
+            "clear-style-all",
+            "jump-up-1",
+            "jump-up-2",
+            "jump-up-3",
+            "jump-up-4",
+            "jump-up-5",
+            "jump-down-1",
+            "jump-down-2",
+            "jump-down-3",
+            "jump-down-4",
+            "jump-down-5",
+            "copy-styled-text-1",
+            "copy-styled-text-2",
+            "copy-styled-text-3",
+            "copy-styled-text-4",
+            "copy-styled-text-5",
+            "copy-styled-text-all"
         ])
     }
 
