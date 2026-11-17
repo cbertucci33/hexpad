@@ -41,13 +41,29 @@ class StatusBar: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        refreshChromeColors()
         setupUI()
         startEditObservation()
     }
     
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    /// Re-resolves the strip's background and separator for the current
+    /// appearance. Both layers store CGColors, which freeze the resolved
+    /// appearance, so a light/dark switch used to leave the status strip black.
+    func refreshChromeColors() {
+        layer?.backgroundColor = ChromeColor.cgColor(.controlBackgroundColor,
+                                                     for: effectiveAppearance)
+        separatorView?.layer?.backgroundColor = ChromeColor.cgColor(.separatorColor,
+                                                                   for: effectiveAppearance)
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        refreshChromeColors()
+        needsDisplay = true
     }
 
     deinit {
@@ -119,7 +135,8 @@ class StatusBar: NSView {
 
         let separator = NSView(frame: .zero)
         separator.wantsLayer = true
-        separator.layer?.backgroundColor = NSColor.separatorColor.cgColor
+        separator.layer?.backgroundColor = ChromeColor.cgColor(.separatorColor,
+                                                              for: effectiveAppearance)
         separator.autoresizingMask = [.width, .minYMargin]
         separatorView = separator
         addSubview(separator)

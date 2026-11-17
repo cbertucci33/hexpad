@@ -1,6 +1,18 @@
 import AppKit
 import HexpadKit
 
+/// Layer backgrounds take a `CGColor`, which freezes the appearance it was
+/// resolved in. System colours are dynamic, so any chrome that stores one must
+/// re-resolve it through the owning view's appearance instead of converting
+/// once at init.
+enum ChromeColor {
+    static func cgColor(_ color: NSColor, for appearance: NSAppearance) -> CGColor {
+        var resolved = color.cgColor
+        appearance.performAsCurrentDrawingAppearance { resolved = color.cgColor }
+        return resolved
+    }
+}
+
 class TabBarView: NSView {
     
     private let tabStore: TabStore
@@ -26,13 +38,27 @@ class TabBarView: NSView {
         self.tabStore = tabStore
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        refreshChromeColors()
         
         NotificationCenter.default.addObserver(self, selector: #selector(selectedIndexDidChange), name: NSNotification.Name("TabStoreSelectedIndexDidChange"), object: nil)
     }
     
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    /// Re-resolves the bar's background for the current appearance. The layer
+    /// stores a CGColor, so without this the bar keeps the colours it was born
+    /// with while the editor and minimap follow a light/dark switch.
+    func refreshChromeColors() {
+        layer?.backgroundColor = ChromeColor.cgColor(.controlBackgroundColor,
+                                                     for: effectiveAppearance)
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        refreshChromeColors()
+        tabButtons.forEach { $0.refreshChromeColors() }
     }
     
     deinit {
@@ -241,6 +267,13 @@ class TabButton: NSButton {
 
     private func setupUI() {
         bezelStyle = .regularSquare
+        // The button's own background is a layer colour; without an explicit
+        // layer the assignment below would go to nil in an unhosted view.
+        wantsLayer = true
+        // NSButton starts with a stock "Button" title. The real tab caption is
+        // the NSTextField below; leaving the cell title in place draws that
+        // stock word underneath it (and exposes title "Button" to accessibility).
+        title = ""
         sendAction(on: [.leftMouseUp, .rightMouseUp])
         
         let title = NSTextField(labelWithString: doc.name)
@@ -269,19 +302,30 @@ class TabButton: NSButton {
         closeButton = closeBtn
         
         NotificationCenter.default.addObserver(self, selector: #selector(modifiedDidChange), name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
+        refreshChromeColors()
     }
     
     var isSelected: Bool = false {
         didSet {
-            if isSelected {
-                layer?.backgroundColor = NSColor.selectedContentBackgroundColor.cgColor
-            } else {
-                layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
-            }
+            refreshChromeColors()
             // The underline is drawn in draw(_:), so changing the layer colour
             // alone leaves it under the previously selected tab.
             needsDisplay = true
         }
+    }
+
+    /// Resolves the tab's background for the current appearance. Called on
+    /// selection changes and whenever the effective appearance changes; the
+    /// CGColor snapshot would otherwise keep the old light/dark value.
+    func refreshChromeColors() {
+        let color: NSColor = isSelected ? .selectedContentBackgroundColor : .controlBackgroundColor
+        layer?.backgroundColor = ChromeColor.cgColor(color, for: effectiveAppearance)
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        refreshChromeColors()
+        needsDisplay = true
     }
     
     @objc private func closeTabClicked() {

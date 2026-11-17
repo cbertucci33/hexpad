@@ -203,13 +203,27 @@ final class LineNumberGutter: NSView {
         self.textView = textView
         super.init(frame: NSRect(x: 0, y: 0, width: Self.width, height: 100))
         wantsLayer = true
-        layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        refreshChromeColors()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         wantsLayer = true
-        layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        refreshChromeColors()
+    }
+
+    /// Re-resolves the gutter background for the current appearance. A CGColor
+    /// snapshot keeps the launch-time light/dark value, which made the rail
+    /// stay black in Light appearance while the text view beside it repainted.
+    func refreshChromeColors() {
+        layer?.backgroundColor = ChromeColor.cgColor(.windowBackgroundColor,
+                                                     for: effectiveAppearance)
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        refreshChromeColors()
+        needsDisplay = true
     }
 
     /// Passes the clicked character index (already resolved through layout)
@@ -286,7 +300,9 @@ final class LineNumberGutter: NSView {
         let font = numberFont(for: textView)
         let attributes: [NSAttributedString.Key: Any] = [
             .font: font,
-            .foregroundColor: NSColor.tertiaryLabelColor,
+            // tertiaryLabelColor resolves to ~26% black in Light appearance,
+            // which is too faint for 10pt digits on the now-light rail.
+            .foregroundColor: NSColor.secondaryLabelColor,
         ]
         let rows = Self.rows(in: textView)
         let markers = foldMarkersProvider?() ?? [:]

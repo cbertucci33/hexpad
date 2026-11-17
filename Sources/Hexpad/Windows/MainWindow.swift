@@ -13,7 +13,10 @@ class MainWindow: NSWindow {
         
         let toolbar = NSToolbar(identifier: "MainWindowToolbar")
         toolbar.delegate = self
-        toolbar.showsBaselineSeparator = true
+        // The default (automatic/unified) style measures 66pt on macOS 26,
+        // which reads as a giant empty header. The compact style is the modern
+        // small-toolbar metric and measures well under 52pt.
+        toolbarStyle = .unifiedCompact
         self.toolbar = toolbar
     }
 }
