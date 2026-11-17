@@ -89,6 +89,51 @@ final class MenuWiringTests: XCTestCase {
 
     // MARK: - Command execution
 
+    /// Copy to Clipboard variants: Current entries read the focused tab, All
+    /// entries span every tab, and untitled buffers contribute nothing.
+    func testCopyPathVariantsCoverFileBackedAndUntitledDocuments() {
+        let alpha = DocumentModel(text: "a",
+                                  filePath: URL(fileURLWithPath: "/tmp/hexpad-alpha.txt"))
+        let untitled = DocumentModel(text: "b")
+        let beta = DocumentModel(text: "c",
+                                 filePath: URL(fileURLWithPath: "/Users/cb/notes/beta.md"))
+        let documents = [alpha, untitled, beta]
+
+        XCTAssertEqual(CopyPathCollector.text(for: .currentFullPath,
+                                              selected: alpha,
+                                              documents: documents),
+                       "/tmp/hexpad-alpha.txt")
+        XCTAssertEqual(CopyPathCollector.text(for: .currentFilename,
+                                              selected: beta,
+                                              documents: documents),
+                       "beta.md")
+        XCTAssertEqual(CopyPathCollector.text(for: .currentDirectory,
+                                              selected: alpha,
+                                              documents: documents),
+                       "/tmp")
+        XCTAssertNil(CopyPathCollector.text(for: .currentFullPath,
+                                            selected: untitled,
+                                            documents: documents))
+        XCTAssertNil(CopyPathCollector.text(for: .currentFilename,
+                                            selected: untitled,
+                                            documents: documents))
+        XCTAssertNil(CopyPathCollector.text(for: .currentDirectory,
+                                            selected: untitled,
+                                            documents: documents))
+
+        XCTAssertEqual(CopyPathCollector.text(for: .allFilenames,
+                                              selected: untitled,
+                                              documents: documents),
+                       "hexpad-alpha.txt\nbeta.md")
+        XCTAssertEqual(CopyPathCollector.text(for: .allPaths,
+                                              selected: untitled,
+                                              documents: documents),
+                       "/tmp/hexpad-alpha.txt\n/Users/cb/notes/beta.md")
+        XCTAssertNil(CopyPathCollector.text(for: .allPaths,
+                                            selected: untitled,
+                                            documents: [untitled]))
+    }
+
     func testPerformCommandAppliesCommandAsSingleUndoStep() throws {
         let (controller, _) = makeController()
         let doc = try XCTUnwrap(controller.tabStore.selectedDocument)

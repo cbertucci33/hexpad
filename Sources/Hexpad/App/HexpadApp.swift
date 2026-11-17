@@ -177,6 +177,23 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         return item
     }
     
+    // MARK: - Copy to Clipboard
+
+    /// Edit > Copy to Clipboard. All five entries share this action; the item
+    /// tag picks the variant. "All" spans both split groups, because every
+    /// file-backed tab in the window is fair game regardless of focus.
+    @objc func copyPathToClipboard(_ sender: NSMenuItem) {
+        guard let controller = activeController,
+              let variant = CopyPathVariant(rawValue: sender.tag) else { return }
+        let documents = controller.allPanes.flatMap { $0.tabStore.documents }
+        guard let text = CopyPathCollector.text(for: variant,
+                                                selected: controller.tabStore.selectedDocument,
+                                                documents: documents) else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+    
     // MARK: - Appearance
     
     @objc func setAppearanceSystem() {
@@ -495,6 +512,14 @@ extension HexpadAppDelegate: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(HexpadAppDelegate.toggleDocumentMap) {
             menuItem.state = (activeController?.preferences.minimapVisible ?? false) ? .on : .off
+        }
+        if menuItem.action == #selector(HexpadAppDelegate.copyPathToClipboard(_:)),
+           let variant = CopyPathVariant(rawValue: menuItem.tag) {
+            // Current variants need a file-backed focused tab; All variants
+            // stay enabled (they may still find files in the other split group).
+            if variant.isCurrent {
+                return activeController?.tabStore.selectedDocument?.filePath != nil
+            }
         }
         return true
     }
