@@ -452,6 +452,12 @@ final class MinimapView: NSView {
         didSet { needsDisplay = true }
     }
 
+    /// Whether the document map preference is on. The view still stays hidden
+    /// while no document is bound, so an empty pane never shows an empty rail.
+    var isDocumentMapVisible = false {
+        didSet { updateVisibility() }
+    }
+
     /// Set once the window controller supplies an explicit theme, so a system
     /// appearance change does not replace a user-selected Light/Dark override.
     private var hasExplicitTheme = false
@@ -493,6 +499,13 @@ final class MinimapView: NSView {
         pendingRebuild?.cancel()
     }
 
+    /// Single place that decides visibility: the preference is on and a
+    /// document is bound. Unbinding therefore hides without touching the
+    /// preference, and turning the preference off does not forget the document.
+    private func updateVisibility() {
+        isHidden = !isDocumentMapVisible || document == nil
+    }
+
     // MARK: - Binding
 
     /// Same-document identity plus the model's current language and staleness.
@@ -510,6 +523,7 @@ final class MinimapView: NSView {
 
     /// Points the minimap at a document. Passing `nil` hides the view, which is
     /// also how the editor container avoids reserving width for an empty tab.
+    /// A bound document only appears when the document map preference is on.
     ///
     /// Re-binding the same document is skipped unless its language changed or
     /// an edit is still waiting to be folded into the cached model; the model
@@ -528,13 +542,13 @@ final class MinimapView: NSView {
 
         self.document = document
         guard let document else {
-            isHidden = true
+            updateVisibility()
             pendingEditBand = nil
             rebuildModelNow(full: true)
             return
         }
 
-        isHidden = false
+        updateVisibility()
         let center = NotificationCenter.default
         storageObserver = center.addObserver(
             forName: NSTextStorage.didProcessEditingNotification,

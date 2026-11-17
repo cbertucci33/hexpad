@@ -63,6 +63,10 @@ struct Preferences: Codable, Equatable {
     var wordWrap: Bool
     var autoIndent: Bool
     var autoCloseBrackets: Bool
+    /// Whether the document map (minimap) is shown. Off by default, matching
+    /// Notepad++'s opt-in Document Map. Global: every pane and every document
+    /// follows this one value.
+    var minimapVisible: Bool
     var tabSize: Int
     var useTabs: Bool
     /// A ``ThemePreference`` raw value ("System", "Light", "Dark", "Classic",
@@ -77,6 +81,7 @@ struct Preferences: Codable, Equatable {
          wordWrap: Bool = false,
          autoIndent: Bool = true,
          autoCloseBrackets: Bool = false,
+         minimapVisible: Bool = false,
          tabSize: Int = 4,
          useTabs: Bool = false,
          theme: String = ThemePreference.system.rawValue,
@@ -86,6 +91,7 @@ struct Preferences: Codable, Equatable {
         self.wordWrap = wordWrap
         self.autoIndent = autoIndent
         self.autoCloseBrackets = autoCloseBrackets
+        self.minimapVisible = minimapVisible
         self.tabSize = tabSize
         self.useTabs = useTabs
         self.theme = theme
@@ -136,6 +142,7 @@ struct Preferences: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case fontFamily, fontSize, wordWrap, autoIndent, autoCloseBrackets
+        case minimapVisible
         case tabSize, useTabs, theme, version
     }
 
@@ -149,6 +156,8 @@ struct Preferences: Codable, Equatable {
         autoIndent = (try? container.decode(Bool.self, forKey: .autoIndent)) ?? fallback.autoIndent
         autoCloseBrackets = (try? container.decode(Bool.self, forKey: .autoCloseBrackets))
             ?? fallback.autoCloseBrackets
+        minimapVisible = (try? container.decode(Bool.self, forKey: .minimapVisible))
+            ?? fallback.minimapVisible
         tabSize = (try? container.decode(Int.self, forKey: .tabSize)) ?? fallback.tabSize
         useTabs = (try? container.decode(Bool.self, forKey: .useTabs)) ?? fallback.useTabs
 
@@ -423,6 +432,8 @@ final class PreferencesWindowController: NSWindowController {
                                               target: nil, action: nil)
     private let autoCloseCheckbox = NSButton(checkboxWithTitle: "Auto-close brackets and quotes",
                                              target: nil, action: nil)
+    private let minimapCheckbox = NSButton(checkboxWithTitle: "Show document map",
+                                           target: nil, action: nil)
     private let tabSizeField = NSTextField()
     private let tabSizeStepper = NSStepper()
     private let useTabsPopup = NSPopUpButton()
@@ -575,7 +586,7 @@ final class PreferencesWindowController: NSWindowController {
         let pane = makePane()
         pane.addArrangedSubview(sectionLabel("Editor Behavior"))
 
-        for checkbox in [wordWrapCheckbox, autoIndentCheckbox, autoCloseCheckbox] {
+        for checkbox in [wordWrapCheckbox, autoIndentCheckbox, autoCloseCheckbox, minimapCheckbox] {
             checkbox.target = self
             checkbox.action = #selector(editorCheckboxChanged)
             pane.addArrangedSubview(checkbox)
@@ -609,6 +620,7 @@ final class PreferencesWindowController: NSWindowController {
 
         pane.addArrangedSubview(hintLabel("Word wrap applies to the active editor immediately and "
             + "becomes the default for new documents. Each open document keeps its own setting. "
+            + "The document map is global, off by default, and applies to every tab. "
             + "Auto-indent, auto-close, tab width, and the spaces/tabs choice are saved now and "
             + "will be wired into the editor in the follow-up slice."))
         return pane
@@ -676,6 +688,7 @@ final class PreferencesWindowController: NSWindowController {
         wordWrapCheckbox.state = preferences.wordWrap ? .on : .off
         autoIndentCheckbox.state = preferences.autoIndent ? .on : .off
         autoCloseCheckbox.state = preferences.autoCloseBrackets ? .on : .off
+        minimapCheckbox.state = preferences.minimapVisible ? .on : .off
         tabSizeField.integerValue = preferences.tabSize
         tabSizeStepper.integerValue = preferences.tabSize
         useTabsPopup.selectItem(at: preferences.useTabs ? 1 : 0)
@@ -713,6 +726,7 @@ final class PreferencesWindowController: NSWindowController {
             $0.wordWrap = wordWrapCheckbox.state == .on
             $0.autoIndent = autoIndentCheckbox.state == .on
             $0.autoCloseBrackets = autoCloseCheckbox.state == .on
+            $0.minimapVisible = minimapCheckbox.state == .on
         }
     }
 

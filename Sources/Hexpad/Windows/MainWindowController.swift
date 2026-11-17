@@ -261,6 +261,13 @@ class MainWindowController: NSViewController {
                 // be a second, order-dependent path.
                 pane.editor.setWordWrapEnabled(preferences.wordWrap)
             }
+
+            if previous.minimapVisible != preferences.minimapVisible {
+                // The document map is global, not per document, so every pane
+                // picks up the change immediately (including the unfocused
+                // split group).
+                pane.editor.setMinimapVisible(preferences.minimapVisible)
+            }
         }
 
         if previous.theme != preferences.theme {
@@ -1265,16 +1272,20 @@ class MainWindowController: NSViewController {
         isSplitViewOpen
     }
 
-    /// Applies the persisted font and word-wrap defaults to the bound editor.
+    /// Applies the persisted font, word-wrap and document-map defaults to the
+    /// bound editor.
     ///
     /// Font is a global preference and always wins. Word wrap is per document:
     /// `bind()` has already applied `editorState.wordWrapEnabled`, which is
     /// authoritative once the tab exists. Only an unbound editor uses the
     /// preference directly (and new documents are seeded from it at creation).
+    /// The document map is global, so it is applied on every bind and restore
+    /// without being written into any document's state.
     private func applyPreferences(to editor: EditorContainer, for document: DocumentModel?) {
         editor.setBodyFont(PreferencesApplier.resolvedFont(family: preferences.fontFamily,
                                                             size: preferences.fontSize))
         editor.setWordWrapEnabled(document?.wordWrapEnabled ?? preferences.wordWrap)
+        editor.setMinimapVisible(preferences.minimapVisible)
     }
 
     /// Re-applies persisted preferences to the editors. The app delegate calls
@@ -1803,6 +1814,14 @@ class MainWindowController: NSViewController {
     /// while a macro is being captured.
     func toggleWordWrap() {
         performCommand(identifier: "toggle-word-wrap")
+    }
+
+    /// View > Document Map. The preference is global, so the store is the
+    /// single write path: it posts `.preferencesDidChange` and
+    /// `handlePreferencesDidChange` applies the new value to every pane.
+    func toggleDocumentMap() {
+        let visible = !preferences.minimapVisible
+        try? PreferencesStore.update { $0.minimapVisible = visible }
     }
     
     func zoomIn() {

@@ -50,6 +50,7 @@ final class PreferencesTests: XCTestCase {
         XCTAssertFalse(loaded.wordWrap)
         XCTAssertTrue(loaded.autoIndent)
         XCTAssertFalse(loaded.autoCloseBrackets)
+        XCTAssertFalse(loaded.minimapVisible)
         XCTAssertEqual(loaded.tabSize, 4)
         XCTAssertFalse(loaded.useTabs)
         XCTAssertEqual(loaded.theme, ThemePreference.system.rawValue)
@@ -64,6 +65,7 @@ final class PreferencesTests: XCTestCase {
         preferences.wordWrap = true
         preferences.autoIndent = false
         preferences.autoCloseBrackets = true
+        preferences.minimapVisible = true
         preferences.tabSize = 2
         preferences.useTabs = true
         preferences.theme = HexpadTheme.monokai.rawValue

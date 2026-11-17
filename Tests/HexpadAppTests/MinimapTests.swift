@@ -168,6 +168,10 @@ final class MinimapTests: XCTestCase {
         XCTAssertEqual(editor.scrollView.frame.width,
                        900 - LineNumberGutter.width, accuracy: 0.5)
 
+        // The document map is opt-in (default off); turn it on to exercise the
+        // fixed-width rail.
+        editor.setMinimapVisible(true)
+
         let document = DocumentModel(text: "let a = 1\nlet b = 2")
         editor.bind(to: document)
         editor.layout()
@@ -186,6 +190,32 @@ final class MinimapTests: XCTestCase {
         XCTAssertEqual(editor.scrollView.frame.width,
                        900 - LineNumberGutter.width, accuracy: 0.5,
                        "the reserved width returns to the editor when unbound")
+    }
+
+    func testDocumentMapPreferenceDefaultsOffAndSetMinimapVisibleFlipsTheRail() {
+        XCTAssertFalse(Preferences.defaults.minimapVisible,
+                       "Notepad++-style document map must be opt-in")
+
+        let editor = EditorContainer()
+        editor.frame = NSRect(x: 0, y: 0, width: 900, height: 600)
+        let document = DocumentModel(text: "let a = 1")
+        editor.bind(to: document)
+        editor.layout()
+
+        XCTAssertTrue(editor.minimap.isHidden,
+                      "binding a document must not show the map while the preference is off")
+
+        editor.setMinimapVisible(true)
+        editor.layout()
+        XCTAssertFalse(editor.minimap.isHidden)
+        XCTAssertEqual(editor.minimap.frame.width, MinimapView.width, accuracy: 0.5)
+
+        editor.setMinimapVisible(false)
+        editor.layout()
+        XCTAssertTrue(editor.minimap.isHidden)
+        XCTAssertEqual(editor.scrollView.frame.width,
+                       900 - LineNumberGutter.width, accuracy: 0.5,
+                       "hiding the map returns its width to the editor")
     }
 
     func testTextChangeInvalidatesAndRebuildsTheCachedModel() {

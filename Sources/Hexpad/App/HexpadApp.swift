@@ -369,6 +369,13 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         updateAppearanceCheckmarks()
         
         viewMenu.addItem(wordWrapItem)
+        // Off by default (Notepad++'s Document Map is opt-in). Routed like
+        // Word Wrap; the checkmark comes from menu validation.
+        let documentMapItem = NSMenuItem(title: "Document Map",
+                                         action: #selector(toggleDocumentMap),
+                                         keyEquivalent: "")
+        documentMapItem.target = self
+        viewMenu.addItem(documentMapItem)
         viewMenu.addItem(functionListItem)
         viewMenu.addItem(.separator())
         viewMenu.addItem(foldAllItem)
@@ -810,6 +817,10 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleWordWrap() {
         activeController?.toggleWordWrap()
     }
+
+    @objc private func toggleDocumentMap() {
+        activeController?.toggleDocumentMap()
+    }
     
     @objc private func zoomIn() {
         activeController?.zoomIn()
@@ -1009,5 +1020,19 @@ private extension NSObject {
     func apply(_ block: (Self) -> Void) -> Self {
         block(self)
         return self
+    }
+}
+
+// MARK: - NSMenuItemValidation
+
+extension HexpadAppDelegate: NSMenuItemValidation {
+    /// Document Map is the one delegate-owned toggle with a checkmark; its
+    /// state mirrors the controller's live global preference. Every other
+    /// delegate item remains enabled, as it was before this conformance.
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(HexpadAppDelegate.toggleDocumentMap) {
+            menuItem.state = (activeController?.preferences.minimapVisible ?? false) ? .on : .off
+        }
+        return true
     }
 }

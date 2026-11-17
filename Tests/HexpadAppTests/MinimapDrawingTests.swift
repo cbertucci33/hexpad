@@ -16,6 +16,7 @@ final class MinimapDrawingTests: XCTestCase {
     func testMinimapDrawNeverPaintsLeftOfItsOwnFrame() throws {
         let editor = EditorContainer()
         editor.frame = NSRect(x: 0, y: 0, width: 900, height: 600)
+        editor.setMinimapVisible(true)
         let document = DocumentModel(text: "let a = 1\nlet b = 2\nlet c = 3")
         editor.bind(to: document)
         editor.layout()

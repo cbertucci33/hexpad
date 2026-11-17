@@ -316,6 +316,15 @@ class EditorContainer: NSView {
         applyZoomScale(scale, writingThrough: false)
     }
 
+    /// Shows or hides the document map (View > Document Map and the
+    /// preference). The minimap reserves width only while visible;
+    /// `layoutEditorSubviews` reflows the editor around it either way.
+    func setMinimapVisible(_ visible: Bool) {
+        minimap.isDocumentMapVisible = visible
+        needsLayout = true
+        layoutEditorSubviews()
+    }
+
     /// Applies a zoom multiplier over the base font and persists it on the
     /// bound document, so the View > Zoom commands survive a tab switch.
     func setZoomScale(_ scale: CGFloat) {
