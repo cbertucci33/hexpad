@@ -120,13 +120,56 @@ final class AdditionalLanguageTests: XCTestCase {
         commentPrefix: ";")
     }
 
+    func testDartFixtureTokenizes() throws {
+        try assertTokenizes("""
+        // note
+        class Greeter {
+          final String name = "hi";
+          int count = 42;
+          final raw = r'C:\\temp';
+        }
+        """,
+        language: .dart,
+        keyword: "class",
+        commentPrefix: "//")
+    }
+
+    func testOCamlFixtureTokenizes() throws {
+        try assertTokenizes("""
+        (* note *)
+        let greet name =
+          let count = 42 in
+          "hi"
+        """,
+        language: .ocaml,
+        keyword: "let",
+        commentPrefix: "(*")
+    }
+
+    func testErlangFixtureTokenizes() throws {
+        try assertTokenizes("""
+        % note
+        greet(Name) ->
+            Count = 42,
+            case Name of
+                _ -> "hi"
+            end.
+        """,
+        language: .erlang,
+        keyword: "case",
+        commentPrefix: "%")
+    }
+
     func testNewFileExtensionsMapToLanguages() {
         let expected: [(String, Language)] = [
             ("script.pl", .perl), ("Module.pm", .perl),
             ("plot.m", .matlab), ("solver.matlab", .matlab),
             ("Main.hs", .haskell),
             ("Main.scala", .scala),
-            ("core.clj", .clojure), ("ui.cljs", .clojure), ("shared.cljc", .clojure)
+            ("core.clj", .clojure), ("ui.cljs", .clojure), ("shared.cljc", .clojure),
+            ("main.dart", .dart),
+            ("main.ml", .ocaml), ("main.mli", .ocaml),
+            ("server.erl", .erlang), ("server.hrl", .erlang)
         ]
 
         for (name, language) in expected {

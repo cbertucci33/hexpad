@@ -227,7 +227,15 @@ public enum LexerDefinitions {
         .toml,
         .ini,
         .lua,
-        .r
+        .r,
+        .perl,
+        .matlab,
+        .haskell,
+        .scala,
+        .clojure,
+        .dart,
+        .ocaml,
+        .erlang
     ]
 
     private static let byLanguage: [Language: LexerDefinition] = {

@@ -63,6 +63,9 @@ public enum Language: String, CaseIterable, Identifiable {
     case haskell = "Haskell"
     case scala = "Scala"
     case clojure = "Clojure"
+    case dart = "Dart"
+    case ocaml = "OCaml"
+    case erlang = "Erlang"
     
     public var id: String { rawValue }
     
@@ -105,6 +108,9 @@ public enum Language: String, CaseIterable, Identifiable {
         case let x where x.hasSuffix(".scala") || x.hasSuffix(".sc"): return .scala
         case let x where x.hasSuffix(".clj") || x.hasSuffix(".cljs")
             || x.hasSuffix(".cljc"): return .clojure
+        case let x where x.hasSuffix(".dart"): return .dart
+        case let x where x.hasSuffix(".ml") || x.hasSuffix(".mli"): return .ocaml
+        case let x where x.hasSuffix(".erl") || x.hasSuffix(".hrl"): return .erlang
         default: return .plain
         }
     }
