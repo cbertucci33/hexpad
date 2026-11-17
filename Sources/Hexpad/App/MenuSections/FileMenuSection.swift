@@ -36,6 +36,37 @@ extension HexpadAppDelegate {
         closeTabItem.target = self
         let closeAllItem = NSMenuItem(title: "Close All Tabs", action: #selector(closeAllTabs), keyEquivalent: "W")
         closeAllItem.target = self
+
+        // Bulk close variants; each targets the focused group's tab order and
+        // reuses the single-close dirty prompt per document.
+        let closeMultipleItem = NSMenuItem(title: "Close Multiple Documents", action: nil, keyEquivalent: "")
+        let closeMultipleMenu = NSMenu(title: "Close Multiple Documents")
+        let closeOthers = NSMenuItem(title: "Close All but Active Document",
+                                     action: #selector(closeAllButActiveDocument),
+                                     keyEquivalent: "")
+        closeOthers.target = self
+        let closeUnpinned = NSMenuItem(title: "Close All but Pinned Documents",
+                                       action: #selector(closeAllButPinnedDocuments),
+                                       keyEquivalent: "")
+        closeUnpinned.target = self
+        let closeLeft = NSMenuItem(title: "Close All to the Left",
+                                   action: #selector(closeAllDocumentsToLeft),
+                                   keyEquivalent: "")
+        closeLeft.target = self
+        let closeRight = NSMenuItem(title: "Close All to the Right",
+                                    action: #selector(closeAllDocumentsToRight),
+                                    keyEquivalent: "")
+        closeRight.target = self
+        let closeUnchanged = NSMenuItem(title: "Close All Unchanged",
+                                        action: #selector(closeAllUnchangedDocuments),
+                                        keyEquivalent: "")
+        closeUnchanged.target = self
+        closeMultipleMenu.addItem(closeOthers)
+        closeMultipleMenu.addItem(closeUnpinned)
+        closeMultipleMenu.addItem(closeLeft)
+        closeMultipleMenu.addItem(closeRight)
+        closeMultipleMenu.addItem(closeUnchanged)
+        closeMultipleItem.submenu = closeMultipleMenu
         
         // Open Recent submenu
         let openRecentItem = NSMenuItem(title: "Open Recent", action: nil, keyEquivalent: "")
@@ -57,6 +88,7 @@ extension HexpadAppDelegate {
         fileMenu.addItem(.separator())
         fileMenu.addItem(closeTabItem)
         fileMenu.addItem(closeAllItem)
+        fileMenu.addItem(closeMultipleItem)
         return fileMenu
     }
 }

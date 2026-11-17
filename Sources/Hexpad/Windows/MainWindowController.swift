@@ -978,9 +978,7 @@ class MainWindowController: NSViewController {
     func closeAllTabs() {
         // "All tabs" is window-scoped: close both split groups. Each group is
         // walked back-to-front so removing a higher index never shifts a lower
-        // one into an already-processed slot. Dirty docs get the same save
-        // prompt as a single close; Cancel stops the sweep and leaves the
-        // remaining tabs open.
+        // one into an already-processed slot.
         var queue: [(pane: TabGroupPane, doc: DocumentModel)] = []
         for pane in allPanes {
             queue.append(contentsOf: pane.tabStore.documents.reversed().map { (pane, $0) })
@@ -989,7 +987,32 @@ class MainWindowController: NSViewController {
             addNewTab()
             return
         }
+        closeDocumentsInOrder(queue)
+    }
 
+    /// File > Close Multiple Documents. Scope is resolved against the focused
+    /// group's tab order; the sweep itself reuses the Close All prompt/close
+    /// loop so each dirty document asks individually and Cancel stops the rest.
+    func closeMultipleDocuments(_ scope: TabCloseScope) {
+        let targets = tabStore.documents(matching: scope)
+        guard !targets.isEmpty else { return }
+        let pane = activePane
+        closeDocumentsInOrder(targets.map { (pane, $0) })
+    }
+
+    /// Whether a Close Multiple Documents variant has anything to act on.
+    func canCloseMultipleDocuments(_ scope: TabCloseScope) -> Bool {
+        switch scope {
+        case .unchanged:
+            return tabStore.documents.contains { !$0.unsavedChanges }
+        case .allButActive, .allButPinned, .toLeftOfActive, .toRightOfActive:
+            return tabStore.count > 1
+        }
+    }
+
+    /// Shared bulk-close sweep. Dirty docs get the same save prompt as a single
+    /// close; Cancel stops the sweep and leaves the remaining tabs open.
+    private func closeDocumentsInOrder(_ queue: [(pane: TabGroupPane, doc: DocumentModel)]) {
         var index = 0
         var shouldContinueClosing = true
 

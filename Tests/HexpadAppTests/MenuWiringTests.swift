@@ -310,6 +310,57 @@ final class MenuWiringTests: XCTestCase {
         XCTAssertFalse(controller.validateMenuItem(tab2))
     }
 
+    // MARK: - File > Close Multiple Documents
+
+    /// Bulk-close menu wiring plus the clean-document sweep. Dirty-document
+    /// prompting runs through NSAlert sheets and is not exercised here; the
+    /// sweep itself is shared with Close All Tabs.
+    func testCloseMultipleDocumentsMenuWiringAndCleanSweep() throws {
+        let delegate = HexpadAppDelegate()
+        let menu = delegate.buildMainMenu()
+        let fileMenu = try XCTUnwrap(menu.item(withTitle: "File")?.submenu)
+        let bulkItem = try XCTUnwrap(fileMenu.item(withTitle: "Close Multiple Documents"))
+        let bulkMenu = try XCTUnwrap(bulkItem.submenu)
+
+        let expected: [(title: String, action: Selector)] = [
+            ("Close All but Active Document", #selector(HexpadAppDelegate.closeAllButActiveDocument)),
+            ("Close All but Pinned Documents", #selector(HexpadAppDelegate.closeAllButPinnedDocuments)),
+            ("Close All to the Left", #selector(HexpadAppDelegate.closeAllDocumentsToLeft)),
+            ("Close All to the Right", #selector(HexpadAppDelegate.closeAllDocumentsToRight)),
+            ("Close All Unchanged", #selector(HexpadAppDelegate.closeAllUnchangedDocuments))
+        ]
+        XCTAssertEqual(bulkMenu.items.map(\.title), expected.map(\.title))
+        for (item, entry) in zip(bulkMenu.items, expected) {
+            XCTAssertEqual(item.action, entry.action, entry.title)
+            XCTAssertTrue(item.target === delegate, entry.title)
+        }
+
+        let (controller, _) = makeController()
+        XCTAssertFalse(controller.canCloseMultipleDocuments(.allButActive),
+                       "one tab has nothing else to close")
+
+        controller.tabStore.addDocument(DocumentModel(text: "b"))
+        controller.tabStore.addDocument(DocumentModel(text: "c"))
+        controller.selectTab(at: 1)
+        XCTAssertTrue(controller.canCloseMultipleDocuments(.allButActive))
+        XCTAssertTrue(controller.canCloseMultipleDocuments(.toLeftOfActive))
+        XCTAssertTrue(controller.canCloseMultipleDocuments(.toRightOfActive))
+
+        controller.closeMultipleDocuments(.allButActive)
+        XCTAssertEqual(controller.tabStore.documents.map(\.text), ["b"])
+        XCTAssertEqual(controller.tabStore.selectedDocument?.text, "b")
+
+        // Unchanged closes clean tabs and leaves dirty ones open.
+        let dirty = DocumentModel(text: "dirty")
+        dirty.setModified(true)
+        controller.tabStore.addDocument(dirty)
+        controller.tabStore.addDocument(DocumentModel(text: "clean"))
+        controller.selectTab(at: 1)
+        XCTAssertTrue(controller.canCloseMultipleDocuments(.unchanged))
+        controller.closeMultipleDocuments(.unchanged)
+        XCTAssertEqual(controller.tabStore.documents.map(\.text), ["dirty"])
+    }
+
     // MARK: - Encoding menu (Encode in / Convert to)
 
     private func encodingItem(_ name: String,

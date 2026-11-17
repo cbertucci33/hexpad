@@ -288,6 +288,30 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     @objc func closeAllTabs() {
         activeController?.closeAllTabs()
     }
+
+    // MARK: - Close Multiple Documents
+
+    @objc func closeAllButActiveDocument() {
+        activeController?.closeMultipleDocuments(.allButActive)
+    }
+
+    @objc func closeAllButPinnedDocuments() {
+        // No pinning yet: with nothing pinned this closes every tab but the
+        // active one, exactly like Close All but Active Document.
+        activeController?.closeMultipleDocuments(.allButPinned)
+    }
+
+    @objc func closeAllDocumentsToLeft() {
+        activeController?.closeMultipleDocuments(.toLeftOfActive)
+    }
+
+    @objc func closeAllDocumentsToRight() {
+        activeController?.closeMultipleDocuments(.toRightOfActive)
+    }
+
+    @objc func closeAllUnchangedDocuments() {
+        activeController?.closeMultipleDocuments(.unchanged)
+    }
     
     @objc func toggleFindBar() {
         activeController?.toggleFindBar()
@@ -506,10 +530,23 @@ extension HexpadAppDelegate: NSMenuDelegate {
 // MARK: - NSMenuItemValidation
 
 extension HexpadAppDelegate: NSMenuItemValidation {
+    /// Maps the Close Multiple Documents actions to the scope they operate on.
+    private func closeScope(for action: Selector?) -> TabCloseScope? {
+        if action == #selector(HexpadAppDelegate.closeAllButActiveDocument) { return .allButActive }
+        if action == #selector(HexpadAppDelegate.closeAllButPinnedDocuments) { return .allButPinned }
+        if action == #selector(HexpadAppDelegate.closeAllDocumentsToLeft) { return .toLeftOfActive }
+        if action == #selector(HexpadAppDelegate.closeAllDocumentsToRight) { return .toRightOfActive }
+        if action == #selector(HexpadAppDelegate.closeAllUnchangedDocuments) { return .unchanged }
+        return nil
+    }
+
     /// Document Map is the one delegate-owned toggle with a checkmark; its
     /// state mirrors the controller's live global preference. Every other
     /// delegate item remains enabled, as it was before this conformance.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if let scope = closeScope(for: menuItem.action) {
+            return activeController?.canCloseMultipleDocuments(scope) ?? false
+        }
         if menuItem.action == #selector(HexpadAppDelegate.toggleDocumentMap) {
             menuItem.state = (activeController?.preferences.minimapVisible ?? false) ? .on : .off
         }

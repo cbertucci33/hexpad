@@ -1,5 +1,22 @@
 import Foundation
 
+/// Which open tabs a bulk-close command should target. Ordering always follows
+/// the store's `documents` array, which is the tab order shown to the user.
+public enum TabCloseScope: Equatable {
+    /// Every tab except the selected one.
+    case allButActive
+    /// Every tab except pinned ones. Pinning is not implemented yet, so this
+    /// currently targets the same tabs as `.allButActive` (the active tab is
+    /// kept); once pins exist only `isPinned` documents should be skipped.
+    case allButPinned
+    /// Tabs before the selected one, nearest last (tab order).
+    case toLeftOfActive
+    /// Tabs after the selected one, nearest first (tab order).
+    case toRightOfActive
+    /// Every tab without unsaved changes, including the active tab when clean.
+    case unchanged
+}
+
 /// Manages a collection of open documents as tabs
 public final class TabStore: ObservableObject {
     @Published public var documents: [DocumentModel] = []
@@ -51,6 +68,25 @@ public final class TabStore: ObservableObject {
     public func closeAll() {
         documents.removeAll()
         selectedIndex = 0
+    }
+
+    /// Documents a bulk-close command should prompt for and remove, in tab
+    /// order. The caller owns the actual close flow so every document still
+    /// goes through the per-document dirty prompt.
+    public func documents(matching scope: TabCloseScope) -> [DocumentModel] {
+        switch scope {
+        case .allButActive, .allButPinned:
+            guard let active = selectedDocument else { return [] }
+            return documents.filter { $0 !== active }
+        case .toLeftOfActive:
+            guard selectedIndex > 0 else { return [] }
+            return Array(documents[..<selectedIndex])
+        case .toRightOfActive:
+            guard selectedIndex < documents.count - 1 else { return [] }
+            return Array(documents[(selectedIndex + 1)...])
+        case .unchanged:
+            return documents.filter { !$0.unsavedChanges }
+        }
     }
     
     public func toSessionData() -> [[String: Any]] {
