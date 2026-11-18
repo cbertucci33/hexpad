@@ -50,6 +50,18 @@ public enum HashKit {
         hex(SHA256.hash(data: data))
     }
 
+    // MARK: - SHA-512
+
+    /// Returns the lowercase hexadecimal SHA-512 digest of `text` (hashed as UTF-8).
+    public static func sha512(_ text: String) -> String {
+        sha512(Data(text.utf8))
+    }
+
+    /// Returns the lowercase hexadecimal SHA-512 digest of `data`.
+    public static func sha512(_ data: Data) -> String {
+        hex(SHA512.hash(data: data))
+    }
+
     // MARK: - Helpers
 
     /// Formats a digest's bytes as lowercase hexadecimal without separators.

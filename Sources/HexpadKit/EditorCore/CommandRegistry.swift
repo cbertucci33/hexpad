@@ -503,6 +503,13 @@ public struct CommandRegistry {
                 }
             ),
             EditorCommand(
+                identifier: "hash-sha512",
+                title: "SHA-512",
+                execute: { text, selection in
+                    HashCommandOps.insert(HashKit.sha512, text: text, selection: selection)
+                }
+            ),
+            EditorCommand(
                 identifier: "insert-date",
                 title: "Short Date",
                 execute: { text, selection in

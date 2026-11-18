@@ -94,6 +94,7 @@ final class BookmarkCommandTests: XCTestCase {
             "hash-md5",
             "hash-sha1",
             "hash-sha256",
+            "hash-sha512",
             "insert-date",
             "insert-time",
             "insert-datetime",
