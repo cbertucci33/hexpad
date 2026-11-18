@@ -155,7 +155,15 @@ class TabBarView: NSView {
 
     /// TabStore.moveDocument existed from the start but nothing drove it.
     func moveTab(from source: Int, to destination: Int) {
+        // A reorder moves documents, not the selection index. Follow the
+        // selected document to its new slot, otherwise dragging the active tab
+        // to another position leaves a different tab active after the drop.
+        let selectedDocument = tabStore.selectedDocument
         tabStore.moveDocument(from: source, to: destination)
+        if let selectedDocument,
+           let newIndex = tabStore.documents.firstIndex(where: { $0 === selectedDocument }) {
+            tabStore.selectedIndex = newIndex
+        }
         reloadTabs()
         NotificationCenter.default.post(name: NSNotification.Name("TabStoreSelectedIndexDidChange"), object: nil)
         onChange?()
