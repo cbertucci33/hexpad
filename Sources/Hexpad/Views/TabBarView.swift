@@ -53,6 +53,14 @@ class TabBarView: NSView {
     var doubleClickTabCloses = false
     /// Settings > Tab Bar: caption limit; 0 is unlimited.
     var maxTabLabelLength = 0
+    /// Settings > Tab Bar: which tabs reveal their × button. Applied to the
+    /// existing buttons as well as on the next ``reloadTabs()`` so a preference
+    /// change takes effect without rebuilding the whole bar.
+    public var closeButtonVisibility: CloseButtonVisibility = .always {
+        didSet {
+            tabButtons.forEach { $0.closeButtonVisibility = closeButtonVisibility }
+        }
+    }
 
     /// Live drag-reorder preview. The store is not mutated until mouseUp; the
     /// buttons are only re-slotted for visual feedback.
@@ -67,6 +75,7 @@ class TabBarView: NSView {
         refreshChromeColors()
         
         NotificationCenter.default.addObserver(self, selector: #selector(selectedIndexDidChange), name: NSNotification.Name("TabStoreSelectedIndexDidChange"), object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(preferencesDidChange(_:)), name: .preferencesDidChange, object: nil)
     }
     
     required init?(coder: NSCoder) {
@@ -114,7 +123,8 @@ class TabBarView: NSView {
                                    index: index,
                                    tabWidth: tabWidth,
                                    tabHeight: tabHeight,
-                                   maxLabelLength: maxTabLabelLength)
+                                   maxLabelLength: maxTabLabelLength,
+                                   closeButtonVisibility: closeButtonVisibility)
             button.frame = NSRect(x: CGFloat(index) * (tabWidth + spacing), y: 0, width: tabWidth, height: tabHeight)
             button.isSelected = index == tabStore.selectedIndex
             button.target = self
@@ -295,6 +305,14 @@ class TabBarView: NSView {
             btn.isSelected = i == tabStore.selectedIndex
         }
     }
+
+    /// Live apply for the close-button preference. The controller also sets
+    /// this in `refreshTabBar()`, but observing directly means a change to this
+    /// option alone does not have to wait for that refresh to be triggered.
+    @objc private func preferencesDidChange(_ note: Notification) {
+        guard let preferences = note.object as? Preferences else { return }
+        closeButtonVisibility = preferences.closeButtonVisibility
+    }
 }
 
 class TabButton: NSButton {
@@ -304,24 +322,36 @@ class TabButton: NSButton {
     let tabWidth: CGFloat
     let tabHeight: CGFloat
     let maxLabelLength: Int
-    
+
+    /// Settings > Tab Bar: which tabs reveal their × button.
+    var closeButtonVisibility: CloseButtonVisibility = .always {
+        didSet { updateCloseButtonVisibility() }
+    }
+    /// True while the pointer is inside this tab's bounds. Used only by the
+    /// `.activeAndHover` mode; tracking is installed in `setupUI()`.
+    private var isHovered = false
+    private var hoverTrackingArea: NSTrackingArea?
+
     private var titleLabel: NSTextField?
     private var dirtyIndicator: NSView?
-    private var closeButton: NSButton?
+    /// Internal so the preference tests can assert its visibility directly.
+    var closeButton: NSButton?
     private var dragStart: NSPoint?
     private var draggedOut = false
     weak var reorderDelegate: TabBarView?
-    
+
     init(doc: DocumentModel,
          index: Int,
          tabWidth: CGFloat,
          tabHeight: CGFloat,
-         maxLabelLength: Int = 0) {
+         maxLabelLength: Int = 0,
+         closeButtonVisibility: CloseButtonVisibility = .always) {
         self.doc = doc
         self.index = index
         self.tabWidth = tabWidth
         self.tabHeight = tabHeight
         self.maxLabelLength = maxLabelLength
+        self.closeButtonVisibility = closeButtonVisibility
         super.init(frame: .zero)
         setupUI()
     }
@@ -375,13 +405,61 @@ class TabButton: NSButton {
         addSubview(closeBtn)
         closeButton = closeBtn
         
+        // Hover tracking for `.activeAndHover`. `.inVisibleRect` keeps the area
+        // correct even though the frame is assigned after init in reloadTabs().
+        let hoverArea = NSTrackingArea(rect: bounds,
+                                       options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                       owner: self,
+                                       userInfo: nil)
+        addTrackingArea(hoverArea)
+        hoverTrackingArea = hoverArea
+
         NotificationCenter.default.addObserver(self, selector: #selector(modifiedDidChange), name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
         refreshChromeColors()
+        updateCloseButtonVisibility()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTrackingArea { removeTrackingArea(hoverTrackingArea) }
+        let area = NSTrackingArea(rect: bounds,
+                                  options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                  owner: self,
+                                  userInfo: nil)
+        addTrackingArea(area)
+        hoverTrackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovered = true
+        updateCloseButtonVisibility()
+        super.mouseEntered(with: event)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovered = false
+        updateCloseButtonVisibility()
+        super.mouseExited(with: event)
+    }
+
+    /// The × is always shown in the default mode. In `.activeAndHover` it is
+    /// shown only for the selected tab or while the pointer is over this tab.
+    /// Only `isHidden` changes; frame math, the dirty dot and the label are
+    /// deliberately left untouched.
+    private func updateCloseButtonVisibility() {
+        guard let closeButton else { return }
+        switch closeButtonVisibility {
+        case .always:
+            closeButton.isHidden = false
+        case .activeAndHover:
+            closeButton.isHidden = !(isSelected || isHovered)
+        }
     }
     
     var isSelected: Bool = false {
         didSet {
             refreshChromeColors()
+            updateCloseButtonVisibility()
             // The underline is drawn in draw(_:), so changing the layer colour
             // alone leaves it under the previously selected tab.
             needsDisplay = true

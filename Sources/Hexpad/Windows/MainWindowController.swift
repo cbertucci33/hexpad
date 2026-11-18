@@ -1485,6 +1485,7 @@ class MainWindowController: NSViewController {
             pane.tabBar.lockTabBar = preferences.lockTabBar
             pane.tabBar.doubleClickTabCloses = preferences.doubleClickTabCloses
             pane.tabBar.maxTabLabelLength = preferences.maxTabLabelLength
+            pane.tabBar.closeButtonVisibility = preferences.closeButtonVisibility
             pane.tabBar.reloadTabs()
         }
         synchronizeMRU()

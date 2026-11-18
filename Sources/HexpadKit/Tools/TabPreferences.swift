@@ -1,5 +1,15 @@
 import Foundation
 
+/// Which tabs show their close (×) button.
+///
+/// ``always`` keeps the historical behaviour: every tab shows the button.
+/// ``activeAndHover`` shows it only on the selected tab and on the tab the
+/// pointer is currently over, leaving idle tabs uncluttered.
+public enum CloseButtonVisibility: String, Codable {
+    case always
+    case activeAndHover
+}
+
 /// Display helpers for the tab bar.
 public enum TabLabel {
 

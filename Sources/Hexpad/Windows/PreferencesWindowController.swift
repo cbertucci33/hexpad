@@ -103,6 +103,10 @@ struct Preferences: Codable, Equatable {
     /// Maximum tab caption length; 0 is unlimited. Longer names are truncated
     /// with an ellipsis.
     var maxTabLabelLength: Int
+    /// Which tabs reveal their close button. Defaults to ``CloseButtonVisibility/always``
+    /// so existing users keep every × visible; ``.activeAndHover`` shows it only
+    /// on the selected tab and on a hovered tab.
+    var closeButtonVisibility: CloseButtonVisibility
 
     // MARK: New documents
 
@@ -142,6 +146,7 @@ struct Preferences: Codable, Equatable {
          lockTabBar: Bool = false,
          doubleClickTabCloses: Bool = false,
          maxTabLabelLength: Int = 0,
+         closeButtonVisibility: CloseButtonVisibility = .always,
          defaultEncoding: String = "UTF-8",
          defaultEOL: String = "LF",
          sessionSnapshotEnabled: Bool = true,
@@ -165,6 +170,7 @@ struct Preferences: Codable, Equatable {
         self.lockTabBar = lockTabBar
         self.doubleClickTabCloses = doubleClickTabCloses
         self.maxTabLabelLength = maxTabLabelLength
+        self.closeButtonVisibility = closeButtonVisibility
         self.defaultEncoding = defaultEncoding
         self.defaultEOL = defaultEOL
         self.sessionSnapshotEnabled = sessionSnapshotEnabled
@@ -239,6 +245,7 @@ struct Preferences: Codable, Equatable {
         case minimapVisible
         case tabSize, useTabs, theme, version
         case showTabBar, lockTabBar, doubleClickTabCloses, maxTabLabelLength
+        case closeButtonVisibility
         case defaultEncoding, defaultEOL
         case sessionSnapshotEnabled, recentFilesMax, mruTabSwitching
         case dateFormatString
@@ -289,6 +296,9 @@ struct Preferences: Codable, Equatable {
             ?? fallback.doubleClickTabCloses
         maxTabLabelLength = (try? container.decode(Int.self, forKey: .maxTabLabelLength))
             ?? fallback.maxTabLabelLength
+        closeButtonVisibility = (try? container.decode(CloseButtonVisibility.self,
+                                                       forKey: .closeButtonVisibility))
+            ?? fallback.closeButtonVisibility
         defaultEncoding = (try? container.decode(String.self, forKey: .defaultEncoding))
             ?? fallback.defaultEncoding
         defaultEOL = (try? container.decode(String.self, forKey: .defaultEOL)) ?? fallback.defaultEOL
@@ -577,6 +587,8 @@ final class PreferencesWindowController: NSWindowController {
     private let maxTabLabelLengthStepper = NSStepper()
     private let mruTabSwitchingCheckbox = NSButton(checkboxWithTitle: "Most-recently-used tab switching",
                                                    target: nil, action: nil)
+    private let closeButtonVisibilityCheckbox = NSButton(
+        checkboxWithTitle: "Close button: active + hover only", target: nil, action: nil)
 
     // Editor pane: New Document group
     private let defaultEncodingPopup = NSPopUpButton()
@@ -773,7 +785,8 @@ final class PreferencesWindowController: NSWindowController {
         // the preferences notification; the MRU choice changes navigation order.
         pane.addArrangedSubview(sectionLabel("Tab Bar"))
         for checkbox in [showTabBarCheckbox, lockTabBarCheckbox,
-                         doubleClickTabClosesCheckbox, mruTabSwitchingCheckbox] {
+                         doubleClickTabClosesCheckbox, mruTabSwitchingCheckbox,
+                         closeButtonVisibilityCheckbox] {
             checkbox.target = self
             checkbox.action = #selector(tabBarCheckboxChanged)
             pane.addArrangedSubview(checkbox)
@@ -939,6 +952,7 @@ final class PreferencesWindowController: NSWindowController {
         lockTabBarCheckbox.state = preferences.lockTabBar ? .on : .off
         doubleClickTabClosesCheckbox.state = preferences.doubleClickTabCloses ? .on : .off
         mruTabSwitchingCheckbox.state = preferences.mruTabSwitching ? .on : .off
+        closeButtonVisibilityCheckbox.state = preferences.closeButtonVisibility == .activeAndHover ? .on : .off
         maxTabLabelLengthField.integerValue = preferences.maxTabLabelLength
         maxTabLabelLengthStepper.integerValue = preferences.maxTabLabelLength
 
@@ -1010,6 +1024,8 @@ final class PreferencesWindowController: NSWindowController {
             $0.lockTabBar = lockTabBarCheckbox.state == .on
             $0.doubleClickTabCloses = doubleClickTabClosesCheckbox.state == .on
             $0.mruTabSwitching = mruTabSwitchingCheckbox.state == .on
+            $0.closeButtonVisibility = closeButtonVisibilityCheckbox.state == .on
+                ? .activeAndHover : .always
         }
     }
 
