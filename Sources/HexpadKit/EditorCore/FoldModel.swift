@@ -208,6 +208,13 @@ public struct FoldModel {
     /// nested ranges that start at the same offset.
     public let foldableRanges: [FoldRange]
 
+    /// Nesting depth of every foldable range.
+    ///
+    /// A top-level fold has depth 1; a fold directly inside it has depth 2,
+    /// and so on. Depth is derived at build time from containment, because
+    /// ``FoldRange`` is just a span and its kind does not record nesting.
+    public let foldDepths: [FoldRange: Int]
+
     /// Collapsed ranges, persisted independently of `foldableRanges`.
     public private(set) var foldState: FoldState
 
@@ -223,6 +230,7 @@ public struct FoldModel {
             definition: definition,
             configuration: configuration
         )
+        self.foldDepths = FoldModel.computeFoldDepths(for: self.foldableRanges)
         self.foldState = foldState
     }
 
@@ -248,6 +256,41 @@ public struct FoldModel {
     /// which is the one a gutter marker normally represents.
     public func foldableRange(startingAtLine line: Int) -> FoldRange? {
         foldableRanges.first { lineNumber(of: $0.location) == line }
+    }
+
+    /// Nesting depth of `fold`: 1 for a top-level fold, 2 when directly inside
+    /// another fold, and so on.
+    public func depth(of fold: FoldRange) -> Int? {
+        foldDepths[fold]
+    }
+
+    /// Every foldable range at `depth`, in model order.
+    public func foldableRanges(atDepth depth: Int) -> [FoldRange] {
+        guard depth > 0 else { return [] }
+        return foldableRanges.filter { foldDepths[$0] == depth }
+    }
+
+    /// The innermost foldable range whose lines include the caret line.
+    ///
+    /// Containment is line-based so a caret anywhere on a construct's opening
+    /// line (including before the brace) targets that construct. The deepest
+    /// range wins; equal depths fall back to the shorter span. Returns `nil`
+    /// when the caret line is not inside any foldable range.
+    public func innermostFoldableRange(containing selection: NSRange) -> FoldRange? {
+        guard !foldableRanges.isEmpty else { return nil }
+        let caretLine = lineNumber(of: max(0, selection.location))
+        return foldableRanges
+            .filter { fold in
+                let firstLine = lineNumber(of: fold.location)
+                let lastLine = lineNumber(of: max(fold.location, fold.upperBound - 1))
+                return firstLine <= caretLine && caretLine <= lastLine
+            }
+            .max { lhs, rhs in
+                let lhsDepth = foldDepths[lhs] ?? 0
+                let rhsDepth = foldDepths[rhs] ?? 0
+                if lhsDepth != rhsDepth { return lhsDepth < rhsDepth }
+                return lhs.length > rhs.length
+            }
     }
 
     /// Collapses `fold`.
@@ -303,6 +346,62 @@ public struct FoldModel {
     public mutating func unfoldAll() -> Int {
         let removed = foldState.count
         foldState.removeAll()
+        return removed
+    }
+
+    /// Collapses the innermost foldable range containing the caret line.
+    ///
+    /// This is the "Fold Current Level" operation: repeated invocations on the
+    /// same caret line walk outward only because collapsing the innermost range
+    /// hides its contents, and the caret stays on the visible opening line.
+    /// Toggle semantics (a single N++ preference) are deliberately not folded
+    /// into this command; Fold and Unfold are separate commands.
+    ///
+    /// - Returns: `true` when an expanded range was collapsed.
+    @discardableResult
+    public mutating func foldCurrentLevel(selection: NSRange) -> Bool {
+        guard let target = innermostFoldableRange(containing: selection) else { return false }
+        return fold(target)
+    }
+
+    /// Expands the innermost foldable range containing the caret line.
+    ///
+    /// - Returns: `true` when a collapsed range was expanded.
+    @discardableResult
+    public mutating func unfoldCurrentLevel(selection: NSRange) -> Bool {
+        guard let target = innermostFoldableRange(containing: selection) else { return false }
+        return unfold(target)
+    }
+
+    /// Collapses every foldable range at `depth` (1-based).
+    ///
+    /// Only ranges at exactly that nesting depth are touched. Folding a nested
+    /// level while its ancestors are expanded is harmless: the nested range is
+    /// already marked collapsed and becomes visible as soon as an ancestor opens.
+    ///
+    /// - Returns: The number of ranges newly added to the collapsed set.
+    @discardableResult
+    public mutating func foldLevel(_ depth: Int) -> Int {
+        guard depth > 0 else { return 0 }
+        let before = foldState.count
+        for fold in foldableRanges where foldDepths[fold] == depth {
+            foldState.insert(fold)
+        }
+        return foldState.count - before
+    }
+
+    /// Expands every collapsed range at `depth` (1-based).
+    ///
+    /// - Returns: The number of ranges removed from the collapsed set.
+    @discardableResult
+    public mutating func unfoldLevel(_ depth: Int) -> Int {
+        guard depth > 0 else { return 0 }
+        var removed = 0
+        for fold in foldableRanges where foldDepths[fold] == depth {
+            if foldState.remove(fold) {
+                removed += 1
+            }
+        }
         return removed
     }
 
@@ -366,6 +465,27 @@ public struct FoldModel {
 
     private func lineNumber(of location: Int) -> Int {
         GutterGeometry.logicalLine(of: location, in: text)
+    }
+
+    /// Depth of each range = 1 + the number of ranges that strictly contain it.
+    ///
+    /// Ranges nest or are disjoint (fold construction is stack based), so no
+    /// partial overlaps complicate the count. Equal spans are the same fold.
+    private static func computeFoldDepths(for ranges: [FoldRange]) -> [FoldRange: Int] {
+        var depths: [FoldRange: Int] = [:]
+        depths.reserveCapacity(ranges.count)
+        for fold in ranges {
+            var depth = 1
+            for other in ranges where other != fold {
+                if other.location <= fold.location,
+                   other.upperBound >= fold.upperBound,
+                   other.length > fold.length {
+                    depth += 1
+                }
+            }
+            depths[fold] = depth
+        }
+        return depths
     }
 
     private static func computeFoldableRanges(in text: String,

@@ -551,7 +551,12 @@ final class CommandRegistryTests: XCTestCase {
             "remove-duplicate-lines", "remove-blank-lines"
         ])
         XCTAssertEqual(registry.viewCommands.map(\.identifier), [
-            "fold-all", "unfold-all", "toggle-word-wrap"
+            "fold-all", "unfold-all", "fold-current-level", "unfold-current-level",
+            "fold-level-1", "fold-level-2", "fold-level-3", "fold-level-4",
+            "fold-level-5", "fold-level-6", "fold-level-7", "fold-level-8",
+            "unfold-level-1", "unfold-level-2", "unfold-level-3", "unfold-level-4",
+            "unfold-level-5", "unfold-level-6", "unfold-level-7", "unfold-level-8",
+            "toggle-word-wrap"
         ])
         XCTAssertNotNil(registry.command(for: "hash-md5"))
         XCTAssertNotNil(registry.command(for: "insert-datetime"))
@@ -722,8 +727,27 @@ final class CommandRegistryTests: XCTestCase {
         let context = EditorCommandContext()
         XCTAssertTrue(context.isEmpty)
         XCTAssertEqual(CommandRegistry.default.executeView("fold-all", context: context), false)
+        XCTAssertEqual(CommandRegistry.default.executeView("fold-current-level", context: context), false)
+        XCTAssertEqual(CommandRegistry.default.executeView("fold-level-1", context: context), false)
+        XCTAssertEqual(CommandRegistry.default.executeView("unfold-level-8", context: context), false)
         XCTAssertNil(CommandRegistry.default.executeView("duplicate-line", context: context))
         XCTAssertNil(CommandRegistry.default.executeView("not-a-command", context: context))
+    }
+
+    func testFoldLevelCommandsForwardTheirDepthToTheHooks() {
+        var calls: [String] = []
+        let context = EditorCommandContext(
+            foldCurrentLevel: { calls.append("fold-current"); return true },
+            unfoldCurrentLevel: { calls.append("unfold-current"); return true },
+            foldLevel: { calls.append("fold-\($0)"); return true },
+            unfoldLevel: { calls.append("unfold-\($0)"); return true }
+        )
+
+        XCTAssertEqual(CommandRegistry.default.executeView("fold-current-level", context: context), true)
+        XCTAssertEqual(CommandRegistry.default.executeView("unfold-current-level", context: context), true)
+        XCTAssertEqual(CommandRegistry.default.executeView("fold-level-3", context: context), true)
+        XCTAssertEqual(CommandRegistry.default.executeView("unfold-level-7", context: context), true)
+        XCTAssertEqual(calls, ["fold-current", "unfold-current", "fold-3", "unfold-7"])
     }
 
     func testViewCommandsAreRecordedButReplaySkipsThemInPureTextReplay() {

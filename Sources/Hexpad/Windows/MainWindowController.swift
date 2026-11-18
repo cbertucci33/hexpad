@@ -2582,6 +2582,50 @@ class MainWindowController: NSViewController {
         performCommand(identifier: "unfold-all")
     }
 
+    /// View > Fold Current Level. Targets the innermost fold containing the
+    /// caret line; separate from Unfold Current Level (no toggle preference).
+    @objc func foldCurrentLevel(_ sender: Any?) {
+        performCommand(identifier: "fold-current-level")
+    }
+
+    /// View > Unfold Current Level. The inverse of Fold Current Level.
+    @objc func unfoldCurrentLevel(_ sender: Any?) {
+        performCommand(identifier: "unfold-current-level")
+    }
+
+    /// View > Fold Level > Fold Level 1...8. The menu item's tag carries the
+    /// 1-based nesting depth, like the tab-colour items.
+    @objc func foldLevel(_ sender: NSMenuItem) {
+        guard (1...8).contains(sender.tag) else { return }
+        performCommand(identifier: "fold-level-\(sender.tag)")
+    }
+
+    /// View > Unfold Level > Unfold Level 1...8. The tag carries the depth.
+    @objc func unfoldLevel(_ sender: NSMenuItem) {
+        guard (1...8).contains(sender.tag) else { return }
+        performCommand(identifier: "unfold-level-\(sender.tag)")
+    }
+
+    /// Every fold-level command requires an open document with at least one
+    /// foldable range, matching Fold All. The level commands validate the same
+    /// way whether or not that depth currently exists: depth is cheap to ask
+    /// for and the action is a no-op when the document has no such level.
+    func canFoldCurrentLevel() -> Bool {
+        canFoldAll()
+    }
+
+    func canUnfoldCurrentLevel() -> Bool {
+        canFoldAll()
+    }
+
+    func canFoldLevel(_ depth: Int) -> Bool {
+        (1...8).contains(depth) && canFoldAll()
+    }
+
+    func canUnfoldLevel(_ depth: Int) -> Bool {
+        (1...8).contains(depth) && canFoldAll()
+    }
+
     /// Both fold-all commands require an open document with at least one
     /// foldable range; plain text has nothing to collapse or expand.
     func canFoldAll() -> Bool {
@@ -2833,9 +2877,26 @@ class MainWindowController: NSViewController {
         switch identifier {
         case "fold-all": return canFoldAll()
         case "unfold-all": return canUnfoldAll()
+        case "fold-current-level": return canFoldCurrentLevel()
+        case "unfold-current-level": return canUnfoldCurrentLevel()
         case "toggle-word-wrap": return editorContainer != nil
-        default: return false
+        default:
+            if let depth = levelCommandDepth(identifier, prefix: "fold-level-") {
+                return canFoldLevel(depth)
+            }
+            if let depth = levelCommandDepth(identifier, prefix: "unfold-level-") {
+                return canUnfoldLevel(depth)
+            }
+            return false
         }
+    }
+
+    /// The 1-based depth encoded in a fold/unfold level command identifier.
+    private func levelCommandDepth(_ identifier: String, prefix: String) -> Int? {
+        guard identifier.hasPrefix(prefix),
+              let depth = Int(identifier.dropFirst(prefix.count)),
+              (1...8).contains(depth) else { return nil }
+        return depth
     }
 
     /// Applicability for the Search > token style commands, or `nil` when
@@ -2941,7 +3002,11 @@ class MainWindowController: NSViewController {
         EditorCommandContext(
             foldAll: { editor.foldAll() > 0 },
             unfoldAll: { editor.unfoldAll() > 0 },
-            toggleWordWrap: { editor.setWordWrapEnabled(!editor.isWordWrapEnabled) }
+            toggleWordWrap: { editor.setWordWrapEnabled(!editor.isWordWrapEnabled) },
+            foldCurrentLevel: { editor.foldCurrentLevel() },
+            unfoldCurrentLevel: { editor.unfoldCurrentLevel() },
+            foldLevel: { editor.foldLevel($0) > 0 },
+            unfoldLevel: { editor.unfoldLevel($0) > 0 }
         )
     }
 
@@ -3558,6 +3623,18 @@ extension MainWindowController: NSMenuItemValidation {
         }
         if menuItem.action == #selector(MainWindowController.unfoldAll(_:)) {
             return canUnfoldAll()
+        }
+        if menuItem.action == #selector(MainWindowController.foldCurrentLevel(_:)) {
+            return canFoldCurrentLevel()
+        }
+        if menuItem.action == #selector(MainWindowController.unfoldCurrentLevel(_:)) {
+            return canUnfoldCurrentLevel()
+        }
+        if menuItem.action == #selector(MainWindowController.foldLevel(_:)) {
+            return canFoldLevel(menuItem.tag)
+        }
+        if menuItem.action == #selector(MainWindowController.unfoldLevel(_:)) {
+            return canUnfoldLevel(menuItem.tag)
         }
         if menuItem.action == #selector(MainWindowController.hideLines(_:)) {
             return canHideLines()

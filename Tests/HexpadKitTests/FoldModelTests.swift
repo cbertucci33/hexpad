@@ -195,6 +195,104 @@ final class FoldModelTests: XCTestCase {
         XCTAssertEqual(model.unfoldAll(), 0)
     }
 
+    // MARK: - Fold levels
+
+    /// A Python-style fixture: three brace-delimited blocks nested one inside
+    /// the next, so their depths are exactly 1, 2 and 3.
+    private var nestedText: String {
+        """
+        function outer() {
+            function inner() {
+                if (flag) {
+                    work();
+                }
+                return 1;
+            }
+            return 2;
+        }
+        """
+    }
+
+    func testFoldDepthsFollowContainment() {
+        let model = FoldModel(text: nestedText, definition: definition(brackets: allBrackets))
+
+        XCTAssertEqual(model.foldableRanges.count, 3)
+        XCTAssertEqual(model.foldableRanges.map { model.depth(of: $0) }, [1, 2, 3])
+        XCTAssertEqual(model.foldableRanges(atDepth: 1), [model.foldableRanges[0]])
+        XCTAssertEqual(model.foldableRanges(atDepth: 2), [model.foldableRanges[1]])
+        XCTAssertEqual(model.foldableRanges(atDepth: 3), [model.foldableRanges[2]])
+        XCTAssertTrue(model.foldableRanges(atDepth: 4).isEmpty)
+        XCTAssertTrue(model.foldableRanges(atDepth: 0).isEmpty)
+    }
+
+    func testFoldCurrentLevelTargetsTheInnermostRangeContainingTheCaretLine() {
+        let text = nestedText
+        var model = FoldModel(text: text, definition: definition(brackets: allBrackets))
+        let outer = model.foldableRanges[0]
+        let inner = model.foldableRanges[1]
+        let ifBody = model.foldableRanges[2]
+
+        // Caret on the "function inner():" line is inside both the outer and inner
+        // blocks; the innermost (depth 2) wins.
+        let innerLine = offset(of: "function inner", in: text)
+        XCTAssertEqual(model.innermostFoldableRange(containing: NSRange(location: innerLine, length: 0)),
+                       inner)
+        XCTAssertTrue(model.foldCurrentLevel(selection: NSRange(location: innerLine, length: 0)))
+        XCTAssertEqual(model.collapsedRanges, [inner])
+
+        // Unfold is the exact inverse and leaves the other levels alone.
+        XCTAssertTrue(model.unfoldCurrentLevel(selection: NSRange(location: innerLine, length: 0)))
+        XCTAssertTrue(model.collapsedRanges.isEmpty)
+        XCTAssertFalse(model.unfoldCurrentLevel(selection: NSRange(location: innerLine, length: 0)),
+                       "already expanded")
+
+        // Caret on the "if (flag):" line reaches depth 3.
+        let flagLine = offset(of: "if (flag)", in: text)
+        XCTAssertTrue(model.foldCurrentLevel(selection: NSRange(location: flagLine, length: 0)))
+        XCTAssertEqual(model.collapsedRanges, [ifBody])
+
+        // Caret on the outer header line reaches only depth 1.
+        let outerLine = offset(of: "function outer", in: text)
+        XCTAssertTrue(model.foldCurrentLevel(selection: NSRange(location: outerLine, length: 0)))
+        XCTAssertEqual(model.collapsedRanges, [ifBody, outer])
+    }
+
+    func testFoldCurrentLevelWithoutAFoldableRangeIsANoOp() {
+        var model = FoldModel(text: "plain\ntext", definition: definition(brackets: allBrackets))
+        XCTAssertNil(model.innermostFoldableRange(containing: NSRange(location: 0, length: 0)))
+        XCTAssertFalse(model.foldCurrentLevel(selection: NSRange(location: 0, length: 0)))
+        XCTAssertFalse(model.unfoldCurrentLevel(selection: NSRange(location: 0, length: 0)))
+        XCTAssertTrue(model.collapsedRanges.isEmpty)
+    }
+
+    func testFoldAndUnfoldLevelOnlyTouchTheirDepth() {
+        var model = FoldModel(text: nestedText, definition: definition(brackets: allBrackets))
+        let outer = model.foldableRanges[0]
+        let inner = model.foldableRanges[1]
+        let ifBody = model.foldableRanges[2]
+
+        XCTAssertEqual(model.foldLevel(2), 1)
+        XCTAssertEqual(model.collapsedRanges, [inner])
+        XCTAssertEqual(model.foldLevel(2), 0, "already collapsed")
+
+        XCTAssertEqual(model.foldLevel(1), 1)
+        XCTAssertEqual(model.foldLevel(3), 1)
+        XCTAssertEqual(model.collapsedRanges, [outer, inner, ifBody])
+
+        XCTAssertEqual(model.unfoldLevel(2), 1)
+        XCTAssertEqual(model.collapsedRanges, [outer, ifBody])
+        XCTAssertEqual(model.unfoldLevel(2), 0)
+        XCTAssertEqual(model.unfoldLevel(1), 1)
+        XCTAssertEqual(model.unfoldLevel(3), 1)
+        XCTAssertTrue(model.collapsedRanges.isEmpty)
+
+        // Out-of-range depths are no-ops rather than traps.
+        XCTAssertEqual(model.foldLevel(0), 0)
+        XCTAssertEqual(model.foldLevel(9), 0)
+        XCTAssertEqual(model.unfoldLevel(0), 0)
+        XCTAssertEqual(model.unfoldLevel(9), 0)
+    }
+
     // MARK: - Visibility
 
     func testVisibilityMappingForOneFold() {

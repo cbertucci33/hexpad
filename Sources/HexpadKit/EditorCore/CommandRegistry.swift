@@ -51,20 +51,46 @@ public struct EditorCommandContext {
     /// Expand every collapsed range. Returns `true` when folds changed.
     public var unfoldAll: (() -> Bool)?
 
+    /// Collapse the innermost fold containing the caret line. Returns `true`
+    /// when a fold changed.
+    public var foldCurrentLevel: (() -> Bool)?
+
+    /// Expand the innermost fold containing the caret line. Returns `true`
+    /// when a fold changed.
+    public var unfoldCurrentLevel: (() -> Bool)?
+
+    /// Collapse every fold at the given 1-based nesting depth. Returns `true`
+    /// when folds changed.
+    public var foldLevel: ((Int) -> Bool)?
+
+    /// Expand every fold at the given 1-based nesting depth. Returns `true`
+    /// when folds changed.
+    public var unfoldLevel: ((Int) -> Bool)?
+
     /// Toggle soft wrapping. Returns `true` when the wrap mode changed.
     public var toggleWordWrap: (() -> Bool)?
 
     public init(foldAll: (() -> Bool)? = nil,
                 unfoldAll: (() -> Bool)? = nil,
-                toggleWordWrap: (() -> Bool)? = nil) {
+                toggleWordWrap: (() -> Bool)? = nil,
+                foldCurrentLevel: (() -> Bool)? = nil,
+                unfoldCurrentLevel: (() -> Bool)? = nil,
+                foldLevel: ((Int) -> Bool)? = nil,
+                unfoldLevel: ((Int) -> Bool)? = nil) {
         self.foldAll = foldAll
         self.unfoldAll = unfoldAll
         self.toggleWordWrap = toggleWordWrap
+        self.foldCurrentLevel = foldCurrentLevel
+        self.unfoldCurrentLevel = unfoldCurrentLevel
+        self.foldLevel = foldLevel
+        self.unfoldLevel = unfoldLevel
     }
 
     /// Whether this context provides any view hook at all.
     public var isEmpty: Bool {
         foldAll == nil && unfoldAll == nil && toggleWordWrap == nil
+            && foldCurrentLevel == nil && unfoldCurrentLevel == nil
+            && foldLevel == nil && unfoldLevel == nil
     }
 }
 
@@ -691,17 +717,34 @@ public struct CommandRegistry {
     /// exactly like any other command, but pure text replay reports them as
     /// unchanged because view state is not part of ``DocumentState``.
     public static func defaultViewCommands() -> [EditorCommand] {
-        [
+        var commands: [EditorCommand] = [
             EditorCommand(identifier: "fold-all",
                           title: "Fold All",
                           viewExecute: { $0.foldAll?() ?? false }),
             EditorCommand(identifier: "unfold-all",
                           title: "Unfold All",
                           viewExecute: { $0.unfoldAll?() ?? false }),
-            EditorCommand(identifier: "toggle-word-wrap",
-                          title: "Word Wrap",
-                          viewExecute: { $0.toggleWordWrap?() ?? false })
+            EditorCommand(identifier: "fold-current-level",
+                          title: "Fold Current Level",
+                          viewExecute: { $0.foldCurrentLevel?() ?? false }),
+            EditorCommand(identifier: "unfold-current-level",
+                          title: "Unfold Current Level",
+                          viewExecute: { $0.unfoldCurrentLevel?() ?? false })
         ]
+        for level in 1...8 {
+            commands.append(EditorCommand(identifier: "fold-level-\(level)",
+                                          title: "Fold Level \(level)",
+                                          viewExecute: { $0.foldLevel?(level) ?? false }))
+        }
+        for level in 1...8 {
+            commands.append(EditorCommand(identifier: "unfold-level-\(level)",
+                                          title: "Unfold Level \(level)",
+                                          viewExecute: { $0.unfoldLevel?(level) ?? false }))
+        }
+        commands.append(EditorCommand(identifier: "toggle-word-wrap",
+                                      title: "Word Wrap",
+                                      viewExecute: { $0.toggleWordWrap?() ?? false }))
+        return commands
     }
 
     /// The Search > token style commands, in Notepad++ menu order.

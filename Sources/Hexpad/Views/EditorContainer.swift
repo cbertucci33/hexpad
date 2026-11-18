@@ -89,6 +89,10 @@ class EditorContainer: NSView {
     /// Set when a text edit changed the document under the current model and
     /// the foldable ranges need recomputing before markers are next drawn.
     private var foldModelIsStale = false
+    /// False until the first rebuild for the current binding; a rebuild that
+    /// legitimately produces nil (plain text) leaves this true so the lazy
+    /// refresh above does not re-trigger on every access.
+    private var foldModelBuilt = false
 
     /// Number of times the fold model has been rebuilt for the bound document.
     /// Diagnostic/test hook: an edit must mark the model stale without paying
@@ -955,6 +959,58 @@ class EditorContainer: NSView {
         return changed
     }
 
+    /// Collapses the innermost fold containing the caret line of the selected
+    /// document.
+    ///
+    /// - Returns: `true` when an expanded range was collapsed.
+    @discardableResult
+    func foldCurrentLevel() -> Bool {
+        refreshFoldModelIfStale()
+        guard var model = foldModel,
+              model.foldCurrentLevel(selection: textView.selectedRange) else { return false }
+        adoptFoldStateAndRedraw(model)
+        return true
+    }
+
+    /// Expands the innermost fold containing the caret line of the selected
+    /// document.
+    ///
+    /// - Returns: `true` when a collapsed range was expanded.
+    @discardableResult
+    func unfoldCurrentLevel() -> Bool {
+        refreshFoldModelIfStale()
+        guard var model = foldModel,
+              model.unfoldCurrentLevel(selection: textView.selectedRange) else { return false }
+        adoptFoldStateAndRedraw(model)
+        return true
+    }
+
+    /// Collapses every fold at `depth` (1-based) in the bound document.
+    ///
+    /// - Returns: The number of ranges newly collapsed.
+    @discardableResult
+    func foldLevel(_ depth: Int) -> Int {
+        refreshFoldModelIfStale()
+        guard var model = foldModel else { return 0 }
+        let changed = model.foldLevel(depth)
+        guard changed > 0 else { return 0 }
+        adoptFoldStateAndRedraw(model)
+        return changed
+    }
+
+    /// Expands every fold at `depth` (1-based) in the bound document.
+    ///
+    /// - Returns: The number of ranges newly expanded.
+    @discardableResult
+    func unfoldLevel(_ depth: Int) -> Int {
+        refreshFoldModelIfStale()
+        guard var model = foldModel else { return 0 }
+        let changed = model.unfoldLevel(depth)
+        guard changed > 0 else { return 0 }
+        adoptFoldStateAndRedraw(model)
+        return changed
+    }
+
     /// Expands every foldable range that contains `location`.
     ///
     /// Navigation uses this to make a target line visible under N++ fold
@@ -1021,6 +1077,7 @@ class EditorContainer: NSView {
         guard let document else {
             foldModel = nil
             foldModelIsStale = false
+            foldModelBuilt = true
             applyFoldVisibility()
             return
         }
@@ -1041,6 +1098,7 @@ class EditorContainer: NSView {
             // structural to fold.
             foldModel = nil
             foldModelIsStale = false
+            foldModelBuilt = true
             applyFoldVisibility()
             return
         }
@@ -1050,6 +1108,7 @@ class EditorContainer: NSView {
                               definition: definition,
                               foldState: state)
         foldModelIsStale = false
+        foldModelBuilt = true
         applyFoldVisibility()
     }
 
@@ -1057,7 +1116,14 @@ class EditorContainer: NSView {
     /// fold gesture actually needs them. Edits made while a fold is collapsed
     /// rebuild eagerly so the hidden ranges stay valid.
     private func refreshFoldModelIfStale() {
-        guard foldModelIsStale, let document = boundDocument else { return }
+        // A bound document with no cached model is effectively stale too —
+        // UNLESS the model was already built and is legitimately nil (plain
+        // text): rebuildFoldModel clears the stale flag after building, so
+        // foldModelBuilt distinguishes "never built" (lazy) from "built, empty"
+        // (terminal) and keeps the nil path from recursing through
+        // applyFoldVisibility -> foldModel getter -> here.
+        guard foldModelIsStale || (cachedFoldModel == nil && !foldModelBuilt),
+              let document = boundDocument else { return }
         rebuildFoldModel(for: document)
     }
 
@@ -1399,7 +1465,14 @@ class EditorContainer: NSView {
             applyHiddenLineVisibility()
         }
 
-        guard let model = cachedFoldModel else { return }
+        guard let model = cachedFoldModel else {
+            // Plain-text binding (nil model, built=true): the edit may have
+            // introduced foldable structure, so the model must rebuild on next
+            // access. Without this, text that BECOMES foldable is invisible to
+            // fold commands until an unrelated rebuild happens.
+            foldModelIsStale = true
+            return
+        }
 
         guard !model.foldState.isEmpty else {
             // No fold is collapsed, so visibility cannot change. Defer the

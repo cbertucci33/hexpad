@@ -47,6 +47,47 @@ extension HexpadAppDelegate {
             unfoldAllItem.keyEquivalent = binding.keyEquivalent
             unfoldAllItem.keyEquivalentModifierMask = binding.modifierMask
         }
+        // V19b fold-level commands. N++ groups them under Fold All/Unfold All;
+        // on macOS they sit next to the existing pair. All are nil-targeted so
+        // MainWindowController disables them without a foldable document.
+        // Current Level targets the innermost fold containing the caret line.
+        let foldCurrentLevelItem = NSMenuItem(title: "Fold Current Level",
+                                              action: #selector(MainWindowController.foldCurrentLevel(_:)),
+                                              keyEquivalent: "")
+        foldCurrentLevelItem.target = nil
+        configureFoldCommandItem(foldCurrentLevelItem, identifier: "fold-current-level")
+        let unfoldCurrentLevelItem = NSMenuItem(title: "Unfold Current Level",
+                                                action: #selector(MainWindowController.unfoldCurrentLevel(_:)),
+                                                keyEquivalent: "")
+        unfoldCurrentLevelItem.target = nil
+        configureFoldCommandItem(unfoldCurrentLevelItem, identifier: "unfold-current-level")
+        // Fold Level 1...8 and Unfold Level 1...8 are submenus. The tag on each
+        // leaf is the 1-based nesting depth the controller forwards to the
+        // registry (`fold-level-1` ... `fold-level-8`).
+        let foldLevelItem = NSMenuItem(title: "Fold Level", action: nil, keyEquivalent: "")
+        let foldLevelMenu = NSMenu(title: "Fold Level")
+        for level in 1...8 {
+            let item = NSMenuItem(title: "Fold Level \(level)",
+                                  action: #selector(MainWindowController.foldLevel(_:)),
+                                  keyEquivalent: "")
+            item.tag = level
+            item.target = nil
+            configureFoldCommandItem(item, identifier: "fold-level-\(level)")
+            foldLevelMenu.addItem(item)
+        }
+        foldLevelItem.submenu = foldLevelMenu
+        let unfoldLevelItem = NSMenuItem(title: "Unfold Level", action: nil, keyEquivalent: "")
+        let unfoldLevelMenu = NSMenu(title: "Unfold Level")
+        for level in 1...8 {
+            let item = NSMenuItem(title: "Unfold Level \(level)",
+                                  action: #selector(MainWindowController.unfoldLevel(_:)),
+                                  keyEquivalent: "")
+            item.tag = level
+            item.target = nil
+            configureFoldCommandItem(item, identifier: "unfold-level-\(level)")
+            unfoldLevelMenu.addItem(item)
+        }
+        unfoldLevelItem.submenu = unfoldLevelMenu
         let zoomInItem = NSMenuItem(title: "Zoom In", action: #selector(zoomIn), keyEquivalent: "+")
         zoomInItem.target = self
         let zoomOutItem = NSMenuItem(title: "Zoom Out", action: #selector(zoomOut), keyEquivalent: "-")
@@ -116,6 +157,10 @@ extension HexpadAppDelegate {
         viewMenu.addItem(.separator())
         viewMenu.addItem(foldAllItem)
         viewMenu.addItem(unfoldAllItem)
+        viewMenu.addItem(foldCurrentLevelItem)
+        viewMenu.addItem(unfoldCurrentLevelItem)
+        viewMenu.addItem(foldLevelItem)
+        viewMenu.addItem(unfoldLevelItem)
         // Notepad++'s Hide Lines / Unhide Lines. Both nil-targeted so the
         // controller disables Unhide when nothing is hidden and Hide when no
         // document is open.
@@ -267,6 +312,17 @@ extension HexpadAppDelegate {
         viewMenu.addItem(.separator())
         viewMenu.addItem(appearanceItem)
         return viewMenu
+    }
+
+    /// Marks a fold-level menu leaf as a registry command and applies a saved
+    /// keybinding override, if any. The selector and nil target stay stable so
+    /// validation reaches MainWindowController.
+    private func configureFoldCommandItem(_ item: NSMenuItem, identifier: String) {
+        item.representedObject = identifier
+        if let binding = KeybindingStore.resolvedBinding(for: identifier) {
+            item.keyEquivalent = binding.keyEquivalent
+            item.keyEquivalentModifierMask = binding.modifierMask
+        }
     }
 
     /// Ordinal labels for the nine numbered tab items ("1st"…"9th").

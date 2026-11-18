@@ -926,9 +926,10 @@ extension MenuWiringTests {
         XCTAssertEqual(unhide.action, #selector(MainWindowController.unhideLines(_:)))
         XCTAssertNil(unhide.target)
 
-        // Both sit with the folding commands, before the zoom block.
+        // Both sit with the folding commands, after the fold-level group and
+        // before the zoom block.
         let titles = viewMenu.items.map(\.title)
-        let fold = try XCTUnwrap(titles.firstIndex(of: "Unfold All"))
+        let fold = try XCTUnwrap(titles.firstIndex(of: "Unfold Level"))
         XCTAssertEqual(Array(titles[(fold + 1)...(fold + 2)]), ["Hide Lines", "Unhide Lines"])
     }
 
@@ -1391,5 +1392,148 @@ extension MenuWiringTests {
         XCTAssertEqual(distractionFree.state, .on)
         XCTAssertTrue(controller.validateMenuItem(postIt))
         XCTAssertEqual(postIt.state, .off, "entering one mode clears the other's checkmark")
+    }
+}
+
+// MARK: - V19b: Fold Current Level / Fold Level 1...8
+
+extension MenuWiringTests {
+
+    private func foldCommandMenu() throws -> NSMenu {
+        let menu = HexpadAppDelegate().buildMainMenu()
+        let viewMenu = try XCTUnwrap(menu.item(withTitle: "View")?.submenu)
+        return viewMenu
+    }
+
+    func testViewMenuHasFoldCurrentLevelItems() throws {
+        let viewMenu = try foldCommandMenu()
+
+        let foldCurrent = try XCTUnwrap(viewMenu.item(withTitle: "Fold Current Level"))
+        XCTAssertEqual(foldCurrent.representedObject as? String, "fold-current-level")
+        XCTAssertEqual(foldCurrent.action, #selector(MainWindowController.foldCurrentLevel(_:)))
+        XCTAssertNil(foldCurrent.target, "validation reaches the controller through the responder chain")
+
+        let unfoldCurrent = try XCTUnwrap(viewMenu.item(withTitle: "Unfold Current Level"))
+        XCTAssertEqual(unfoldCurrent.representedObject as? String, "unfold-current-level")
+        XCTAssertEqual(unfoldCurrent.action, #selector(MainWindowController.unfoldCurrentLevel(_:)))
+        XCTAssertNil(unfoldCurrent.target)
+    }
+
+    func testViewMenuHasFoldAndUnfoldLevelSubmenusWithAllEightLevels() throws {
+        let viewMenu = try foldCommandMenu()
+
+        let foldLevel = try XCTUnwrap(viewMenu.item(withTitle: "Fold Level"))
+        let foldMenu = try XCTUnwrap(foldLevel.submenu)
+        XCTAssertEqual(foldMenu.items.map(\.title), (1...8).map { "Fold Level \($0)" })
+        for (offset, level) in (1...8).enumerated() {
+            let item = foldMenu.items[offset]
+            XCTAssertEqual(item.tag, level)
+            XCTAssertEqual(item.representedObject as? String, "fold-level-\(level)")
+            XCTAssertEqual(item.action, #selector(MainWindowController.foldLevel(_:)))
+            XCTAssertNil(item.target)
+            XCTAssertEqual(item.keyEquivalent, "", "level commands are menu-only by default")
+        }
+
+        let unfoldLevel = try XCTUnwrap(viewMenu.item(withTitle: "Unfold Level"))
+        let unfoldMenu = try XCTUnwrap(unfoldLevel.submenu)
+        XCTAssertEqual(unfoldMenu.items.map(\.title), (1...8).map { "Unfold Level \($0)" })
+        for (offset, level) in (1...8).enumerated() {
+            let item = unfoldMenu.items[offset]
+            XCTAssertEqual(item.tag, level)
+            XCTAssertEqual(item.representedObject as? String, "unfold-level-\(level)")
+            XCTAssertEqual(item.action, #selector(MainWindowController.unfoldLevel(_:)))
+            XCTAssertNil(item.target)
+        }
+    }
+
+    /// All 18 new identifiers are registry commands, so menus, macros and the
+    /// validation path agree on their names.
+    func testFoldLevelMenuIdentifiersAreRegisteredCommands() throws {
+        let registry = CommandRegistry.default
+        let identifiers = ["fold-current-level", "unfold-current-level"]
+            + (1...8).map { "fold-level-\($0)" }
+            + (1...8).map { "unfold-level-\($0)" }
+
+        XCTAssertEqual(identifiers.count, 18)
+        for identifier in identifiers {
+            XCTAssertNotNil(registry.command(for: identifier), identifier)
+        }
+
+        let viewMenu = try foldCommandMenu()
+        let represented = viewMenu.items.compactMap { $0.representedObject as? String }
+            + viewMenu.items.flatMap { $0.submenu?.items.compactMap { $0.representedObject as? String } ?? [] }
+        for identifier in identifiers {
+            XCTAssertTrue(represented.contains(identifier), identifier)
+        }
+    }
+
+    /// Fold-level commands follow Fold All's validation: enabled only with an
+    /// open document that has at least one foldable range.
+    func testFoldLevelCommandsValidateLikeFoldAll() throws {
+        let (controller, _) = makeController()
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+
+        func item(_ action: Selector, tag: Int = 0) -> NSMenuItem {
+            let created = NSMenuItem(title: "", action: action, keyEquivalent: "")
+            created.tag = tag
+            return created
+        }
+
+        let current = item(#selector(MainWindowController.foldCurrentLevel(_:)))
+        let unfoldCurrent = item(#selector(MainWindowController.unfoldCurrentLevel(_:)))
+        let level2 = item(#selector(MainWindowController.foldLevel(_:)), tag: 2)
+        let unfold4 = item(#selector(MainWindowController.unfoldLevel(_:)), tag: 4)
+
+        doc.setLanguage(Language.swift.rawValue)
+        doc.replaceAllText(with: "outer {\n    inner {\n        x\n    }\n}\n")
+        controller.updateEditor()
+
+        XCTAssertTrue(controller.validateMenuItem(current))
+        XCTAssertTrue(controller.validateMenuItem(unfoldCurrent))
+        XCTAssertTrue(controller.validateMenuItem(level2))
+        XCTAssertTrue(controller.validateMenuItem(unfold4))
+
+        doc.replaceAllText(with: "plain text")
+        XCTAssertFalse(controller.validateMenuItem(current), "no foldable ranges")
+        XCTAssertFalse(controller.validateMenuItem(level2))
+
+        // No document at all disables every fold-level item.
+        doc.replaceAllText(with: "outer {\n    x\n}\n")
+        controller.tabStore.documents.removeAll()
+        XCTAssertFalse(controller.validateMenuItem(current))
+        XCTAssertFalse(controller.validateMenuItem(level2))
+    }
+
+    /// The selector routes the item tag to the matching registry identifier
+    /// and folds only that nesting level.
+    func testFoldLevelMenuItemRoutesDepthAndFoldsOnlyThatLevel() throws {
+        let (controller, _) = makeController()
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        let textView = try XCTUnwrap(controller.editorTextView)
+        let text = "outer {\n    inner {\n        x\n    }\n}\n"
+        doc.setLanguage(Language.swift.rawValue)
+        doc.replaceAllText(with: text)
+        controller.updateEditor()
+        textView.setSelectedRange(NSRange(location: 0, length: 0))
+
+        let item = NSMenuItem(title: "Fold Level 2",
+                              action: #selector(MainWindowController.foldLevel(_:)),
+                              keyEquivalent: "")
+        item.tag = 2
+        controller.foldLevel(item)
+
+        let collapsed = doc.foldState.collapsedRanges
+        XCTAssertEqual(collapsed.count, 1, "only the depth-2 fold is collapsed")
+        XCTAssertEqual(collapsed.map(\.location).first,
+                       ((text as NSString).range(of: "inner {").location
+                        + "inner ".utf16.count),
+                       "the fold range starts at the open brace")
+
+        let unfoldItem = NSMenuItem(title: "Unfold Level 2",
+                                    action: #selector(MainWindowController.unfoldLevel(_:)),
+                                    keyEquivalent: "")
+        unfoldItem.tag = 2
+        controller.unfoldLevel(unfoldItem)
+        XCTAssertTrue(doc.foldState.collapsedRanges.isEmpty)
     }
 }
