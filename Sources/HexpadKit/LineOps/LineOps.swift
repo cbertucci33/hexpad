@@ -85,6 +85,90 @@ public struct LineOps {
         return lines.map { $0.hasPrefix(prefix) ? String($0.dropFirst(amount)) : $0 }.joined(separator: "\n")
     }
 
+    // MARK: - N++ Line Operations expansion
+
+    /// Sort lines containing integers by numeric value, ascending.
+    ///
+    /// Lines are compared segment by segment: runs of digits compare by value
+    /// and text runs compare lexically, so `xyz11` follows `xyz9` and an IP
+    /// address is ordered octet by octet. Lines with no digits keep their
+    /// relative order and are placed after every numeric line.
+    public static func sortLinesIntegerAscending(_ text: String) -> String {
+        sortLinesNumerically(text,
+                             ascending: true,
+                             key: integerKey,
+                             compare: compareIntegerKeys)
+    }
+
+    /// Sort lines containing integers by numeric value, descending.
+    ///
+    /// Non-numeric lines still trail the numeric lines (in relative order);
+    /// only the numeric portion is reversed.
+    public static func sortLinesIntegerDescending(_ text: String) -> String {
+        sortLinesNumerically(text,
+                             ascending: false,
+                             key: integerKey,
+                             compare: compareIntegerKeys)
+    }
+
+    /// Sort lines containing decimal numbers by value, ascending.
+    ///
+    /// A decimal key is every signed integer or dot-decimal number on the line,
+    /// so `10.234` sorts after `9.876` while plain integers keep working too.
+    /// Lines with no numbers trail the rest in relative order.
+    public static func sortLinesDecimalAscending(_ text: String) -> String {
+        sortLinesNumerically(text,
+                             ascending: true,
+                             key: decimalKey,
+                             compare: compareDecimalKeys)
+    }
+
+    /// Sort lines containing decimal numbers by value, descending.
+    public static func sortLinesDecimalDescending(_ text: String) -> String {
+        sortLinesNumerically(text,
+                             ascending: false,
+                             key: decimalKey,
+                             compare: compareDecimalKeys)
+    }
+
+    /// Remove only adjacent duplicates, keeping the first line of each run.
+    ///
+    /// Unlike ``removeDuplicates(_:)``, a line reappearing later is preserved.
+    public static func removeConsecutiveDuplicateLines(_ text: String) -> String {
+        let lines = text.components(separatedBy: "\n")
+        var result: [String] = []
+        for line in lines where result.last != line {
+            result.append(line)
+        }
+        return result.joined(separator: "\n")
+    }
+
+    /// Remove empty lines and lines containing only blank characters.
+    ///
+    /// This is Notepad++'s `Remove empty lines (Containing Blank characters)`
+    /// variant. It shares its rule with ``removeBlankLines(_:)`` and is exposed
+    /// separately so the menu can use the N++ name.
+    public static func removeEmptyLinesWithWhitespace(_ text: String) -> String {
+        text.components(separatedBy: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            .joined(separator: "\n")
+    }
+
+    /// Remove spaces and tabs at the end of every line, preserving line count.
+    public static func trimTrailingSpace(_ text: String) -> String {
+        trimmingLines(text, leading: false, trailing: true)
+    }
+
+    /// Remove spaces and tabs at the start of every line, preserving line count.
+    public static func trimLeadingSpace(_ text: String) -> String {
+        trimmingLines(text, leading: true, trailing: false)
+    }
+
+    /// Remove spaces and tabs at both ends of every line, preserving line count.
+    public static func trimLeadingAndTrailingSpace(_ text: String) -> String {
+        trimmingLines(text, leading: true, trailing: true)
+    }
+
     // MARK: - Selection-aware operations
 
     // These operations are pure functions over a document and a UTF-16
@@ -276,6 +360,145 @@ public struct LineOps {
         let insertedText: String
 
         var insertedLength: Int { (insertedText as NSString).length }
+    }
+
+    // MARK: - N++ sort and trim helpers
+
+    /// One alternating run of digits or other characters in a line.
+    private struct NumericSegment {
+        let text: String
+        let isNumeric: Bool
+
+        /// Digit run without leading zeroes, so `0010` compares equal to `10`.
+        var normalizedDigits: String {
+            let significant = text.drop(while: { $0 == "0" })
+            return significant.isEmpty ? "0" : String(significant)
+        }
+    }
+
+    private static func integerSegments(in line: String) -> [NumericSegment] {
+        var segments: [NumericSegment] = []
+        var current = ""
+        var currentIsNumeric = false
+        for character in line {
+            let isDigit = character.isASCII && character.isNumber
+            if current.isEmpty {
+                current = String(character)
+                currentIsNumeric = isDigit
+            } else if isDigit == currentIsNumeric {
+                current.append(character)
+            } else {
+                segments.append(NumericSegment(text: current, isNumeric: currentIsNumeric))
+                current = String(character)
+                currentIsNumeric = isDigit
+            }
+        }
+        if !current.isEmpty {
+            segments.append(NumericSegment(text: current, isNumeric: currentIsNumeric))
+        }
+        return segments
+    }
+
+    /// `nil` marks a line with no integer content; those lines sort last.
+    private static func integerKey(for line: String) -> [NumericSegment]? {
+        let segments = integerSegments(in: line)
+        return segments.contains { $0.isNumeric } ? segments : nil
+    }
+
+    private static func compareIntegerKeys(_ lhs: [NumericSegment],
+                                            _ rhs: [NumericSegment]) -> ComparisonResult {
+        for (left, right) in zip(lhs, rhs) {
+            let result: ComparisonResult
+            if left.isNumeric && right.isNumeric {
+                let l = left.normalizedDigits
+                let r = right.normalizedDigits
+                if l.count != r.count {
+                    result = l.count < r.count ? .orderedAscending : .orderedDescending
+                } else if l == r {
+                    result = .orderedSame
+                } else {
+                    result = l < r ? .orderedAscending : .orderedDescending
+                }
+            } else if left.isNumeric != right.isNumeric {
+                // A text prefix sorts before a numeric one, matching N++.
+                result = left.isNumeric ? .orderedDescending : .orderedAscending
+            } else if left.text == right.text {
+                result = .orderedSame
+            } else {
+                result = left.text < right.text ? .orderedAscending : .orderedDescending
+            }
+            if result != .orderedSame { return result }
+        }
+        if lhs.count == rhs.count { return .orderedSame }
+        return lhs.count < rhs.count ? .orderedAscending : .orderedDescending
+    }
+
+    /// Every signed integer or dot-decimal number found on a line.
+    private static func decimalValues(in line: String) -> [Decimal] {
+        let pattern = "[-+]?[0-9]+(?:\\.[0-9]+)?"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let ns = line as NSString
+        return regex.matches(in: line, range: NSRange(location: 0, length: ns.length))
+            .compactMap { Decimal(string: ns.substring(with: $0.range)) }
+    }
+
+    private static func decimalKey(for line: String) -> [Decimal]? {
+        let values = decimalValues(in: line)
+        return values.isEmpty ? nil : values
+    }
+
+    private static func compareDecimalKeys(_ lhs: [Decimal], _ rhs: [Decimal]) -> ComparisonResult {
+        for (left, right) in zip(lhs, rhs) {
+            if left < right { return .orderedAscending }
+            if left > right { return .orderedDescending }
+        }
+        if lhs.count == rhs.count { return .orderedSame }
+        return lhs.count < rhs.count ? .orderedAscending : .orderedDescending
+    }
+
+    /// Stable numeric driver: lines with a key come first, lines without one
+    /// keep their original order at the end in both directions. Ties also
+    /// keep original order.
+    private static func sortLinesNumerically<Key>(_ text: String,
+                                                   ascending: Bool,
+                                                   key: (String) -> Key?,
+                                                   compare: (Key, Key) -> ComparisonResult) -> String {
+        let lines = text.components(separatedBy: "\n")
+        let keyed = lines.enumerated().map { (index: $0.offset, line: $0.element, key: key($0.element)) }
+        let sorted = keyed.sorted { lhs, rhs in
+            switch (lhs.key, rhs.key) {
+            case (.some, .none):
+                return true
+            case (.none, .some):
+                return false
+            case (.none, .none):
+                return lhs.index < rhs.index
+            case let (.some(lKey), .some(rKey)):
+                let result = compare(lKey, rKey)
+                if result == .orderedSame { return lhs.index < rhs.index }
+                return ascending ? result == .orderedAscending : result == .orderedDescending
+            }
+        }
+        return sorted.map { $0.line }.joined(separator: "\n")
+    }
+
+    /// Trims only spaces and tabs (N++ blank-operation semantics) and never
+    /// removes a line, so empty lines and the final line ending stay intact.
+    private static func trimmingLines(_ text: String, leading: Bool, trailing: Bool) -> String {
+        text.components(separatedBy: "\n").map { line in
+            var result = line
+            if leading {
+                while let first = result.first, first == " " || first == "\t" {
+                    result.removeFirst()
+                }
+            }
+            if trailing {
+                while let last = result.last, last == " " || last == "\t" {
+                    result.removeLast()
+                }
+            }
+            return result
+        }.joined(separator: "\n")
     }
 
     private static func transformCase(_ text: String,

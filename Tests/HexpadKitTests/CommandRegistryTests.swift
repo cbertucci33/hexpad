@@ -602,7 +602,12 @@ final class CommandRegistryTests: XCTestCase {
         ])
         XCTAssertEqual(registry.lineOpCommands.map(\.identifier), [
             "sort-lines-ascending", "sort-lines-descending",
-            "remove-duplicate-lines", "remove-blank-lines"
+            "remove-duplicate-lines", "remove-blank-lines",
+            "reverse-line-order",
+            "sort-lines-integer-ascending", "sort-lines-integer-descending",
+            "sort-lines-decimal-ascending", "sort-lines-decimal-descending",
+            "remove-consecutive-duplicate-lines", "remove-empty-lines-with-whitespace",
+            "trim-trailing-space", "trim-leading-space", "trim-leading-and-trailing-space"
         ])
         XCTAssertEqual(registry.viewCommands.map(\.identifier), [
             "fold-all", "unfold-all", "fold-current-level", "unfold-current-level",

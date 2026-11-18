@@ -672,6 +672,76 @@ public struct CommandRegistry {
                 execute: { text, selection in
                     LineCommandOps.applying(LineOps.removeBlankLines, text: text, selection: selection)
                 }
+            ),
+            EditorCommand(
+                identifier: "reverse-line-order",
+                title: "Reverse Line Order",
+                execute: { text, selection in
+                    LineCommandOps.applying(LineOps.reverseLines, text: text, selection: selection)
+                }
+            ),
+            EditorCommand(
+                identifier: "sort-lines-integer-ascending",
+                title: "Sort Lines as Integers Ascending",
+                execute: { text, selection in
+                    LineCommandOps.applying(LineOps.sortLinesIntegerAscending, text: text, selection: selection)
+                }
+            ),
+            EditorCommand(
+                identifier: "sort-lines-integer-descending",
+                title: "Sort Lines as Integers Descending",
+                execute: { text, selection in
+                    LineCommandOps.applying(LineOps.sortLinesIntegerDescending, text: text, selection: selection)
+                }
+            ),
+            EditorCommand(
+                identifier: "sort-lines-decimal-ascending",
+                title: "Sort Lines as Decimal Numbers Ascending (Dot)",
+                execute: { text, selection in
+                    LineCommandOps.applying(LineOps.sortLinesDecimalAscending, text: text, selection: selection)
+                }
+            ),
+            EditorCommand(
+                identifier: "sort-lines-decimal-descending",
+                title: "Sort Lines as Decimal Numbers Descending (Dot)",
+                execute: { text, selection in
+                    LineCommandOps.applying(LineOps.sortLinesDecimalDescending, text: text, selection: selection)
+                }
+            ),
+            EditorCommand(
+                identifier: "remove-consecutive-duplicate-lines",
+                title: "Remove Consecutive Duplicate Lines",
+                execute: { text, selection in
+                    LineCommandOps.applying(LineOps.removeConsecutiveDuplicateLines, text: text, selection: selection)
+                }
+            ),
+            EditorCommand(
+                identifier: "remove-empty-lines-with-whitespace",
+                title: "Remove empty lines (Containing Blank characters)",
+                execute: { text, selection in
+                    LineCommandOps.applying(LineOps.removeEmptyLinesWithWhitespace, text: text, selection: selection)
+                }
+            ),
+            EditorCommand(
+                identifier: "trim-trailing-space",
+                title: "Trim Trailing Space",
+                execute: { text, selection in
+                    LineCommandOps.applying(LineOps.trimTrailingSpace, text: text, selection: selection)
+                }
+            ),
+            EditorCommand(
+                identifier: "trim-leading-space",
+                title: "Trim Leading Space",
+                execute: { text, selection in
+                    LineCommandOps.applying(LineOps.trimLeadingSpace, text: text, selection: selection)
+                }
+            ),
+            EditorCommand(
+                identifier: "trim-leading-and-trailing-space",
+                title: "Trim Leading and Trailing Spaces",
+                execute: { text, selection in
+                    LineCommandOps.applying(LineOps.trimLeadingAndTrailingSpace, text: text, selection: selection)
+                }
             )
         ]
     }
