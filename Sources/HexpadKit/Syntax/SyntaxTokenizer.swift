@@ -159,6 +159,37 @@ public enum Language: String, CaseIterable, Identifiable {
     }
 }
 
+/// Resolves the line-comment prefix a document's language uses.
+///
+/// The prefix is metadata, not a syntax rule: it is the `linePrefix` of the
+/// language's ``LexerDefinition/comments``. Keeping the lookup here (next to
+/// `Language`) lets both the editor and tests resolve it from one place.
+/// Languages with no line-comment metadata — plain text, JSON, Diff, or a
+/// language the app does not know — keep the `//` default.
+public enum CommentPrefixResolver {
+
+    /// The prefix used when a document's language has no line-comment metadata.
+    public static let fallback = "//"
+
+    /// Resolves the prefix for a document's current language.
+    public static func lineCommentPrefix(for document: DocumentModel?) -> String {
+        guard let document,
+              let language = Language(rawValue: document.language) else {
+            return fallback
+        }
+        return lineCommentPrefix(for: language)
+    }
+
+    /// Resolves the prefix directly from a language.
+    public static func lineCommentPrefix(for language: Language) -> String {
+        guard let prefix = LexerDefinitions.definition(for: language)?.comments?.linePrefix,
+              !prefix.isEmpty else {
+            return fallback
+        }
+        return prefix
+    }
+}
+
 /// Theme colors for syntax highlighting
 public struct Theme {
     public let name: String

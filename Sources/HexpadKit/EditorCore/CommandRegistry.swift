@@ -258,8 +258,10 @@ public struct CommandRegistry {
     ///
     /// Bookmark, Tools, Line Ops and view commands live in their own lists so
     /// existing callers that iterate this list keep seeing exactly the
-    /// line-editing menu.
-    public let commands: [EditorCommand]
+    /// line-editing menu. Mutable internally so ``updatedLineCommentPrefix(_:)``
+    /// can swap one command without rebuilding the whole registry; callers
+    /// outside the Kit still see a read-only list.
+    public private(set) var commands: [EditorCommand]
 
     /// The bookmark navigation commands, in menu order.
     public let bookmarkCommands: [EditorCommand]
@@ -289,7 +291,7 @@ public struct CommandRegistry {
     /// The Search > token style commands, in menu order.
     public let tokenStyleCommands: [EditorCommand]
 
-    private let lookup: [String: EditorCommand]
+    private var lookup: [String: EditorCommand]
 
     /// All commands offered by this registry, line-editing commands first.
     public var allCommands: [EditorCommand] {
@@ -356,6 +358,26 @@ public struct CommandRegistry {
     /// A registry with the standard commands and the default `//` comment prefix.
     public static let `default` = CommandRegistry()
 
+    /// Builds the `toggle-line-comment` command for `prefix`.
+    ///
+    /// Shared by ``defaultCommands(lineCommentPrefix:)`` and by
+    /// ``updatedLineCommentPrefix(_:)``, so rebuilding the command for a new
+    /// document language produces exactly the command construction would have.
+    private static func toggleLineCommentCommand(prefix: String) -> EditorCommand {
+        EditorCommand(
+            identifier: "toggle-line-comment",
+            title: "Toggle Line Comment",
+            execute: { text, selection in
+                LineOps.toggleLineComment(text, selection: selection, prefix: prefix)
+            },
+            parameterizedExecute: { parameter in
+                { text, selection in
+                    LineOps.toggleLineComment(text, selection: selection, prefix: parameter)
+                }
+            }
+        )
+    }
+
     /// The default line-editing commands, in menu order.
     public static func defaultCommands(lineCommentPrefix: String = "//") -> [EditorCommand] {
         [
@@ -379,18 +401,7 @@ public struct CommandRegistry {
                 title: "Move Line Down",
                 execute: LineOps.moveLineDown
             ),
-            EditorCommand(
-                identifier: "toggle-line-comment",
-                title: "Toggle Line Comment",
-                execute: { text, selection in
-                    LineOps.toggleLineComment(text, selection: selection, prefix: lineCommentPrefix)
-                },
-                parameterizedExecute: { prefix in
-                    { text, selection in
-                        LineOps.toggleLineComment(text, selection: selection, prefix: prefix)
-                    }
-                }
-            ),
+            CommandRegistry.toggleLineCommentCommand(prefix: lineCommentPrefix),
             EditorCommand(
                 identifier: "uppercase",
                 title: "Uppercase",
@@ -831,6 +842,23 @@ public struct CommandRegistry {
     /// Returns the command registered under `identifier`, if any.
     public func command(for identifier: String) -> EditorCommand? {
         lookup[identifier]
+    }
+
+    /// Rebuilds only `toggle-line-comment` with a new line-comment prefix.
+    ///
+    /// The app owns one registry for every document, so its comment prefix has
+    /// to follow the focused document's language. This swaps that single
+    /// command in place — same identifier, title and parameter support — and
+    /// leaves every other command (and the lookup built from them) untouched.
+    /// Menus, keybindings and macro steps therefore keep resolving the same
+    /// commands they did before the document changed.
+    public mutating func updatedLineCommentPrefix(_ prefix: String) {
+        let replacement = CommandRegistry.toggleLineCommentCommand(prefix: prefix)
+        guard let index = commands.firstIndex(where: { $0.identifier == replacement.identifier }) else {
+            return
+        }
+        commands[index] = replacement
+        lookup[replacement.identifier] = replacement
     }
 
     /// Runs the command registered under `identifier`.

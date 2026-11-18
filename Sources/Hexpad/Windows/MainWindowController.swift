@@ -76,8 +76,17 @@ class MainWindowController: NSViewController {
 
     /// Menu/keybinding layer for the editor commands. The registry itself is
     /// Kit-owned; this controller only resolves and applies its commands to the
-    /// selected document.
-    private let commandRegistry = CommandRegistry.default
+    /// selected document. It is one instance for the whole window, so its
+    /// line-comment prefix is retargeted whenever the focused document's
+    /// language changes (see ``updateEditor(forceRebind:)``).
+    private var commandRegistry = CommandRegistry.default
+
+    /// The line-comment prefix for `document`'s language, read from its lexer
+    /// definition's comment metadata. Unknown or metadata-less languages keep
+    /// the registry's `//` default.
+    private func commentPrefix(for document: DocumentModel?) -> String {
+        CommentPrefixResolver.lineCommentPrefix(for: document)
+    }
 
     /// The macro being recorded (or the last one stopped). This is the one
     /// place recording state lives. `performCommand` is the single capture
@@ -1496,6 +1505,12 @@ class MainWindowController: NSViewController {
     
     func updateEditor(forceRebind: Bool = false) {
         bindChangedPanes(force: forceRebind)
+        // Tab switches, language changes and focus changes all land here. The
+        // registry is shared across documents, so retarget its comment command
+        // to the focused document's language before any command can run.
+        commandRegistry.updatedLineCommentPrefix(
+            commentPrefix(for: activePane.tabStore.selectedDocument)
+        )
         refreshChrome()
     }
 

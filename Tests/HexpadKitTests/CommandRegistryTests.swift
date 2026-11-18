@@ -441,6 +441,59 @@ final class CommandRegistryTests: XCTestCase {
         XCTAssertEqual(result.selection, selection)
     }
 
+    /// Macro-style parameters override the registry's construction-time
+    /// prefix, so replaying a step recorded in another language stays correct.
+    func testToggleLineCommentAcceptsPrefixAsParameter() {
+        let registry = CommandRegistry.default
+        let result = registry.execute("toggle-line-comment",
+                                      parameter: "# ",
+                                      text: "  abc",
+                                      selection: NSRange(location: 2, length: 0))
+        XCTAssertEqual(result?.text, "  # abc")
+        XCTAssertEqual(result?.selection, NSRange(location: 4, length: 0))
+    }
+
+    func testToggleLineCommentParameterOverridesRegisteredPrefix() {
+        let registry = CommandRegistry(lineCommentPrefix: "--")
+        let result = registry.execute("toggle-line-comment",
+                                      parameter: "#",
+                                      text: "abc",
+                                      selection: NSRange(location: 0, length: 0))
+        XCTAssertEqual(result?.text, "#abc")
+    }
+
+    /// The app retargets its one shared registry when the focused document
+    /// changes. Rebuilding must swap only the comment command; every other
+    /// command's identity, title and behaviour must survive.
+    func testUpdatedLineCommentPrefixRetargetsOnlyTheCommentCommand() {
+        var registry = CommandRegistry.default
+        let identifiers = registry.allCommands.map(\.identifier)
+        let titles = registry.allCommands.map(\.title)
+        let duplicateBefore = registry.execute("duplicate-line",
+                                               text: "a\nb",
+                                               selection: NSRange(location: 0, length: 0))
+
+        registry.updatedLineCommentPrefix("#")
+
+        XCTAssertEqual(registry.allCommands.map(\.identifier), identifiers)
+        XCTAssertEqual(registry.allCommands.map(\.title), titles)
+        XCTAssertEqual(registry.command(for: "toggle-line-comment")?.identifier, "toggle-line-comment")
+        XCTAssertEqual(registry.execute("duplicate-line",
+                                        text: "a\nb",
+                                        selection: NSRange(location: 0, length: 0))?.text,
+                       duplicateBefore?.text)
+        XCTAssertEqual(registry.execute("toggle-line-comment",
+                                        text: "abc",
+                                        selection: NSRange(location: 0, length: 0))?.text,
+                       "#abc")
+        // Parameter replay still takes precedence over the retargeted prefix.
+        XCTAssertEqual(registry.execute("toggle-line-comment",
+                                        parameter: "--",
+                                        text: "abc",
+                                        selection: NSRange(location: 0, length: 0))?.text,
+                       "--abc")
+    }
+
     // MARK: - Uppercase / lowercase
 
     func testUppercaseSelection() {
