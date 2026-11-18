@@ -323,6 +323,23 @@ class TabButton: NSButton {
     let tabHeight: CGFloat
     let maxLabelLength: Int
 
+    /// The moment this tab button was created. `DocumentModel` has no creation
+    /// timestamp, so for a buffer that has never been saved this is the honest
+    /// meaning of "created": when the document was opened in a tab. Captured as
+    /// an inline default so it is fixed before ``setupUI()`` runs.
+    private let created: Date = Date()
+
+    /// `.medium`/`.short` with the current locale is the same display format
+    /// the inspector uses for timestamps. Cached because `modifiedDidChange`
+    /// fires on every edit and rebuilding a formatter there would be wasteful.
+    private static let tooltipDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        formatter.locale = .current
+        return formatter
+    }()
+
     /// Settings > Tab Bar: which tabs reveal their × button.
     var closeButtonVisibility: CloseButtonVisibility = .always {
         didSet { updateCloseButtonVisibility() }
@@ -417,6 +434,25 @@ class TabButton: NSButton {
         NotificationCenter.default.addObserver(self, selector: #selector(modifiedDidChange), name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
         refreshChromeColors()
         updateCloseButtonVisibility()
+        refreshToolTip()
+    }
+
+    /// Hover tooltip: the full on-disk path for a saved document (Notepad++
+    /// parity), otherwise the buffer name plus when this tab was created.
+    /// Tooltips are static strings in AppKit, so this is recomputed on the
+    /// existing modified-did-change observer to catch a "Save As" that gives
+    /// an untitled buffer a path while its button is still alive.
+    private func refreshToolTip() {
+        if let path = doc.filePath?.path {
+            toolTip = path
+            return
+        }
+        // `isUntitled` is currently derived from `filePath`, so it is always
+        // true in this branch; the name string is what distinguishes the
+        // default "Untitled" buffer from one renamed before its first save.
+        let label = doc.isUntitled && doc.name == "Untitled" ? "Untitled" : doc.name
+        let time = Self.tooltipDateFormatter.string(from: created)
+        toolTip = "\(label) — created \(time)"
     }
 
     override func updateTrackingAreas() {
@@ -572,6 +608,7 @@ class TabButton: NSButton {
     
     @objc private func modifiedDidChange() {
         dirtyIndicator?.isHidden = !doc.unsavedChanges
+        refreshToolTip()
     }
     
     override func draw(_ dirtyRect: NSRect) {
