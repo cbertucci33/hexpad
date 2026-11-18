@@ -72,10 +72,16 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         ([windowController].compactMap { $0 }) + extraWindowControllers
     }
 
+    /// Test seam for headless menu validation: AppKit does not establish a key
+    /// window inside the unit-test host, so tests inject the controller they
+    /// want the delegate to act on. Production never sets this.
+    var activeControllerOverride: MainWindowController?
+
     /// The controller for the key window, so File/Edit actions follow the window
     /// the user is working in. Falls back to the primary window (also the case
     /// while a sheet or panel owns key status).
     private var activeController: MainWindowController? {
+        if let override = activeControllerOverride { return override }
         if let controller = NSApp.keyWindow?.contentViewController as? MainWindowController {
             return controller
         }
@@ -305,6 +311,13 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     
     @objc func closeTab() {
         activeController?.closeSelectedTab()
+    }
+    
+    /// P16d-1: File > Move to Trash. Closes the focused tab and moves its
+    /// backing file to the macOS Trash, with the same dirty-save prompt Close
+    /// Tab uses. Untitled documents are disabled by menu validation.
+    @objc func moveToTrash(_ sender: Any?) {
+        activeController?.trashSelectedDocument()
     }
     
     @objc func closeAllTabs() {
@@ -724,6 +737,11 @@ extension HexpadAppDelegate: NSMenuItemValidation {
             if variant.isCurrent {
                 return activeController?.tabStore.selectedDocument?.filePath != nil
             }
+        }
+        if menuItem.action == #selector(HexpadAppDelegate.moveToTrash(_:)) {
+            // N++ grays out Move to Recycle Bin for untitled documents: there
+            // is no backing file to move to the Trash.
+            return activeController?.tabStore.selectedDocument?.filePath != nil
         }
         if menuItem.action == #selector(HexpadAppDelegate.viewCurrentFileInBrowser(_:)) {
             // Untitled buffers have no file to hand to the browser.

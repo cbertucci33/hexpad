@@ -1,6 +1,15 @@
 import AppKit
 import HexpadKit
 
+/// The resolved answer to Move to Trash's dirty-document save prompt. Passing
+/// this into the trash core keeps the NSAlert as the only untested seam: tests
+/// drive the core directly with `.save` / `.discard` / `.cancel`.
+enum TrashPromptResolution {
+    case save
+    case discard
+    case cancel
+}
+
 class MainWindowController: NSViewController {
     
     /// The two tab groups. Two independent TabStore instances (rather than one
@@ -1233,6 +1242,77 @@ class MainWindowController: NSViewController {
         tabStore.selectedDocument != nil
     }
     
+    // MARK: - Move to Trash (P16d-1)
+    
+    /// File > Move to Trash. Notepad++ closes the tab *and* sends the backing
+    /// file to the Trash. The dirty-document alert is the only untested seam:
+    /// it produces a `TrashPromptResolution` and the work happens in
+    /// `trashDocument(_:resolution:)`, which tests can drive headlessly.
+    func trashSelectedDocument() {
+        guard let doc = tabStore.selectedDocument, doc.filePath != nil else { return }
+        
+        let resolution: TrashPromptResolution
+        if doc.unsavedChanges {
+            // Same three choices, in the same order, as the Close Tab prompt.
+            let alert = NSAlert()
+            alert.messageText = "Save changes to \(doc.name)?"
+            alert.informativeText = "You have unsaved changes to this document."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Save")
+            alert.addButton(withTitle: "Don't Save")
+            alert.addButton(withTitle: "Cancel")
+            switch alert.runModal() {
+            case .alertFirstButtonReturn: resolution = .save
+            case .alertSecondButtonReturn: resolution = .discard
+            default: resolution = .cancel
+            }
+        } else {
+            resolution = .discard
+        }
+        
+        trashDocument(doc, resolution: resolution)
+    }
+    
+    /// Prompt-free core of Move to Trash. `resolution` is the already-resolved
+    /// answer to the save question (`.discard` for a clean document). Returns
+    /// true only when the file was trashed and the tab was closed; Cancel, a
+    /// failed save, a failed trash, or an untitled document all leave the tab
+    /// and the file untouched.
+    @discardableResult
+    func trashDocument(_ doc: DocumentModel, resolution: TrashPromptResolution) -> Bool {
+        // Validation disables the item for untitled buffers; guard anyway so a
+        // direct call can never invent a path or close the wrong tab.
+        guard let oldURL = doc.filePath else { return false }
+        
+        if doc.unsavedChanges {
+            switch resolution {
+            case .cancel:
+                return false
+            case .discard:
+                break
+            case .save:
+                // Save first, and only trash if that write succeeded. Trashing
+                // a file whose unsaved edits were never written would lose them.
+                guard saveDocument(doc) else { return false }
+            }
+        }
+        
+        do {
+            try FileManager.default.trashItem(at: oldURL, resultingItemURL: nil)
+        } catch {
+            showError("Failed to move file to Trash: \(error.localizedDescription)")
+            return false
+        }
+        
+        // The document is clean (saved or deliberately discarded) and the file
+        // is gone, so close through the exact internal path Close Tab uses.
+        // No prompt here: re-running it would ask about a file we just trashed.
+        if let index = tabStore.documents.firstIndex(where: { $0 === doc }) {
+            closeTabAtIndex(index)
+        }
+        return true
+    }
+    
     func closeSelectedTab() {
         guard tabStore.count > 0 else { return }
         guard let doc = tabStore.selectedDocument else { return }
@@ -1304,20 +1384,22 @@ class MainWindowController: NSViewController {
         }
     }
     
-    private func saveDocument(_ doc: DocumentModel) {
+    /// Saves `doc` through the ordinary path and reports whether the write
+    /// succeeded. Move to Trash needs that answer: a failed save must abort the
+    /// trash rather than lose unsaved edits. The three Close call sites ignore
+    /// the result, so this stays a drop-in replacement for the old Void helper.
+    @discardableResult
+    private func saveDocument(_ doc: DocumentModel) -> Bool {
         do {
-            if doc.isUntitled {
-                // For untitled docs, try to save in place if path exists
-                try doc.save()
-            } else {
-                try doc.save()
-            }
+            try doc.save()
             doc.setModified(false)
             NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
             refreshTabBar()
             updateStatusBar()
+            return true
         } catch {
             showError("Failed to save file: \(error.localizedDescription)")
+            return false
         }
     }
     

@@ -108,6 +108,14 @@ extension HexpadAppDelegate {
         closeMultipleMenu.addItem(closeRight)
         closeMultipleMenu.addItem(closeUnchanged)
         closeMultipleItem.submenu = closeMultipleMenu
+        // P16d-1: Notepad++ keeps Move to Recycle Bin with the close items,
+        // after the Close Multiple Documents submenu. Delegate-targeted like
+        // the other close commands; validateMenuItem grays it out for untitled
+        // documents. No key equivalent, like the other bulk close items.
+        let moveToTrashItem = NSMenuItem(title: "Move to Trash",
+                                         action: #selector(HexpadAppDelegate.moveToTrash(_:)),
+                                         keyEquivalent: "")
+        moveToTrashItem.target = self
         
         // Open Recent submenu
         let openRecentItem = NSMenuItem(title: "Open Recent", action: nil, keyEquivalent: "")
@@ -140,6 +148,7 @@ extension HexpadAppDelegate {
         fileMenu.addItem(closeTabItem)
         fileMenu.addItem(closeAllItem)
         fileMenu.addItem(closeMultipleItem)
+        fileMenu.addItem(moveToTrashItem)
         return fileMenu
     }
 
