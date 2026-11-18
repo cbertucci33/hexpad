@@ -42,6 +42,17 @@ extension HexpadAppDelegate {
         saveItem.target = self
         let saveAsItem = NSMenuItem(title: "Save As...", action: #selector(saveAsFile), keyEquivalent: "S")
         saveAsItem.target = self
+        // P16c: Save a Copy As and Rename… sit in the save group and are
+        // delegate-targeted like Save / Save As above. Both validate against a
+        // focused document in HexpadAppDelegate.validateMenuItem.
+        let saveACopyAsItem = NSMenuItem(title: "Save a Copy As",
+                                         action: #selector(HexpadAppDelegate.saveACopyAs(_:)),
+                                         keyEquivalent: "")
+        saveACopyAsItem.target = self
+        let renameItem = NSMenuItem(title: "Rename…",
+                                    action: #selector(HexpadAppDelegate.renameFile(_:)),
+                                    keyEquivalent: "")
+        renameItem.target = self
         let saveAllItem = NSMenuItem(title: "Save All", action: #selector(saveAllFiles), keyEquivalent: "")
         saveAllItem.target = self
         // Nil-targeted so MainWindowController validates against the focused
@@ -56,6 +67,12 @@ extension HexpadAppDelegate {
                                    action: #selector(MainWindowController.printDocument(_:)),
                                    keyEquivalent: "p")
         printItem.target = nil
+        // Delegate-targeted like the save items: the delegate forwards to the
+        // controller's printDocumentNow(_:) and validates via canPrintDocument().
+        let printNowItem = NSMenuItem(title: "Print Now",
+                                      action: #selector(HexpadAppDelegate.printNow(_:)),
+                                      keyEquivalent: "")
+        printNowItem.target = self
         let closeTabItem = NSMenuItem(title: "Close Tab", action: #selector(closeTab), keyEquivalent: "w")
         closeTabItem.target = self
         let closeAllItem = NSMenuItem(title: "Close All Tabs", action: #selector(closeAllTabs), keyEquivalent: "W")
@@ -112,8 +129,13 @@ extension HexpadAppDelegate {
         fileMenu.addItem(saveItem)
         fileMenu.addItem(saveAsItem)
         fileMenu.addItem(saveAllItem)
+        // Kept after Save All so the established first-ten-items File menu
+        // contract (Save, Save As..., Save All) stays intact.
+        fileMenu.addItem(saveACopyAsItem)
+        fileMenu.addItem(renameItem)
         fileMenu.addItem(reloadItem)
         fileMenu.addItem(printItem)
+        fileMenu.addItem(printNowItem)
         fileMenu.addItem(.separator())
         fileMenu.addItem(closeTabItem)
         fileMenu.addItem(closeAllItem)

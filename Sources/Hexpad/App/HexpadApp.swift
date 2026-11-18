@@ -276,6 +276,24 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     @objc func saveAsFile() {
         activeController?.saveAsFile()
     }
+
+    /// P16c: writes a copy of the focused buffer to a user-chosen destination
+    /// without retargeting the document (no path change, no dirty reset).
+    @objc func saveACopyAs(_ sender: Any?) {
+        activeController?.saveACopyAs()
+    }
+
+    /// P16c: renames the focused document's backing file, or performs a Save As
+    /// for an untitled buffer. The tab is never closed.
+    @objc func renameFile(_ sender: Any?) {
+        activeController?.renameFile()
+    }
+
+    /// P16c-1: one-click print, same document/canvas as Print… but without the
+    /// print panel.
+    @objc func printNow(_ sender: Any?) {
+        activeController?.printDocumentNow(sender)
+    }
     
     @objc func saveAllFiles() {
         activeController?.saveAllDocuments()
@@ -724,6 +742,16 @@ extension HexpadAppDelegate: NSMenuItemValidation {
                 // (or no file) is found, in which case the item stays enabled.
                 defaultApplication: NSWorkspace.shared.urlForApplication(toOpen: url),
                 selfApplication: Bundle.main.bundleURL)
+        }
+        if menuItem.action == #selector(HexpadAppDelegate.printNow(_:)) {
+            // Same requirement as File > Print…: a focused document to print.
+            return activeController?.canPrintDocument() ?? false
+        }
+        if menuItem.action == #selector(HexpadAppDelegate.saveACopyAs(_:))
+            || menuItem.action == #selector(HexpadAppDelegate.renameFile(_:)) {
+            // Both commands operate on the focused buffer; untitled documents
+            // are allowed (Rename… falls back to Save As for them).
+            return activeController?.tabStore.selectedDocument != nil
         }
         if menuItem.action == #selector(HexpadAppDelegate.performDateInsertCommand(_:)) {
             // The date inserts need an editor to land in, exactly like the

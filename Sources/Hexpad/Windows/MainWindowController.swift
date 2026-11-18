@@ -940,6 +940,112 @@ class MainWindowController: NSViewController {
             showError("Failed to save file: \(error.localizedDescription)")
         }
     }
+
+    // MARK: - Save a Copy / Rename (P16c)
+
+    /// File > Save a Copy As. The save panel is the only untested seam:
+    /// `saveACopy(to:)` is the URL-driven path the tests exercise.
+    func saveACopyAs() {
+        let panel = NSSavePanel()
+        panel.title = "Save a Copy As"
+        panel.nameFieldStringValue = tabStore.selectedDocument?.name ?? "Untitled"
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        saveACopy(to: url)
+    }
+
+    /// Writes the focused buffer to `url` with the exact bytes a normal Save
+    /// would emit, without retargeting the document. No path/name change, no
+    /// dirty reset, no recents update: the tab stays the untouched original.
+    func saveACopy(to url: URL) {
+        guard let doc = tabStore.selectedDocument else { return }
+        do {
+            try writeDocumentBytes(of: doc, to: url)
+        } catch {
+            showError("Failed to save a copy: \(error.localizedDescription)")
+        }
+    }
+
+    /// Byte-faithful write for Save a Copy As. The model's `encodedData()` is
+    /// private to HexpadKit, so we route a throwaway snapshot (same text, save
+    /// encoding, EOL style and BOM flag) through the model's own `saveAs(to:)`.
+    /// That reuses the identical encoding/BOM/EOL write helper used by Save and
+    /// Save As while leaving the live document's state completely untouched.
+    func writeDocumentBytes(of doc: DocumentModel, to url: URL) throws {
+        let snapshot = DocumentModel(text: doc.text,
+                                     filePath: doc.filePath,
+                                     encoding: doc.encoding,
+                                     eolType: doc.eolType)
+        snapshot.name = doc.name
+        snapshot.keepsBOM = doc.keepsBOM
+        if snapshot.saveEncoding != doc.saveEncoding {
+            try snapshot.convertEncoding(to: doc.saveEncoding)
+        }
+        try snapshot.saveAs(to: url)
+    }
+
+    /// File > Rename…. Uses an NSSavePanel seeded with the current name; the
+    /// panel is the only untested seam (`renameSelectedDocument(to:)` is the
+    /// URL-driven core).
+    func renameFile() {
+        let panel = NSSavePanel()
+        panel.title = "Rename"
+        panel.nameFieldStringValue = tabStore.selectedDocument?.name ?? "Untitled"
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        renameSelectedDocument(to: url)
+    }
+
+    /// Moves a file-backed document's file on disk and retargets the open tab
+    /// in place: new path/name and a refreshed saved modification date, while
+    /// a dirty buffer stays dirty (N++ semantics). Untitled documents follow
+    /// the ordinary Save As path and simply gain a path and name. The tab is
+    /// never closed, even though the logic overlaps `saveAsAndClose`.
+    func renameSelectedDocument(to url: URL) {
+        guard let doc = tabStore.selectedDocument else { return }
+
+        if doc.isUntitled {
+            let oldPath = doc.filePath?.path
+            do {
+                try doc.saveAs(to: url)
+                recentFilesManager?.replaceRecent(oldPath: oldPath, newPath: url.path)
+                NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
+                refreshTabBar()
+                updateStatusBar()
+            } catch {
+                showError("Failed to save file: \(error.localizedDescription)")
+            }
+            return
+        }
+
+        guard let oldURL = doc.filePath, oldURL.path != url.path else { return }
+
+        let wasDirty = doc.unsavedChanges
+        let hadPendingConversion = doc.hasPendingSaveConversion
+        do {
+            // A rename must not silently save the buffer: capture the bytes
+            // already on disk first. `saveAs(to:)` is the model's only public
+            // way to retarget filePath, so let it update path/name/mtime, then
+            // restore the on-disk bytes and the dirty/conversion flags.
+            let savedBytes = try Data(contentsOf: oldURL)
+            if FileManager.default.fileExists(atPath: url.path) {
+                try FileManager.default.removeItem(at: url)
+            }
+            try FileManager.default.moveItem(at: oldURL, to: url)
+            try doc.saveAs(to: url)
+            try savedBytes.write(to: url, options: .atomic)
+            doc.setModified(false) // refresh savedModificationDate from the renamed file
+            if wasDirty { doc.setModified(true) }
+            if hadPendingConversion { doc.convertEOL(to: doc.eolType) }
+
+            recentFilesManager?.replaceRecent(oldPath: oldURL.path, newPath: url.path)
+            NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
+            refreshTabBar()
+            updateStatusBar()
+        } catch {
+            showError("Failed to rename file: \(error.localizedDescription)")
+        }
+    }
     
     // MARK: - Save All
 
@@ -1055,6 +1161,20 @@ class MainWindowController: NSViewController {
     /// is selection-only. There is deliberately no prompt; the selection's
     /// presence is the choice.
     @objc func printDocument(_ sender: Any?) {
+        printCurrentDocument(showsPrintPanel: true)
+    }
+
+    /// P16c-1: File > Print Now. Same paginated document/canvas as Print…, but
+    /// the print panel is skipped so the focused document goes straight to the
+    /// configured printer (Notepad++ semantics).
+    @objc func printDocumentNow(_ sender: Any?) {
+        printCurrentDocument(showsPrintPanel: false)
+    }
+
+    /// Shared print pipeline. The only difference between Print… and Print Now
+    /// is whether AppKit shows the print panel; selection-only printing and the
+    /// line-numbered `PrintDocumentView` are identical for both.
+    private func printCurrentDocument(showsPrintPanel: Bool) {
         guard let doc = tabStore.selectedDocument,
               let editor = editorContainer else { return }
 
@@ -1098,7 +1218,7 @@ class MainWindowController: NSViewController {
         info.isVerticallyCentered = false
 
         let operation = NSPrintOperation(view: printView, printInfo: info)
-        operation.showsPrintPanel = true
+        operation.showsPrintPanel = showsPrintPanel
         operation.showsProgressPanel = true
 
         if let window = view.window ?? mainWindow {
@@ -1108,7 +1228,7 @@ class MainWindowController: NSViewController {
         }
     }
 
-    /// Print… needs a selected document.
+    /// Print… and Print Now both need a selected document.
     func canPrintDocument() -> Bool {
         tabStore.selectedDocument != nil
     }
@@ -3829,7 +3949,8 @@ extension MainWindowController: NSMenuItemValidation {
         if menuItem.action == #selector(MainWindowController.reloadActiveDocument(_:)) {
             return tabStore.selectedDocument?.filePath != nil
         }
-        if menuItem.action == #selector(MainWindowController.printDocument(_:)) {
+        if menuItem.action == #selector(MainWindowController.printDocument(_:))
+            || menuItem.action == #selector(MainWindowController.printDocumentNow(_:)) {
             return canPrintDocument()
         }
         return true
