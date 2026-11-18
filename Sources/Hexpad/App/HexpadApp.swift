@@ -304,6 +304,16 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     @objc func saveAllFiles() {
         activeController?.saveAllDocuments()
     }
+
+    /// P16d-2: File > Save Session… / Load Session…. The panels live on the
+    /// controller; the delegate only forwards to the active window.
+    @objc func saveSessionAs(_ sender: Any?) {
+        activeController?.saveSessionAs()
+    }
+
+    @objc func loadSession(_ sender: Any?) {
+        activeController?.loadSession()
+    }
     
     @objc func openFolderAsWorkspace() {
         activeController?.openFolderAsWorkspace()
@@ -770,6 +780,15 @@ extension HexpadAppDelegate: NSMenuItemValidation {
             // Both commands operate on the focused buffer; untitled documents
             // are allowed (Rename… falls back to Save As for them).
             return activeController?.tabStore.selectedDocument != nil
+        }
+        if menuItem.action == #selector(HexpadAppDelegate.saveSessionAs(_:)) {
+            // Saving an empty workspace would produce a session with no tabs.
+            return (activeController?.tabStore.count ?? 0) > 0
+        }
+        if menuItem.action == #selector(HexpadAppDelegate.loadSession(_:)) {
+            // Load replaces the workspace, so it is meaningful even when the
+            // current window has no tabs.
+            return true
         }
         if menuItem.action == #selector(HexpadAppDelegate.performDateInsertCommand(_:)) {
             // The date inserts need an editor to land in, exactly like the

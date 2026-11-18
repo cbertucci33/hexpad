@@ -53,6 +53,17 @@ extension HexpadAppDelegate {
                                     action: #selector(HexpadAppDelegate.renameFile(_:)),
                                     keyEquivalent: "")
         renameItem.target = self
+        // P16d-2: explicit session files sit with the Save commands, ahead of
+        // the Close group. Both are delegate-targeted and key-free; validation
+        // lives in HexpadAppDelegate.validateMenuItem.
+        let saveSessionItem = NSMenuItem(title: "Save Session…",
+                                         action: #selector(HexpadAppDelegate.saveSessionAs(_:)),
+                                         keyEquivalent: "")
+        saveSessionItem.target = self
+        let loadSessionItem = NSMenuItem(title: "Load Session…",
+                                         action: #selector(HexpadAppDelegate.loadSession(_:)),
+                                         keyEquivalent: "")
+        loadSessionItem.target = self
         let saveAllItem = NSMenuItem(title: "Save All", action: #selector(saveAllFiles), keyEquivalent: "")
         saveAllItem.target = self
         // Nil-targeted so MainWindowController validates against the focused
@@ -141,6 +152,8 @@ extension HexpadAppDelegate {
         // contract (Save, Save As..., Save All) stays intact.
         fileMenu.addItem(saveACopyAsItem)
         fileMenu.addItem(renameItem)
+        fileMenu.addItem(saveSessionItem)
+        fileMenu.addItem(loadSessionItem)
         fileMenu.addItem(reloadItem)
         fileMenu.addItem(printItem)
         fileMenu.addItem(printNowItem)

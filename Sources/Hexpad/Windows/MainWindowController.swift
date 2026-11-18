@@ -3801,6 +3801,73 @@ class MainWindowController: NSViewController {
         return SessionStore.Snapshot(tabs: documents.map { $0.toSessionData() },
                                      selectedIndex: primaryPane.tabStore.selectedIndex)
     }
+
+    // MARK: - Explicit Session Files (P16d-2)
+
+    /// File > Save Session…. The save panel is the only untested seam; the
+    /// URL-driven core `saveSessionFile(to:)` is what tests drive. The `.session`
+    /// extension follows Notepad++; the bytes are the same JSON Snapshot the
+    /// auto-save workspace file uses.
+    func saveSessionAs() {
+        let panel = NSSavePanel()
+        panel.title = "Save Session"
+        panel.nameFieldStringValue = "Untitled.session"
+        panel.allowedFileTypes = ["session"]
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        saveSessionFile(to: url)
+    }
+
+    /// Writes the focused group's tabs to `url` through the shared Snapshot
+    /// encoder, so an explicit session file is byte-compatible with the
+    /// workspace file. No dirty flags, paths or recents are touched.
+    func saveSessionFile(to url: URL) {
+        do {
+            try SessionStore.saveSnapshot(SessionStore.Snapshot.make(from: tabStore), to: url)
+        } catch {
+            showError("Failed to save session: \(error.localizedDescription)")
+        }
+    }
+
+    /// File > Load Session…. The open panel is the only untested seam; the
+    /// URL-driven core `loadSession(from:)` is what tests drive.
+    func loadSession() {
+        let panel = NSOpenPanel()
+        panel.title = "Load Session"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedFileTypes = ["session"]
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        loadSession(from: url)
+    }
+
+    /// Replaces the focused group's workspace with the session's tabs, the same
+    /// semantic as session restore at startup (not an additive import).
+    func loadSession(from url: URL) {
+        loadSessionFile(from: url)
+    }
+
+    /// URL-driven core behind `loadSession(from:)`. Closes the current tabs and
+    /// inserts the restored ones, then restores the saved selection clamped to
+    /// the reconstructed tab count. A bad file is reported and leaves the
+    /// workspace untouched.
+    func loadSessionFile(from url: URL) {
+        do {
+            let snapshot = try SessionStore.loadSnapshot(from: url)
+            let restored = TabStore.fromSessionData(snapshot.tabs)
+            tabStore.documents = restored.documents
+            tabStore.selectedIndex = min(max(0, snapshot.selectedIndex),
+                                         max(0, restored.documents.count - 1))
+            refreshTabBar()
+            // Force a rebind: restored documents are new objects even when a
+            // session happens to carry the same ids as the outgoing tabs.
+            updateEditor(forceRebind: true)
+        } catch {
+            showError("Failed to load session: \(error.localizedDescription)")
+        }
+    }
     
     // MARK: - Error
     

@@ -1,5 +1,13 @@
 import Foundation
 
+/// An explicit session file existed but was not a Snapshot this build can read.
+/// `restore()` swallows this and starts empty; `loadSnapshot(from:)` throws so
+/// File > Load Session… can report the failure instead of silently replacing
+/// the workspace with nothing.
+public enum SessionFileError: Error, Equatable {
+    case invalidFormat
+}
+
 /// Manages session state persistence
 public final class SessionStore {
 
@@ -56,6 +64,44 @@ public final class SessionStore {
         public static func make(from tabs: TabStore) -> Snapshot {
             Snapshot(tabs: tabs.toSessionData(), selectedIndex: tabs.selectedIndex)
         }
+    }
+
+    // MARK: - Explicit Session Files (P16d-2)
+
+    /// Writes `snapshot` to a user-chosen session file.
+    ///
+    /// This is the same JSON Snapshot format the auto-save workspace file uses:
+    /// both paths go through ``snapshotJSONData(_:mergingInto:)``, so a saved
+    /// `.session` file is byte-compatible with `session.json`. Unlike the
+    /// workspace writer this does not merge a `recents` key — an explicit file
+    /// is a portable workspace, not the app's global state.
+    public static func saveSnapshot(_ snapshot: Snapshot, to url: URL) throws {
+        let data = try snapshotJSONData(snapshot)
+        try data.write(to: url, options: .atomic)
+    }
+
+    /// Reads a Snapshot from a user-chosen session file. Throws on a missing,
+    /// unreadable or wrongly shaped file so the caller can keep the current
+    /// workspace in place.
+    public static func loadSnapshot(from url: URL) throws -> Snapshot {
+        let data = try Data(contentsOf: url)
+        guard let dict = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let tabs = dict["tabs"] as? [[String: Any]],
+              let selectedIndex = dict["selectedIndex"] as? Int else {
+            throw SessionFileError.invalidFormat
+        }
+        return Snapshot(tabs: tabs, selectedIndex: selectedIndex)
+    }
+
+    /// The one encoder for both the workspace file and explicit session files.
+    /// `existing` lets the workspace writer preserve unrelated keys (notably
+    /// `recents`) without a second JSONSerialization call that could drift.
+    private static func snapshotJSONData(_ snapshot: Snapshot,
+                                         mergingInto existing: [String: Any] = [:]) throws -> Data {
+        var dict = existing
+        dict["tabs"] = snapshot.tabs
+        dict["selectedIndex"] = snapshot.selectedIndex
+        return try JSONSerialization.data(withJSONObject: dict)
     }
 
     // MARK: - Write Scheduling
@@ -153,24 +199,19 @@ public final class SessionStore {
     /// but the `DocumentModel`s — and their `NSTextStorage`s — are built on the
     /// calling (main) thread.
     public static func restore() -> (tabs: TabStore, selectedIndex: Int)? {
-        let snapshotData: (tabs: [[String: Any]], selectedIndex: Int)? = queue.sync {
+        // Parsing uses loadSnapshot(from:) so startup restore and explicit
+        // session loading can never disagree about the file format.
+        let snapshot: Snapshot? = queue.sync {
             guard FileManager.default.fileExists(atPath: sessionFile.path) else { return nil }
-            
             do {
-                let data = try Data(contentsOf: sessionFile)
-                guard let dict = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let tabsData = dict["tabs"] as? [[String: Any]],
-                      let selectedIndex = dict["selectedIndex"] as? Int else {
-                    return nil
-                }
-                return (tabsData, selectedIndex)
+                return try loadSnapshot(from: sessionFile)
             } catch {
                 print("Failed to restore session: \(error)")
                 return nil
             }
         }
-        guard let snapshotData else { return nil }
-        return (TabStore.fromSessionData(snapshotData.tabs), snapshotData.selectedIndex)
+        guard let snapshot else { return nil }
+        return (TabStore.fromSessionData(snapshot.tabs), snapshot.selectedIndex)
     }
     
     /// Clear saved session
@@ -240,12 +281,10 @@ public final class SessionStore {
     private static func writeSessionLocked(_ snapshot: Snapshot) throws {
         try FileManager.default.createDirectory(at: appSupportDir, withIntermediateDirectories: true)
         
-        // Preserve keys written by other writers (e.g. "recents" from saveRecents)
-        var data = readExistingLocked()
-        data["tabs"] = snapshot.tabs
-        data["selectedIndex"] = snapshot.selectedIndex
-        
-        let jsonData = try JSONSerialization.data(withJSONObject: data)
+        // Preserve keys written by other writers (e.g. "recents" from
+        // saveRecents). The shared encoder keeps this byte format identical to
+        // an explicit session file's.
+        let jsonData = try snapshotJSONData(snapshot, mergingInto: readExistingLocked())
         try writeAtomicallyLocked(jsonData, to: sessionFile)
     }
 
