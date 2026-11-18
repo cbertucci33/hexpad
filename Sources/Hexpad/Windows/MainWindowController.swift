@@ -2409,6 +2409,21 @@ class MainWindowController: NSViewController {
         searchResultsController?.previousResult()
     }
 
+    // MARK: - Bracket matching
+
+    /// Search > Go to Matching Brace. The focused editor resolves the caret's
+    /// language and selects the matching bracket; it no-ops when there is no
+    /// adjacent bracket or no match.
+    @objc func goToMatchingBrace(_ sender: Any?) {
+        editorContainer?.goToMatchingBrace()
+    }
+
+    /// Search > Select All In-between. The focused editor selects the text
+    /// strictly between the paired brackets at the caret.
+    @objc func selectAllInBetweenBraces(_ sender: Any?) {
+        editorContainer?.selectAllInBetweenBraces()
+    }
+
     /// Jumps to a document-search hit: activate the owning tab/group first (the
     /// hit may be in the unfocused split group), reveal folded regions, then
     /// select and scroll the exact match range.
@@ -3650,6 +3665,12 @@ extension MainWindowController: NSMenuItemValidation {
         if menuItem.action == #selector(MainWindowController.nextSearchResult(_:))
             || menuItem.action == #selector(MainWindowController.previousSearchResult(_:)) {
             return searchResultsController?.window?.isVisible == true
+        }
+        if menuItem.action == #selector(MainWindowController.goToMatchingBrace(_:))
+            || menuItem.action == #selector(MainWindowController.selectAllInBetweenBraces(_:)) {
+            // A focused, non-empty buffer is required; the action itself still
+            // no-ops safely when the language has no brackets or no match.
+            return editorContainer != nil && (tabStore.selectedDocument?.textStorage.length ?? 0) > 0
         }
         if menuItem.action == #selector(MainWindowController.encodeIn(_:)) {
             guard let encoding = menuItem.representedObject as? String else { return false }

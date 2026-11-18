@@ -89,6 +89,27 @@ extension HexpadAppDelegate {
         searchMenu.addItem(previousResultItem)
         searchMenu.addItem(.separator())
 
+        // Search > Go to Matching Brace / Select All In-between navigate by the
+        // bracket pair at the caret. Nil-targeted like the other editor-driven
+        // Search items so the focused window's controller reads the caret and
+        // owns validation. No key equivalents: these commands have no default
+        // chords, and KEYBINDINGS.md forbids inventing Windows-style ones.
+        let goToMatchingBraceItem = NSMenuItem(
+            title: "Go to Matching Brace",
+            action: #selector(MainWindowController.goToMatchingBrace(_:)),
+            keyEquivalent: ""
+        )
+        goToMatchingBraceItem.target = nil
+        let selectAllInBetweenItem = NSMenuItem(
+            title: "Select All In-between",
+            action: #selector(MainWindowController.selectAllInBetweenBraces(_:)),
+            keyEquivalent: ""
+        )
+        selectAllInBetweenItem.target = nil
+        searchMenu.addItem(goToMatchingBraceItem)
+        searchMenu.addItem(selectAllInBetweenItem)
+        searchMenu.addItem(.separator())
+
         // Search > Style All Occurrences of Token / Style One Token / Clear
         // Style / Jump Up / Jump Down / Copy Styled Text mirror Notepad++'s
         // five-style workflow. Every item is nil-targeted so the focused

@@ -905,6 +905,40 @@ class EditorContainer: NSView {
         return (edits, document)
     }
 
+    // MARK: - Bracket matching
+
+    /// Resolves the focused document's bracket pairs and asks `BraceMatcher`
+    /// for the pair adjacent to the primary caret. Returns `nil` for plain
+    /// text, a language without bracket metadata, or a caret with no match.
+    private func activeBracketMatch() -> BraceMatcher.Match? {
+        guard let languageName = boundDocument?.language,
+              let language = Language(rawValue: languageName),
+              let brackets = LexerDefinitions.definition(for: language)?.brackets else { return nil }
+        return BraceMatcher.matchDetail(text: textView.string,
+                                        caret: textView.selectedRange.location,
+                                        brackets: brackets)
+    }
+
+    /// Search > Go to Matching Brace. Selects the bracket paired with the one
+    /// next to the caret and scrolls it visible. A zero-length match leaves the
+    /// selection untouched.
+    @discardableResult
+    func goToMatchingBrace() -> Bool {
+        guard let match = activeBracketMatch() else { return false }
+        setMultiCaretState(MultiCaretState(caret: match.matchedBracket), scrollPrimary: true)
+        return true
+    }
+
+    /// Search > Select All In-between. Selects the text strictly between the
+    /// two brackets of the pair around the caret, exclusive of both brackets,
+    /// and scrolls it visible.
+    @discardableResult
+    func selectAllInBetweenBraces() -> Bool {
+        guard let match = activeBracketMatch() else { return false }
+        setMultiCaretState(MultiCaretState(caret: match.innerRange), scrollPrimary: true)
+        return true
+    }
+
     // MARK: - Folding
 
     /// Toggles the fold that starts on `line` for the selected document.
