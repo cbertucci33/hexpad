@@ -73,6 +73,13 @@ public enum Language: String, CaseIterable, Identifiable {
     case groovy = "Groovy"
     case nim = "Nim"
     case zig = "Zig"
+    // L21a-4 language batch (appended in declaration order; earlier cases
+    // keep their raw values and positions).
+    case batch = "Batch"
+    case cmake = "CMake"
+    case makefile = "Makefile"
+    case powershell = "PowerShell"
+    case latex = "LaTeX"
     
     public var id: String { rawValue }
     
@@ -124,6 +131,14 @@ public enum Language: String, CaseIterable, Identifiable {
         case let x where x.hasSuffix(".groovy") || x.hasSuffix(".gradle"): return .groovy
         case let x where x.hasSuffix(".nim") || x.hasSuffix(".nims"): return .nim
         case let x where x.hasSuffix(".zig"): return .zig
+        case let x where x.hasSuffix(".bat") || x.hasSuffix(".cmd"): return .batch
+        case let x where x.hasSuffix(".cmake") || x.hasSuffix("cmakelists.txt"): return .cmake
+        // Make's canonical filenames are matched case-sensitively against the
+        // original name; only the extension match is case-insensitive.
+        case let x where name.hasSuffix("Makefile") || name.hasSuffix("GNUmakefile"): return .makefile
+        case let x where x.hasSuffix(".mk"): return .makefile
+        case let x where x.hasSuffix(".ps1") || x.hasSuffix(".psm1"): return .powershell
+        case let x where x.hasSuffix(".tex") || x.hasSuffix(".latex"): return .latex
         default: return .plain
         }
     }

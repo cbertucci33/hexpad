@@ -240,7 +240,12 @@ public enum LexerDefinitions {
         .fsharp,
         .groovy,
         .nim,
-        .zig
+        .zig,
+        .batch,
+        .cmake,
+        .makefile,
+        .powershell,
+        .latex
     ]
 
     private static let byLanguage: [Language: LexerDefinition] = {

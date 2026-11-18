@@ -49,7 +49,12 @@ final class LexerDefinitionMetadataTests: XCTestCase {
         .fsharp: .init(linePrefix: "//", blockStart: "(*", blockEnd: "*)"),
         .groovy: .init(linePrefix: "//", blockStart: "/*", blockEnd: "*/"),
         .nim: .init(linePrefix: "#", blockStart: "#[", blockEnd: "]#"),
-        .zig: .init(linePrefix: "//")
+        .zig: .init(linePrefix: "//"),
+        .batch: .init(linePrefix: "rem "),
+        .cmake: .init(linePrefix: "#"),
+        .makefile: .init(linePrefix: "#"),
+        .powershell: .init(linePrefix: "#", blockStart: "<#", blockEnd: "#>"),
+        .latex: .init(linePrefix: "%")
     ]
 
     private let curly = LexerDefinition.BracketPair(open: "{", close: "}")
@@ -175,7 +180,12 @@ final class LexerDefinitionMetadataTests: XCTestCase {
             .fsharp: allThree,
             .groovy: allThree,
             .nim: allThree,
-            .zig: allThree
+            .zig: allThree,
+            .batch: [],
+            .cmake: [paren, curly],
+            .makefile: [paren, curly],
+            .powershell: allThree,
+            .latex: [curly]
         ]
 
         XCTAssertEqual(Set(expected.keys), Set(Language.allCases.filter { $0 != .plain }))
