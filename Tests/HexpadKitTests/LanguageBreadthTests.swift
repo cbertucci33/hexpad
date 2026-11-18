@@ -131,8 +131,8 @@ final class LanguageBreadthTests: XCTestCase {
         XCTAssertEqual(Array(Language.allCases.prefix(original.count)).map(\.rawValue),
                        original,
                        "existing cases must keep their order and raw values")
-        XCTAssertEqual(Language.allCases.count, 44,
-                       "11 built-ins, the 15 slice S-P8e languages, 8 additional grammars, the L21a-3 batch of 5, and the L21a-4 batch of 5")
+        XCTAssertEqual(Language.allCases.count, 49,
+                       "11 built-ins, the 15 slice S-P8e languages, 8 additional grammars, the L21a-3 batch of 5, the L21a-4 batch of 5, and the L21a-5 batch of 5")
     }
 
     // MARK: - Decoding and metadata

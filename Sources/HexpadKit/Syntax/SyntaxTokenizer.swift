@@ -80,6 +80,13 @@ public enum Language: String, CaseIterable, Identifiable {
     case makefile = "Makefile"
     case powershell = "PowerShell"
     case latex = "LaTeX"
+    // L21a-5 language batch (appended in declaration order; earlier cases
+    // keep their raw values and positions).
+    case objectivec = "Objective-C"
+    case pascal = "Pascal"
+    case ada = "Ada"
+    case diff = "Diff"
+    case properties = "Properties"
     
     public var id: String { rawValue }
     
@@ -139,6 +146,14 @@ public enum Language: String, CaseIterable, Identifiable {
         case let x where x.hasSuffix(".mk"): return .makefile
         case let x where x.hasSuffix(".ps1") || x.hasSuffix(".psm1"): return .powershell
         case let x where x.hasSuffix(".tex") || x.hasSuffix(".latex"): return .latex
+        // `.m` remains MATLAB's (see the MATLAB case above), so Objective-C
+        // is reachable only through the unambiguous `.mm` extension.
+        case let x where x.hasSuffix(".mm"): return .objectivec
+        case let x where x.hasSuffix(".pas") || x.hasSuffix(".dpr")
+            || x.hasSuffix(".lpr"): return .pascal
+        case let x where x.hasSuffix(".adb") || x.hasSuffix(".ads"): return .ada
+        case let x where x.hasSuffix(".diff") || x.hasSuffix(".patch"): return .diff
+        case let x where x.hasSuffix(".properties"): return .properties
         default: return .plain
         }
     }

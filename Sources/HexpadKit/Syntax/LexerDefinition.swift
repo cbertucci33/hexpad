@@ -245,7 +245,12 @@ public enum LexerDefinitions {
         .cmake,
         .makefile,
         .powershell,
-        .latex
+        .latex,
+        .objectivec,
+        .pascal,
+        .ada,
+        .diff,
+        .properties
     ]
 
     private static let byLanguage: [Language: LexerDefinition] = {

@@ -60,6 +60,7 @@ final class LexerDefinitionMetadataTests: XCTestCase {
     private let curly = LexerDefinition.BracketPair(open: "{", close: "}")
     private let paren = LexerDefinition.BracketPair(open: "(", close: ")")
     private let square = LexerDefinition.BracketPair(open: "[", close: "]")
+    private let angle = LexerDefinition.BracketPair(open: "<", close: ">")
 
     private func definition(for language: Language,
                             file: StaticString = #filePath,
@@ -94,9 +95,12 @@ final class LexerDefinitionMetadataTests: XCTestCase {
                        Set(highlighted.map(\.rawValue)))
 
         for definition in LexerDefinitions.dataDriven {
-            if definition.language == Language.json.rawValue {
+            // JSON and Diff have no comment syntax; declaring one would be
+            // wrong (unified diffs carry no comment construct at all).
+            if definition.language == Language.json.rawValue
+                || definition.language == Language.diff.rawValue {
                 XCTAssertNil(definition.comments,
-                             "JSON has no comment syntax; declaring one would be wrong")
+                             "\(definition.language) has no comment syntax; declaring one would be wrong")
                 continue
             }
 
@@ -185,7 +189,12 @@ final class LexerDefinitionMetadataTests: XCTestCase {
             .cmake: [paren, curly],
             .makefile: [paren, curly],
             .powershell: allThree,
-            .latex: [curly]
+            .latex: [curly],
+            .objectivec: [paren, square, curly, angle],
+            .pascal: [paren, square],
+            .ada: [paren],
+            .diff: [],
+            .properties: []
         ]
 
         XCTAssertEqual(Set(expected.keys), Set(Language.allCases.filter { $0 != .plain }))
