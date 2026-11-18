@@ -62,6 +62,32 @@ public enum HashKit {
         hex(SHA512.hash(data: data))
     }
 
+    // MARK: - Per-line digests
+
+    /// Returns `text` with every non-empty line replaced by `digest(line)`.
+    ///
+    /// Line breaks are preserved exactly, empty lines stay empty (matching
+    /// Notepad++'s per-line behavior, which never hashes a blank line into the
+    /// digest of the empty string), and no trailing newline is appended. A
+    /// trailing `\r` is treated as part of a CRLF terminator rather than as
+    /// line content, so the digest is identical for LF and CRLF input.
+    public static func digestPerLine(_ text: String, _ digest: (String) -> String) -> String {
+        // Split on the LF *scalar*: Swift treats a CRLF pair as one Character,
+        // so a Character-based split would not find line breaks in CRLF text.
+        text.unicodeScalars
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { segment in
+                let line = String(segment)
+                guard !line.isEmpty else { return line }
+                if line.hasSuffix("\r") {
+                    let content = String(line.dropLast())
+                    return content.isEmpty ? line : digest(content) + "\r"
+                }
+                return digest(line)
+            }
+            .joined(separator: "\n")
+    }
+
     // MARK: - Helpers
 
     /// Formats a digest's bytes as lowercase hexadecimal without separators.

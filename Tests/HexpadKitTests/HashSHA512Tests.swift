@@ -56,6 +56,7 @@ final class HashSHA512Tests: XCTestCase {
         let identifiers = CommandRegistry.default.toolCommands.map(\.identifier)
         XCTAssertEqual(identifiers, [
             "hash-md5", "hash-sha1", "hash-sha256", "hash-sha512",
+            "hash-md5-per-line", "hash-sha1-per-line", "hash-sha256-per-line", "hash-sha512-per-line",
             "insert-date", "insert-time", "insert-datetime"
         ])
         XCTAssertEqual(CommandRegistry.default.command(for: "hash-sha512")?.title, "SHA-512")

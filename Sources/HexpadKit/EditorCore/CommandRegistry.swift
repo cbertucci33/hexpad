@@ -521,6 +521,42 @@ public struct CommandRegistry {
                 }
             ),
             EditorCommand(
+                identifier: "hash-md5-per-line",
+                title: "MD5 Per-line",
+                execute: { text, selection in
+                    HashCommandOps.insert({ HashKit.digestPerLine($0, HashKit.md5) },
+                                         text: text,
+                                         selection: selection)
+                }
+            ),
+            EditorCommand(
+                identifier: "hash-sha1-per-line",
+                title: "SHA-1 Per-line",
+                execute: { text, selection in
+                    HashCommandOps.insert({ HashKit.digestPerLine($0, HashKit.sha1) },
+                                         text: text,
+                                         selection: selection)
+                }
+            ),
+            EditorCommand(
+                identifier: "hash-sha256-per-line",
+                title: "SHA-256 Per-line",
+                execute: { text, selection in
+                    HashCommandOps.insert({ HashKit.digestPerLine($0, HashKit.sha256) },
+                                         text: text,
+                                         selection: selection)
+                }
+            ),
+            EditorCommand(
+                identifier: "hash-sha512-per-line",
+                title: "SHA-512 Per-line",
+                execute: { text, selection in
+                    HashCommandOps.insert({ HashKit.digestPerLine($0, HashKit.sha512) },
+                                         text: text,
+                                         selection: selection)
+                }
+            ),
+            EditorCommand(
                 identifier: "insert-date",
                 title: "Short Date",
                 execute: { text, selection in

@@ -597,6 +597,7 @@ final class CommandRegistryTests: XCTestCase {
         let registry = CommandRegistry.default
         XCTAssertEqual(registry.toolCommands.map(\.identifier), [
             "hash-md5", "hash-sha1", "hash-sha256", "hash-sha512",
+            "hash-md5-per-line", "hash-sha1-per-line", "hash-sha256-per-line", "hash-sha512-per-line",
             "insert-date", "insert-time", "insert-datetime"
         ])
         XCTAssertEqual(registry.lineOpCommands.map(\.identifier), [
