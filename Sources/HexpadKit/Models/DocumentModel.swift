@@ -60,7 +60,7 @@ public final class DocumentModel: Identifiable, ObservableObject {
     /// against the baseline; session save gets a cheap repair check.
     private var _isDirty = false
     private var dirtyObservers: [NSObjectProtocol] = []
-    private var savedModificationDate: Date?
+    var savedModificationDate: Date?
     private var _encoding: String = "UTF-8"
     /// The encoding the next save writes. `nil` means "same as `encoding`".
     /// "Convert to" sets this without changing the encoding the buffer was

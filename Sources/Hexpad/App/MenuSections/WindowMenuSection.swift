@@ -39,6 +39,37 @@ extension HexpadAppDelegate {
             item.target = nil
             windowMenu.addItem(item)
         }
+
+        // W23a: sorting is a tab-order operation, so it sits with the other tab
+        // commands. One nil-targeted action covers all ten items: the key is in
+        // representedObject and the tag distinguishes ascending (1) from
+        // descending (0).
+        windowMenu.addItem(.separator())
+        let sortByItem = NSMenuItem(title: "Sort By", action: nil, keyEquivalent: "")
+        let sortByMenu = NSMenu(title: "Sort By")
+        let sortCommands: [(title: String, key: TabSortKey, ascending: Bool)] = [
+            ("Name (Ascending)", .name, true),
+            ("Name (Descending)", .name, false),
+            ("Path (Ascending)", .path, true),
+            ("Path (Descending)", .path, false),
+            ("Type (Ascending)", .type, true),
+            ("Type (Descending)", .type, false),
+            ("Length (Ascending)", .length, true),
+            ("Length (Descending)", .length, false),
+            ("Modified (Ascending)", .modified, true),
+            ("Modified (Descending)", .modified, false),
+        ]
+        for command in sortCommands {
+            let item = NSMenuItem(title: command.title,
+                                  action: #selector(MainWindowController.sortDocumentsBy(_:)),
+                                  keyEquivalent: "")
+            item.target = nil
+            item.representedObject = command.key.rawValue
+            item.tag = command.ascending ? 1 : 0
+            sortByMenu.addItem(item)
+        }
+        sortByItem.submenu = sortByMenu
+        windowMenu.addItem(sortByItem)
         return windowMenu
     }
 }

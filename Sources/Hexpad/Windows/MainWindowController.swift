@@ -1454,6 +1454,19 @@ class MainWindowController: NSViewController {
         // FindBar and both tab bars still need the notice the drag path posts.
         postTabSelectionDidChange()
     }
+
+    /// Window > Sort By. The menu item's `representedObject` is the sort key's
+    /// raw value (`name|path|type|length|modified`) and its tag is 1 for
+    /// ascending, 0 for descending. Reordering tabs is window chrome, so this
+    /// deliberately skips the undo stack just like `moveSelectedTab`.
+    @objc func sortDocumentsBy(_ sender: NSMenuItem) {
+        guard let key = TabSortKey(rawValue: sender.representedObject as? String ?? "") else { return }
+        tabStore.sortDocuments(by: key, ascending: sender.tag == 1)
+        refreshTabBar()
+        // Sorting changes every tab's index, including the selected document's,
+        // so the FindBar and both tab bars need the same notice a move posts.
+        postTabSelectionDidChange()
+    }
     
     func refreshTabBar() {
         allPanes.forEach { pane in
@@ -3660,6 +3673,10 @@ extension MainWindowController: NSMenuItemValidation {
             // Jumping to an edge or reordering needs a second tab; the move
             // items stay enabled even when the tab is already there, because
             // validation is about applicability, not about a visible effect.
+            return tabStore.count > 1
+        }
+        if menuItem.action == #selector(MainWindowController.sortDocumentsBy(_:)) {
+            // Sorting needs at least two tabs to be meaningful.
             return tabStore.count > 1
         }
         if menuItem.action == #selector(MainWindowController.nextSearchResult(_:))
