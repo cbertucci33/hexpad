@@ -33,6 +33,15 @@ class TabBarView: NSView {
     /// Called after a tab selection/reorder/transfer so the controller can
     /// rebind the affected editors.
     var onChange: (() -> Void)?
+    /// Called with the index of a right-clicked tab. The owning pane builds the
+    /// tab's context menu (and focuses its group) before returning it. The bar
+    /// deliberately has no controller reference: this per-pane closure is the
+    /// whole bridge.
+    var contextMenuProvider: ((Int) -> NSMenu?)?
+    /// The menu produced by the most recent right-click. Keeping it here lets
+    /// the presenting code (and tests) inspect exactly what was built without
+    /// opening a modal menu during a unit test.
+    private(set) var lastContextMenu: NSMenu?
 
     /// Settings > Tab Bar: drag reordering disabled while locked.
     var lockTabBar = false
@@ -235,14 +244,32 @@ class TabBarView: NSView {
         onChange?()
     }
     
-    @objc private func tabClicked(_ sender: TabButton) {
+    /// Selects `index` and notifies observers. Left-click and right-click
+    /// both funnel through here, so one gesture can never select twice.
+    private func selectTab(at index: Int) {
         onFocus?()
-        tabStore.selectedIndex = sender.index
+        tabStore.selectedIndex = index
         for (i, btn) in tabButtons.enumerated() {
             btn.isSelected = i == tabStore.selectedIndex
         }
         NotificationCenter.default.post(name: NSNotification.Name("TabStoreSelectedIndexDidChange"), object: nil)
         onChange?()
+    }
+
+    @objc private func tabClicked(_ sender: TabButton) {
+        selectTab(at: sender.index)
+    }
+
+    /// Right-click entry point: select the clicked tab once, then ask the
+    /// owning pane for its menu. The provider focuses this pane's group before
+    /// building, so every action and validation sees the right document even
+    /// when the click lands in the unfocused split group.
+    @discardableResult
+    func showContextMenu(for button: TabButton) -> NSMenu? {
+        selectTab(at: button.index)
+        let menu = contextMenuProvider?(button.index)
+        lastContextMenu = menu
+        return menu
     }
     
     @objc private func selectedIndexDidChange() {
@@ -298,7 +325,11 @@ class TabButton: NSButton {
         // the NSTextField below; leaving the cell title in place draws that
         // stock word underneath it (and exposes title "Button" to accessibility).
         title = ""
-        sendAction(on: [.leftMouseUp, .rightMouseUp])
+        // Left-click is the only NSButton action. Right-click is handled by
+        // `rightMouseDown` below, which selects the tab and presents the
+        // context menu in one path; a .rightMouseUp action here would select
+        // the tab a second time (or fire instead of the menu).
+        sendAction(on: [.leftMouseUp])
         
         let title = NSTextField(labelWithString: TabLabel.truncated(doc.name,
                                                                     maxLength: maxLabelLength))
@@ -370,6 +401,22 @@ class TabButton: NSButton {
     }
 
     // MARK: - Drag reorder
+
+    /// Right-click is owned entirely here: we never call `super`, so
+    /// NSButton's rightMouseUp tracking cannot also send `tabClicked`. The bar
+    /// selects the tab once and hands back the menu; AppKit only sees the menu
+    /// when we explicitly pop it (an unhosted button in a test has no window,
+    /// so the test just inspects `bar.lastContextMenu`).
+    override func rightMouseDown(with event: NSEvent) {
+        guard let bar = reorderDelegate else {
+            super.rightMouseDown(with: event)
+            return
+        }
+        let menu = bar.showContextMenu(for: self)
+        if let menu, let window, window.isVisible {
+            NSMenu.popUpContextMenu(menu, with: event, for: self)
+        }
+    }
 
     override func mouseDown(with event: NSEvent) {
         // Settings > Tab Bar > double-click to close. Handled before the

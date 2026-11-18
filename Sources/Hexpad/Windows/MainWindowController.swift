@@ -552,6 +552,83 @@ class MainWindowController: NSViewController {
         pane.tabBar.onChange = { [weak self] in
             self?.handlePaneTabChange()
         }
+        pane.tabBar.contextMenuProvider = { [weak self] index in
+            guard let self else { return nil }
+            // Every action and every validation reads the focused group's
+            // activePane store. Focus this pane *before* building the menu so
+            // a right-click in the other split group acts on that tab.
+            self.focusGroup(group)
+            return self.buildTabContextMenu(for: index)
+        }
+    }
+
+    /// Notepad++'s tab context menu, built from the very same selectors and
+    /// targets the File/View menus use. Delegate actions are explicitly
+    /// targeted so `HexpadAppDelegate.validateMenuItem` (close scopes,
+    /// containing-folder) owns their grey-out; controller actions stay
+    /// nil-targeted so `MainWindowController.validateMenuItem` owns theirs.
+    func buildTabContextMenu(for index: Int,
+                             delegate: HexpadAppDelegate? = nil) -> NSMenu {
+        let delegate = delegate ?? (NSApp.delegate as? HexpadAppDelegate)
+        // `index` identifies the clicked tab for the caller; every action
+        // itself runs against the focused group's selected document.
+        let menu = NSMenu(title: "Tab")
+
+        func delegateItem(_ title: String, _ action: Selector) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = delegate
+            return item
+        }
+        func responderItem(_ title: String, _ action: Selector) -> NSMenuItem {
+            NSMenuItem(title: title, action: action, keyEquivalent: "")
+        }
+
+        // Close group.
+        menu.addItem(delegateItem("Close Tab", #selector(HexpadAppDelegate.closeTab)))
+        menu.addItem(delegateItem("Close All Tabs", #selector(HexpadAppDelegate.closeAllTabs)))
+        menu.addItem(delegateItem("Close All but Active Document",
+                                  #selector(HexpadAppDelegate.closeAllButActiveDocument)))
+        menu.addItem(delegateItem("Close All to the Left",
+                                  #selector(HexpadAppDelegate.closeAllDocumentsToLeft)))
+        menu.addItem(delegateItem("Close All to the Right",
+                                  #selector(HexpadAppDelegate.closeAllDocumentsToRight)))
+        menu.addItem(delegateItem("Close All Unchanged",
+                                  #selector(HexpadAppDelegate.closeAllUnchangedDocuments)))
+
+        menu.addItem(.separator())
+
+        // Save / reload / print group.
+        menu.addItem(delegateItem("Save", #selector(HexpadAppDelegate.saveFile)))
+        menu.addItem(delegateItem("Save As...", #selector(HexpadAppDelegate.saveAsFile)))
+        menu.addItem(responderItem("Reload from Disk",
+                                   #selector(MainWindowController.reloadActiveDocument(_:))))
+        menu.addItem(responderItem("Print…",
+                                   #selector(MainWindowController.printDocument(_:))))
+
+        menu.addItem(.separator())
+
+        // Open Containing Folder group, identical leaves to File menu.
+        let containingItem = NSMenuItem(title: "Open Containing Folder",
+                                        action: nil,
+                                        keyEquivalent: "")
+        let containingMenu = NSMenu(title: "Open Containing Folder")
+        containingMenu.addItem(responderItem(
+            "Finder", #selector(HexpadAppDelegate.openContainingFolderInFinder(_:))))
+        containingMenu.addItem(responderItem(
+            "Terminal", #selector(HexpadAppDelegate.openContainingFolderInTerminal(_:))))
+        containingItem.submenu = containingMenu
+        menu.addItem(containingItem)
+
+        menu.addItem(.separator())
+
+        // Move group.
+        menu.addItem(responderItem("Move to Other View",
+                                   #selector(MainWindowController.moveToOtherView(_:))))
+        menu.addItem(responderItem("Move Tab to Start",
+                                   #selector(MainWindowController.moveTabToStart(_:))))
+        menu.addItem(responderItem("Move Tab to End",
+                                   #selector(MainWindowController.moveTabToEnd(_:))))
+        return menu
     }
     
     private func updateLayout() {
