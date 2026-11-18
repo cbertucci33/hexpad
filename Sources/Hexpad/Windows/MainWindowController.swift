@@ -2837,7 +2837,40 @@ class MainWindowController: NSViewController {
     func canRunCommand() -> Bool {
         tabStore.selectedDocument != nil
     }
-    
+
+    // MARK: - Column Editor (P17g-3)
+
+    /// One reusable Column Editor panel. The Search menu item is nil-targeted,
+    /// so this controller owns the action, the validation and the apply path;
+    /// the panel itself only collects parameters and reports them via `onApply`.
+    private var columnEditorPanelController: ColumnEditorDialog?
+
+    /// Lazily creates (and then always returns) the one Column Editor panel.
+    /// Internal so app tests can inspect its wiring without showing it.
+    func columnEditorDialog() -> ColumnEditorDialog {
+        if let columnEditorPanelController { return columnEditorPanelController }
+        let dialog = ColumnEditorDialog()
+        dialog.onApply = { [weak self] parameters in
+            self?.focusedEditor?.applyColumnEditor(text: parameters.textValue,
+                                                   numbers: parameters.numbers)
+        }
+        columnEditorPanelController = dialog
+        return dialog
+    }
+
+    /// Search > Column Editor… (N++ Alt+C). Without a column selection there
+    /// are no rows to insert into, so the menu item stays disabled.
+    @objc func showColumnEditor(_ sender: Any?) {
+        guard canShowColumnEditor() else { return }
+        let dialog = columnEditorDialog()
+        dialog.showWindow(nil)
+        dialog.window?.makeKeyAndOrderFront(nil)
+    }
+
+    func canShowColumnEditor() -> Bool {
+        focusedEditor?.hasColumnSelection ?? false
+    }
+
     // MARK: - External change monitoring
 
     /// Watches open files for on-disk edits by other programs. Spec requires a
@@ -4058,6 +4091,9 @@ extension MainWindowController: NSMenuItemValidation {
         }
         if menuItem.action == #selector(MainWindowController.beginEndSelectColumn(_:)) {
             return canPerformBeginEndSelectCommand("begin-end-select-column")
+        }
+        if menuItem.action == #selector(MainWindowController.showColumnEditor(_:)) {
+            return canShowColumnEditor()
         }
         if menuItem.action == #selector(MainWindowController.selectNextTab(_:))
             || menuItem.action == #selector(MainWindowController.selectPreviousTab(_:)) {

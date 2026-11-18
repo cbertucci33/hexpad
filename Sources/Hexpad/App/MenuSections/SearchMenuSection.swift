@@ -229,6 +229,17 @@ extension HexpadAppDelegate {
         searchMenu.addItem(beginEndSelectItem)
         searchMenu.addItem(beginEndSelectColumnItem)
 
+        // P17g-3: the Column Editor follows the column-mode item. Like its
+        // neighbours it is nil-targeted, so the focused controller owns both
+        // the panel and validation. Unlike them it needs an actual column
+        // selection (more than one row caret) and has no invented key chord.
+        searchMenu.addItem(.separator())
+        let columnEditorItem = NSMenuItem(title: "Column Editor…",
+                                          action: #selector(MainWindowController.showColumnEditor(_:)),
+                                          keyEquivalent: "")
+        columnEditorItem.target = nil
+        searchMenu.addItem(columnEditorItem)
+
         // Search > Bookmark mirrors the registry's bookmark group. The group
         // already owns key chords through the Text menu, so these items carry
         // no duplicate equivalents; validation still runs through the

@@ -53,6 +53,12 @@ class EditorContainer: NSView {
     /// half stays enabled without one and simply no-ops (N++ disables nothing).
     var hasPendingBeginEndSelectAnchor: Bool { beginEndSelectState.anchor != nil }
 
+    /// Whether the editor currently holds a column selection — the rectangle a
+    /// column gesture or Begin/End Select in Column Mode mapped into one caret
+    /// per row. The Column Editor needs those rows; a single caret is an
+    /// ordinary selection and leaves the item disabled (N++ parity).
+    var hasColumnSelection: Bool { multiCaretState.count > 1 }
+
     /// The document backing the shared text storage, used for undoable edits.
     private weak var boundDocument: DocumentModel?
     /// Language the models were last built for. A same-document rebind with a
@@ -902,6 +908,46 @@ class EditorContainer: NSView {
     /// Types `insertion` at every caret as one undoable edit.
     func applyMultiCaretInsertion(_ insertion: String) {
         applyMultiCaretTransform(MultiCaretEditing.insertionTransform(insertion))
+    }
+
+    /// Types the Column Editor's chosen values at the current column selection.
+    ///
+    /// The editor already holds one caret per column row (the representation
+    /// ``ColumnEditing/carets(in:rectangle:)`` produces), so each caret gets one
+    /// value: the same text in Text mode, or `numberSequence`'s per-row strings
+    /// in Number mode. Application still goes through the shared multi-caret
+    /// path, which inserts bottom-most first and coalesces every per-row edit
+    /// into one undo group.
+    ///
+    /// Returns `false` without touching the buffer when there are no carets or
+    /// neither mode supplied a value (an empty Text string is a no-op).
+    @discardableResult
+    func applyColumnEditor(text: String?, numbers: ColumnNumberParams?) -> Bool {
+        let carets = multiCaretState.carets
+        guard !carets.isEmpty else { return false }
+
+        let insertions: [String]
+        if let numbers {
+            insertions = ColumnEditing.numberSequence(initial: numbers.initial,
+                                                      step: numbers.step,
+                                                      repeat: numbers.repeatCount,
+                                                      rows: carets.count)
+        } else if let text, !text.isEmpty {
+            insertions = Array(repeating: text, count: carets.count)
+        } else {
+            return false
+        }
+
+        // The applier passes each original caret to its transform; keying by
+        // location lets every row carry its own insertion through one apply.
+        var insertionByLocation: [Int: String] = [:]
+        for (caret, insertion) in zip(carets, insertions) {
+            insertionByLocation[caret.location] = insertion
+        }
+        return applyMultiCaretTransform { current, selection in
+            let insertion = insertionByLocation[selection.location] ?? ""
+            return MultiCaretEditing.insertionTransform(insertion)(current, selection)
+        }
     }
 
     /// Types `insertion` in overwrite mode at every caret as one undoable edit.

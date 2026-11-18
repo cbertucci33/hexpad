@@ -261,6 +261,75 @@ public enum ColumnEditing {
         insert(insertion, into: text, state: carets(in: text, rectangle: rectangle))
     }
 
+    /// Inserts a different string at each caret of a column selection.
+    ///
+    /// This is the pure half of the app's Column Editor: `columnCarets` are the
+    /// per-line carets produced by ``carets(in:rectangle:)`` in document order,
+    /// and `insertions[i]` is applied at `columnCarets[i]`. A caret with a length
+    /// has its span replaced (the same typing-over-selection rule as
+    /// ``insert(_:into:state:)``); a zero-length caret is a plain insertion.
+    /// Missing insertions are empty strings, so a shorter `insertions` list
+    /// simply skips the trailing rows.
+    ///
+    /// Application is bottom-most first, reusing ``MultiCaretApplier``'s
+    /// ordering and remapping, so lower edits cannot invalidate the offsets of
+    /// carets above them. The returned carets sit just after each insertion.
+    public static func insertPerRow(_ insertions: [String],
+                                    at columnCarets: [NSRange],
+                                    in document: String) -> (text: String, carets: [NSRange]) {
+        guard !columnCarets.isEmpty else { return (document, []) }
+
+        // Carets are unique by location after MultiCaretState normalization;
+        // keying by location lets the shared applier recognize each caret even
+        // though it applies a different string at each one.
+        var insertionByLocation: [Int: String] = [:]
+        for (caret, insertion) in zip(columnCarets, insertions) {
+            insertionByLocation[caret.location] = insertion
+        }
+
+        return MultiCaretApplier.apply({ text, selection in
+            let insertion = insertionByLocation[selection.location] ?? ""
+            let insertedLength = (insertion as NSString).length
+            let document = NSMutableString(string: text)
+            let range = clamped(selection, in: document)
+            document.replaceCharacters(in: range, with: insertion)
+            return (document as String,
+                    NSRange(location: range.location + insertedLength, length: 0))
+        }, to: document, carets: columnCarets)
+    }
+
+    /// The per-row strings for the Column Editor's Number mode.
+    ///
+    /// Notepad++ semantics, pinned here for the pure model:
+    ///
+    /// - Each row advances the value by `step` after `count` rows have shared
+    ///   it. With `count == 1` every row increments; with `count == 3` rows
+    ///   1-3 share the initial number, rows 4-6 the next one, and so on.
+    /// - A `count` below 1 behaves as 1 (there is always at least one row per
+    ///   number). `rows` at or below 1 returns an empty sequence.
+    /// - Every string is left-padded with zeros to the width of the longest
+    ///   string in the sequence, so numbers keep their columns when the count
+    ///   crosses a digit boundary (`8, 9, 10` becomes `08, 09, 10`). A minus
+    ///   sign occupies one of that width's characters; the digits after it are
+    ///   padded to the remainder.
+    public static func numberSequence(initial: Int,
+                                      step: Int,
+                                      repeat count: Int,
+                                      rows: Int) -> [String] {
+        guard rows > 0 else { return [] }
+        let repeatCount = max(1, count)
+        let values = (0..<rows).map { initial + step * ($0 / repeatCount) }
+        let strings = values.map(String.init)
+        let width = strings.map(\.count).max() ?? 0
+
+        return values.map { value in
+            let sign = value < 0 ? "-" : ""
+            let magnitude = String(value.magnitude) // also safe for Int.min
+            let padding = max(0, width - sign.count - magnitude.count)
+            return sign + String(repeating: "0", count: padding) + magnitude
+        }
+    }
+
     /// Deletes every caret's range.
     ///
     /// With the carets produced by ``carets(in:rectangle:)`` this removes the
