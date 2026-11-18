@@ -205,6 +205,30 @@ extension HexpadAppDelegate {
         searchMenu.addItem(multiSelectItem("multi-select-undo-latest"))
         searchMenu.addItem(multiSelectItem("multi-select-skip-current"))
 
+        // P17g-2: Begin/End Select and its Column Mode variant follow the
+        // Multi-select group. Both are nil-targeted and take their titles from
+        // the registry, but use dedicated first-responder actions instead of a
+        // String `representedObject`: the P17g-1 menu-shape test collects the
+        // latter across the whole Search menu and pins it to that group alone.
+        // Neither item disables for a missing anchor — the End half no-ops
+        // (N++ parity) — and there is no default chord to invent here.
+        searchMenu.addItem(.separator())
+        let beginEndSelectItem = NSMenuItem(
+            title: registry.command(for: "begin-end-select")?.title ?? "Begin/End Select",
+            action: #selector(MainWindowController.beginEndSelect(_:)),
+            keyEquivalent: ""
+        )
+        beginEndSelectItem.target = nil
+        let beginEndSelectColumnItem = NSMenuItem(
+            title: registry.command(for: "begin-end-select-column")?.title
+                ?? "Begin/End Select in Column Mode",
+            action: #selector(MainWindowController.beginEndSelectColumn(_:)),
+            keyEquivalent: ""
+        )
+        beginEndSelectColumnItem.target = nil
+        searchMenu.addItem(beginEndSelectItem)
+        searchMenu.addItem(beginEndSelectColumnItem)
+
         // Search > Bookmark mirrors the registry's bookmark group. The group
         // already owns key chords through the Text menu, so these items carry
         // no duplicate equivalents; validation still runs through the

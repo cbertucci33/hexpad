@@ -37,6 +37,22 @@ class EditorContainer: NSView {
     /// Anchor of the in-progress Option-drag column selection, if any.
     private var columnAnchor: TextPoint?
 
+    /// Pending Search > Begin/End Select anchor for this editor. It is UI state
+    /// (like the Option-drag `columnAnchor`), not document state: it survives
+    /// unrelated commands but is cancelled by any selection change that the
+    /// command itself did not make. The pure toggle lives in the Kit so it can
+    /// be tested headlessly; the editor maps `TextPoint`s against live text.
+    private var beginEndSelectState = BeginEndSelectState()
+
+    /// True while a Begin/End Select completion moves the selection itself.
+    /// The synchronous selection observer uses it to leave the just-consumed
+    /// anchor alone instead of treating our own mirroring as user navigation.
+    private var isApplyingBeginEndSelect = false
+
+    /// Menu validation only needs to know whether a cycle is pending; the End
+    /// half stays enabled without one and simply no-ops (N++ disables nothing).
+    var hasPendingBeginEndSelectAnchor: Bool { beginEndSelectState.anchor != nil }
+
     /// The document backing the shared text storage, used for undoable edits.
     private weak var boundDocument: DocumentModel?
     /// Language the models were last built for. A same-document rebind with a
@@ -299,6 +315,7 @@ class EditorContainer: NSView {
             layoutManager.replaceTextStorage(storage)
             isSyncingSelection = false
             columnAnchor = nil
+            beginEndSelectState = BeginEndSelectState()
             // Reset before adopting the incoming document's caret. NSTextView
             // keeps its selection across a storage swap, so leaving that value
             // in place would move the new tab's caret to the old tab's offset.
@@ -473,6 +490,7 @@ class EditorContainer: NSView {
             applyZoomScale(1, writingThrough: false)
             setMultiCaretState(MultiCaretState(caretAt: 0))
             multiSelectState = MultiSelectState()
+            beginEndSelectState = BeginEndSelectState()
             applyScrollOffset(.zero)
             return
         }
@@ -678,6 +696,14 @@ class EditorContainer: NSView {
                 self.textView.needsDisplay = true
                 return
             }
+            // Notepad++ parity: any selection change not caused by a
+            // Begin/End Select command cancels a pending anchor (mouse click,
+            // arrow-key navigation, find navigation, tab switch). The command's
+            // own completion sets `isApplyingBeginEndSelect`, so mirroring its
+            // new selection cannot cancel the anchor it just consumed.
+            if !self.isApplyingBeginEndSelect {
+                self.beginEndSelectState.cancel()
+            }
             self.columnAnchor = nil
             self.multiCaretState = MultiCaretState(caret: selection)
             // A plain selection change ends the multi-select session: its add
@@ -692,7 +718,7 @@ class EditorContainer: NSView {
 
     /// Replaces the caret state and makes the primary caret the text view's
     /// single selection. Extra carets are drawn by the text view.
-    private func setMultiCaretState(_ state: MultiCaretState, scrollPrimary: Bool = false) {
+    func setMultiCaretState(_ state: MultiCaretState, scrollPrimary: Bool = false) {
         let normalized = normalizedForCurrentText(state)
         multiCaretState = normalized.carets.isEmpty
             ? MultiCaretState(caretAt: 0)
@@ -763,6 +789,45 @@ class EditorContainer: NSView {
 
     func endColumnSelection() {
         columnAnchor = nil
+    }
+
+    // MARK: - Search > Begin/End Select
+    //
+    // The toggle itself is a pure Kit model (BeginEndSelectState). This layer
+    // supplies the live selection/caret, resolves line/column points against
+    // the bound text, and applies the completion: a normal range selection, or
+    // the same `MultiCaretState` representation every column operation uses.
+
+    /// One Begin/End Select press. A `nil` completion means the press anchored
+    /// the current selection; a completion applies the joined range or column
+    /// selection and consumes the anchor.
+    @discardableResult
+    func performBeginEndSelect(_ operation: BeginEndSelectOperation) -> Bool {
+        let text = textView.string
+        let selection = textView.selectedRange
+        let point = columnPoint(at: selection.location, in: text)
+
+        guard let completion = beginEndSelectState.toggle(selection: selection,
+                                                          point: point,
+                                                          columnMode: operation == .column) else {
+            // Begin half: the anchor is pending now, but no selection changed.
+            return true
+        }
+
+        isApplyingBeginEndSelect = true
+        defer { isApplyingBeginEndSelect = false }
+
+        switch completion {
+        case .range(let range):
+            setMultiCaretState(MultiCaretState(caret: range))
+            return true
+        case .column(let start, let end):
+            let rectangle = ColumnRectangle(start: start, end: end)
+            let state = ColumnEditing.carets(in: text, rectangle: rectangle)
+            guard !state.isEmpty else { return false }
+            setMultiCaretState(state)
+            return true
+        }
     }
 
     /// Collapses every extra caret, keeping the primary selection.

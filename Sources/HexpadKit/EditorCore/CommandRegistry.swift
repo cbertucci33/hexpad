@@ -79,6 +79,14 @@ public struct EditorCommandContext {
     /// set changed.
     public var multiSelect: ((MultiSelectOperation) -> Bool)?
 
+    /// Runs a Search > Begin/End Select toggle against the live editor.
+    ///
+    /// The anchor is per-editor UI state, just like the caret set, so this pair
+    /// also stays a registry command through a view hook. Returns whether the
+    /// press changed the editor: anchoring and completing both report `true`,
+    /// while a completing press with no pending anchor is a no-op.
+    public var beginEndSelect: ((BeginEndSelectOperation) -> Bool)?
+
     public init(foldAll: (() -> Bool)? = nil,
                 unfoldAll: (() -> Bool)? = nil,
                 toggleWordWrap: (() -> Bool)? = nil,
@@ -86,7 +94,8 @@ public struct EditorCommandContext {
                 unfoldCurrentLevel: (() -> Bool)? = nil,
                 foldLevel: ((Int) -> Bool)? = nil,
                 unfoldLevel: ((Int) -> Bool)? = nil,
-                multiSelect: ((MultiSelectOperation) -> Bool)? = nil) {
+                multiSelect: ((MultiSelectOperation) -> Bool)? = nil,
+                beginEndSelect: ((BeginEndSelectOperation) -> Bool)? = nil) {
         self.foldAll = foldAll
         self.unfoldAll = unfoldAll
         self.toggleWordWrap = toggleWordWrap
@@ -95,6 +104,7 @@ public struct EditorCommandContext {
         self.foldLevel = foldLevel
         self.unfoldLevel = unfoldLevel
         self.multiSelect = multiSelect
+        self.beginEndSelect = beginEndSelect
     }
 
     /// Whether this context provides any view hook at all.
@@ -102,7 +112,22 @@ public struct EditorCommandContext {
         foldAll == nil && unfoldAll == nil && toggleWordWrap == nil
             && foldCurrentLevel == nil && unfoldCurrentLevel == nil
             && foldLevel == nil && unfoldLevel == nil && multiSelect == nil
+            && beginEndSelect == nil
     }
+}
+
+/// The two Search > Begin/End Select toggle commands.
+///
+/// Both share the same anchor/complete cycle; only the representation of the
+/// completed selection differs. Keeping them as separate enum cases lets the
+/// view hook receive the pinned semantics without a free-form string.
+public enum BeginEndSelectOperation: Equatable {
+
+    /// Begin/End Select: completion is a normal contiguous range selection.
+    case standard
+
+    /// Begin/End Select in Column Mode: completion is a column selection.
+    case column
 }
 
 /// The four Search > Multi-select semantics, with the three match-mode
@@ -329,14 +354,22 @@ public struct CommandRegistry {
     /// The Search > Multi-select commands, in menu order.
     public let multiSelectCommands: [EditorCommand]
 
+    /// The Search > Begin/End Select commands (P17g-2), in menu order.
+    ///
+    /// These view-only toggles sit next to the Multi-select group in the menu,
+    /// but live in their own list because that group's exact shape is pinned by
+    /// existing tests. Like Multi-select they are absent from ``allCommands``
+    /// and reached through ``command(for:)``.
+    public let beginEndSelectCommands: [EditorCommand]
+
     private var lookup: [String: EditorCommand]
 
     /// All commands offered by this registry, line-editing commands first.
     ///
-    /// The Multi-select group is intentionally not part of this legacy list:
-    /// callers that enumerate it expect the original command groups only, and
-    /// the new commands are reached through ``multiSelectCommands`` and
-    /// ``command(for:)`` instead.
+    /// The newer Search groups (Multi-select and Begin/End Select) are
+    /// intentionally not part of this legacy list: callers that enumerate it
+    /// expect the original command groups only, and the new commands are
+    /// reached through their own lists and ``command(for:)`` instead.
     public var allCommands: [EditorCommand] {
         commands + bookmarkCommands + toolCommands + dateCommands + lineOpCommands
             + caseCommands + indentCommands + viewCommands + tokenStyleCommands
@@ -365,7 +398,8 @@ public struct CommandRegistry {
                   indentCommands: CommandRegistry.defaultIndentCommands(settings: indentSettings),
                   viewCommands: CommandRegistry.defaultViewCommands(),
                   tokenStyleCommands: CommandRegistry.defaultTokenStyleCommands(),
-                  multiSelectCommands: CommandRegistry.defaultMultiSelectCommands())
+                  multiSelectCommands: CommandRegistry.defaultMultiSelectCommands(),
+                  beginEndSelectCommands: CommandRegistry.defaultBeginEndSelectCommands())
     }
 
     /// Creates a registry from explicit command lists. When identifiers
@@ -380,7 +414,8 @@ public struct CommandRegistry {
                 indentCommands: [EditorCommand] = [],
                 viewCommands: [EditorCommand] = [],
                 tokenStyleCommands: [EditorCommand] = [],
-                multiSelectCommands: [EditorCommand] = []) {
+                multiSelectCommands: [EditorCommand] = [],
+                beginEndSelectCommands: [EditorCommand] = []) {
         self.commands = commands
         self.bookmarkCommands = bookmarkCommands
         self.toolCommands = toolCommands
@@ -391,10 +426,11 @@ public struct CommandRegistry {
         self.viewCommands = viewCommands
         self.tokenStyleCommands = tokenStyleCommands
         self.multiSelectCommands = multiSelectCommands
+        self.beginEndSelectCommands = beginEndSelectCommands
         var lookup: [String: EditorCommand] = [:]
         for command in commands + bookmarkCommands + toolCommands + dateCommands
             + lineOpCommands + caseCommands + indentCommands + viewCommands
-            + tokenStyleCommands + multiSelectCommands
+            + tokenStyleCommands + multiSelectCommands + beginEndSelectCommands
         where lookup[command.identifier] == nil {
             lookup[command.identifier] = command
         }
@@ -948,6 +984,24 @@ public struct CommandRegistry {
             EditorCommand(identifier: "multi-select-skip-current",
                           title: "Skip Current and Go to Next",
                           viewExecute: { $0.multiSelect?(.skipCurrentAndGoToNext) ?? false })
+        ]
+    }
+
+    /// The Search > Begin/End Select commands, in menu order.
+    ///
+    /// These are view-only toggles driven through
+    /// ``EditorCommandContext/beginEndSelect``: the anchor is per-editor UI
+    /// state, so like the Multi-select group they stay out of ``allCommands``.
+    /// They occupy their own list rather than extending ``multiSelectCommands``
+    /// because that list's exact shape is pinned by the P17g-1 tests.
+    public static func defaultBeginEndSelectCommands() -> [EditorCommand] {
+        [
+            EditorCommand(identifier: "begin-end-select",
+                          title: "Begin/End Select",
+                          viewExecute: { $0.beginEndSelect?(.standard) ?? false }),
+            EditorCommand(identifier: "begin-end-select-column",
+                          title: "Begin/End Select in Column Mode",
+                          viewExecute: { $0.beginEndSelect?(.column) ?? false })
         ]
     }
 

@@ -317,3 +317,99 @@ public struct MultiSelectState: Equatable {
         }
     }
 }
+
+/// The anchored half of a Search > Begin/End Select cycle.
+///
+/// The editor keeps one pending anchor per view, but the toggle semantics are
+/// pure and live here so they can be tested without AppKit. `range` is the
+/// UTF-16 selection that was anchored: an empty range for a bare caret, or the
+/// whole selection when the command was invoked with text already selected
+/// (Notepad++ anchors that range). `point` is the same position expressed as a
+/// `TextPoint`, because the column variant needs a rectangle rather than a
+/// linear range. `columnMode` records which command began the cycle; a mixed
+/// completing press completes with the mode the cycle started in.
+public struct BeginEndSelectAnchor: Equatable {
+
+    /// The anchored UTF-16 selection (empty for a bare caret).
+    public var range: NSRange
+
+    /// The anchored caret as a line/column point.
+    public var point: TextPoint
+
+    /// Whether the cycle began in column mode.
+    public var columnMode: Bool
+
+    public init(range: NSRange, point: TextPoint, columnMode: Bool) {
+        self.range = range
+        self.point = point
+        self.columnMode = columnMode
+    }
+}
+
+/// The selection a completing Begin/End Select press asks the editor to apply.
+public enum BeginEndSelectCompletion: Equatable {
+
+    /// A normal contiguous selection, from the anchored range to the caret.
+    case range(NSRange)
+
+    /// A column selection, as the two corners of a ``ColumnRectangle``. The
+    /// app maps these through ``ColumnEditing/carets(in:rectangle:)`` into the
+    /// same `MultiCaretState` used by every other column operation.
+    case column(TextPoint, TextPoint)
+}
+
+/// Pure anchor state for the Search > Begin/End Select toggle pair.
+///
+/// First press (``begin(selection:point:columnMode:)``) stores the anchor;
+/// second press (``complete(selection:point:)``) returns the selection to apply
+/// and clears the anchor. A completing press with no pending anchor is a no-op
+/// (`nil`) — notably, the app keeps the menu item enabled in that case, exactly
+/// as Notepad++ does. The editor cancels a pending anchor on any selection
+/// change not caused by the command itself (``cancel()``).
+public struct BeginEndSelectState: Equatable {
+
+    /// The pending anchor, or `nil` when no cycle is in progress.
+    public private(set) var anchor: BeginEndSelectAnchor?
+
+    public init() {}
+
+    /// Anchors the current selection/caret. Invoking Begin while an anchor is
+    /// already pending replaces it, which is what a re-armed toggle does.
+    public mutating func begin(selection: NSRange, point: TextPoint, columnMode: Bool) {
+        anchor = BeginEndSelectAnchor(range: selection,
+                                      point: point,
+                                      columnMode: columnMode)
+    }
+
+    /// Completes the cycle from the anchor to `selection`, or no-ops (`nil`)
+    /// when nothing is pending. The anchor is consumed either way it completes.
+    @discardableResult
+    public mutating func complete(selection: NSRange,
+                                  point: TextPoint) -> BeginEndSelectCompletion? {
+        guard let anchor else { return nil }
+        self.anchor = nil
+        if anchor.columnMode {
+            return .column(anchor.point, point)
+        }
+        return .range(NSUnionRange(anchor.range, selection))
+    }
+
+    /// One menu press: begin when idle, complete when an anchor is pending.
+    /// Returns `nil` for the Begin half because it changes no selection.
+    @discardableResult
+    public mutating func toggle(selection: NSRange,
+                                point: TextPoint,
+                                columnMode: Bool) -> BeginEndSelectCompletion? {
+        guard anchor != nil else {
+            begin(selection: selection, point: point, columnMode: columnMode)
+            return nil
+        }
+        return complete(selection: selection, point: point)
+    }
+
+    /// Notepad++ parity: any selection change not caused by Begin/End Select
+    /// (mouse, arrow keys, find navigation, tab switch) cancels the anchor.
+    public mutating func cancel() {
+        anchor = nil
+    }
+}

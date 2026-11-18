@@ -3249,6 +3249,8 @@ class MainWindowController: NSViewController {
              "multi-select-skip-current",
              "multi-select-undo-latest":
             return canPerformMultiSelectCommand(identifier)
+        case "begin-end-select", "begin-end-select-column":
+            return canPerformBeginEndSelectCommand(identifier)
         case "fold-all": return canFoldAll()
         case "unfold-all": return canUnfoldAll()
         case "fold-current-level": return canFoldCurrentLevel()
@@ -3278,6 +3280,20 @@ class MainWindowController: NSViewController {
             return editorContainer?.canUndoLatestMultiSelect ?? false
         }
         return !findQuery.isEmpty
+    }
+
+    /// Menu validation for the Search > Begin/End Select pair.
+    ///
+    /// A focused, non-empty buffer is all either item needs. The Begin half
+    /// anchors the caret; the End half is a no-op when no anchor is pending, but
+    /// Notepad++ disables nothing here, so the item stays enabled — the command
+    /// simply reports no change. An anchor being pending is therefore not a
+    /// validation condition (it is exposed on the editor for tests/UI only).
+    private func canPerformBeginEndSelectCommand(_ identifier: String) -> Bool {
+        guard identifier == "begin-end-select" || identifier == "begin-end-select-column" else {
+            return false
+        }
+        return editorContainer != nil && (tabStore.selectedDocument?.textStorage.length ?? 0) > 0
     }
 
     /// The 1-based depth encoded in a fold/unfold level command identifier.
@@ -3399,7 +3415,8 @@ class MainWindowController: NSViewController {
             multiSelect: { [weak self] operation in
                 guard let self else { return false }
                 return editor.performMultiSelect(operation, query: self.findQuery)
-            }
+            },
+            beginEndSelect: { editor.performBeginEndSelect($0) }
         )
     }
 
@@ -3546,6 +3563,20 @@ class MainWindowController: NSViewController {
         guard let item = sender as? NSMenuItem,
               let identifier = item.representedObject as? String else { return }
         performCommand(identifier: identifier)
+    }
+
+    /// First-responder entry points for the Search > Begin/End Select items.
+    ///
+    /// The items are nil-targeted and take their titles from the registry, but
+    /// use one action per toggle instead of a String `representedObject` so the
+    /// P17g-1 menu-shape test keeps pinning its own group. Both route through
+    /// ``performCommand(identifier:)`` and validate with the same rule.
+    @objc func beginEndSelect(_ sender: Any?) {
+        performCommand(identifier: "begin-end-select")
+    }
+
+    @objc func beginEndSelectColumn(_ sender: Any?) {
+        performCommand(identifier: "begin-end-select-column")
     }
 
     // MARK: - Macros
@@ -4021,6 +4052,12 @@ extension MainWindowController: NSMenuItemValidation {
             || menuItem.action == #selector(MainWindowController.performMultiSelectCommand(withIdentifier:)) {
             guard let identifier = menuItem.representedObject as? String else { return false }
             return canPerformCommand(identifier: identifier)
+        }
+        if menuItem.action == #selector(MainWindowController.beginEndSelect(_:)) {
+            return canPerformBeginEndSelectCommand("begin-end-select")
+        }
+        if menuItem.action == #selector(MainWindowController.beginEndSelectColumn(_:)) {
+            return canPerformBeginEndSelectCommand("begin-end-select-column")
         }
         if menuItem.action == #selector(MainWindowController.selectNextTab(_:))
             || menuItem.action == #selector(MainWindowController.selectPreviousTab(_:)) {
