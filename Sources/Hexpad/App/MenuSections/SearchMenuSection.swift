@@ -175,6 +175,36 @@ extension HexpadAppDelegate {
             trailingIdentifier: "copy-styled-text-all"
         )
 
+        // N++ Search > Multi-select group, next to the token-style commands.
+        // Each leaf is a nil-targeted item carrying its registry identifier, so
+        // the focused window's controller owns both the action and validation.
+        // "Multi-select Next" is one item whose submenu holds the three pinned
+        // match-mode variants. It is added after the token-style submenus so
+        // their position in the Search menu stays stable.
+        func multiSelectItem(_ identifier: String) -> NSMenuItem {
+            let item = NSMenuItem(
+                title: registry.command(for: identifier)?.title ?? identifier,
+                action: #selector(MainWindowController.performMultiSelectCommand(withIdentifier:)),
+                keyEquivalent: ""
+            )
+            item.target = nil
+            item.representedObject = identifier
+            return item
+        }
+        searchMenu.addItem(.separator())
+        searchMenu.addItem(multiSelectItem("select-all-occurrences"))
+        let nextModes = NSMenu(title: "Multi-select Next")
+        for identifier in ["multi-select-next-ignore-case",
+                           "multi-select-next-match-case",
+                           "multi-select-next-whole-word"] {
+            nextModes.addItem(multiSelectItem(identifier))
+        }
+        let multiSelectNextItem = NSMenuItem(title: "Multi-select Next", action: nil, keyEquivalent: "")
+        multiSelectNextItem.submenu = nextModes
+        searchMenu.addItem(multiSelectNextItem)
+        searchMenu.addItem(multiSelectItem("multi-select-undo-latest"))
+        searchMenu.addItem(multiSelectItem("multi-select-skip-current"))
+
         // Search > Bookmark mirrors the registry's bookmark group. The group
         // already owns key chords through the Text menu, so these items carry
         // no duplicate equivalents; validation still runs through the

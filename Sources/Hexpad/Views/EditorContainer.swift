@@ -18,6 +18,17 @@ class EditorContainer: NSView {
     /// create a second, competing source of truth.
     private(set) var multiCaretState = MultiCaretState(caretAt: 0)
 
+    /// Bookkeeping for the Search > Multi-select commands: the collected match
+    /// ranges, the order carets were added in (Undo Latest) and the occurrences
+    /// Skip Current excluded. It lives here because the find query is
+    /// FindBar-owned and the caret set is editor-owned — neither belongs in
+    /// `DocumentState`, so the pure Kit model is driven from this layer.
+    private var multiSelectState = MultiSelectState()
+
+    /// Whether Undo Latest Multi-select has a caret to remove. Menu validation
+    /// reads this so the item disables when nothing was added this session.
+    var canUndoLatestMultiSelect: Bool { !multiSelectState.addOrder.isEmpty }
+
     /// True while this container is deliberately moving the text view's
     /// selection to mirror the caret state. The selection observer ignores
     /// those notifications so it does not collapse the extra carets it just set.
@@ -292,6 +303,7 @@ class EditorContainer: NSView {
             // keeps its selection across a storage swap, so leaving that value
             // in place would move the new tab's caret to the old tab's offset.
             setMultiCaretState(MultiCaretState(caretAt: 0))
+            multiSelectState = MultiSelectState()
             applyBodyFont()
             // The gutter registered its redraw observer on the previous tab's
             // storage; re-subscribe to the buffer now in use.
@@ -460,6 +472,7 @@ class EditorContainer: NSView {
             setWordWrapEnabled(false)
             applyZoomScale(1, writingThrough: false)
             setMultiCaretState(MultiCaretState(caretAt: 0))
+            multiSelectState = MultiSelectState()
             applyScrollOffset(.zero)
             return
         }
@@ -667,6 +680,9 @@ class EditorContainer: NSView {
             }
             self.columnAnchor = nil
             self.multiCaretState = MultiCaretState(caret: selection)
+            // A plain selection change ends the multi-select session: its add
+            // order and skip set referred to carets the user just replaced.
+            self.multiSelectState = MultiSelectState(carets: self.multiCaretState)
             self.textView.needsDisplay = true
             // Clamp a caret that landed inside hidden text, and unhide a block
             // the user just selected across (N++'s second unhide gesture).
@@ -753,6 +769,69 @@ class EditorContainer: NSView {
     func collapseMultiCaret() {
         guard let primary = multiCaretState.primaryCaret else { return }
         setMultiCaretState(MultiCaretState(caret: primary))
+    }
+
+    // MARK: - Search > Multi-select commands
+    //
+    // Match collection lives here, not in the Kit: the query is FindBar-owned
+    // and is passed in by the controller, while the resulting carets and their
+    // add order are editor-owned. SearchEngine does the matching; the Kit's
+    // `MultiSelectState` turns ranges into a normalized caret set.
+
+    /// Runs one Search > Multi-select command using `query` as the find pattern.
+    ///
+    /// Returns whether the caret set changed. Undo Latest needs no query and no
+    /// fresh match list — it only pops the app-side add-order stack.
+    @discardableResult
+    func performMultiSelect(_ operation: MultiSelectOperation, query: String) -> Bool {
+        if operation == .undoLatest {
+            guard multiSelectState.undoLatest() else { return false }
+            commitMultiSelectState()
+            return true
+        }
+        guard let document = boundDocument, !query.isEmpty else { return false }
+
+        let options = Self.multiSelectOptions(for: operation, query: query)
+        let matches = SearchEngine.search(document.text, pattern: query, options: options)
+            .map(\.range)
+        multiSelectState.updateMatches(matches)
+
+        let changed: Bool
+        switch operation {
+        case .selectAllOccurrences:
+            changed = multiSelectState.selectAllOccurrences()
+        case .nextIgnoreCase, .nextMatchCase, .nextWholeWord:
+            changed = multiSelectState.selectNext()
+        case .skipCurrentAndGoToNext:
+            changed = multiSelectState.skipCurrentAndGoToNext()
+        case .undoLatest:
+            return false
+        }
+        guard changed else { return false }
+        commitMultiSelectState()
+        return true
+    }
+
+    /// The pinned ``SearchOptions`` for each command.
+    ///
+    /// The three "Multi-select Next" modes map exactly to case-insensitive,
+    /// case-sensitive and case-insensitive + whole word. Select All and Skip
+    /// follow the S18a token-style precedent: enforce whole-word for a query
+    /// that is a single word token so `foo` never selects inside `foobar`.
+    private static func multiSelectOptions(for operation: MultiSelectOperation,
+                                           query: String) -> SearchOptions {
+        switch operation {
+        case .nextIgnoreCase: return []
+        case .nextMatchCase: return [.caseSensitive]
+        case .nextWholeWord: return [.wholeWord]
+        case .selectAllOccurrences, .skipCurrentAndGoToNext:
+            return SearchEngine.isWordToken(query) ? [.wholeWord] : []
+        case .undoLatest: return []
+        }
+    }
+
+    private func commitMultiSelectState() {
+        setMultiCaretState(multiSelectState.carets)
     }
 
     /// Types `insertion` at every caret as one undoable edit.

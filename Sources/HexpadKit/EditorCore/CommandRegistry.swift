@@ -70,13 +70,23 @@ public struct EditorCommandContext {
     /// Toggle soft wrapping. Returns `true` when the wrap mode changed.
     public var toggleWordWrap: (() -> Bool)?
 
+    /// Runs a Search > Multi-select command against the live editor.
+    ///
+    /// The caret set and the find query are both app-owned, so these commands
+    /// cannot be pure `DocumentState` transforms. Like folding and wrapping,
+    /// they stay registry commands through this hook; the app resolves the
+    /// current query and options when the hook runs. Returns whether the caret
+    /// set changed.
+    public var multiSelect: ((MultiSelectOperation) -> Bool)?
+
     public init(foldAll: (() -> Bool)? = nil,
                 unfoldAll: (() -> Bool)? = nil,
                 toggleWordWrap: (() -> Bool)? = nil,
                 foldCurrentLevel: (() -> Bool)? = nil,
                 unfoldCurrentLevel: (() -> Bool)? = nil,
                 foldLevel: ((Int) -> Bool)? = nil,
-                unfoldLevel: ((Int) -> Bool)? = nil) {
+                unfoldLevel: ((Int) -> Bool)? = nil,
+                multiSelect: ((MultiSelectOperation) -> Bool)? = nil) {
         self.foldAll = foldAll
         self.unfoldAll = unfoldAll
         self.toggleWordWrap = toggleWordWrap
@@ -84,14 +94,39 @@ public struct EditorCommandContext {
         self.unfoldCurrentLevel = unfoldCurrentLevel
         self.foldLevel = foldLevel
         self.unfoldLevel = unfoldLevel
+        self.multiSelect = multiSelect
     }
 
     /// Whether this context provides any view hook at all.
     public var isEmpty: Bool {
         foldAll == nil && unfoldAll == nil && toggleWordWrap == nil
             && foldCurrentLevel == nil && unfoldCurrentLevel == nil
-            && foldLevel == nil && unfoldLevel == nil
+            && foldLevel == nil && unfoldLevel == nil && multiSelect == nil
     }
+}
+
+/// The four Search > Multi-select semantics, with the three match-mode
+/// variants of "Multi-select Next" encoded as separate cases so each can carry
+/// its own pinned ``SearchOptions`` mapping.
+public enum MultiSelectOperation: Equatable {
+
+    /// Every match of the current query becomes a caret.
+    case selectAllOccurrences
+
+    /// Add the next match with case ignored (case-insensitive, no whole word).
+    case nextIgnoreCase
+
+    /// Add the next match with case significant.
+    case nextMatchCase
+
+    /// Add the next match as a whole word (case-insensitive + whole word).
+    case nextWholeWord
+
+    /// Drop the current caret, exclude its occurrence, add the following match.
+    case skipCurrentAndGoToNext
+
+    /// Remove the most recently added caret.
+    case undoLatest
 }
 
 /// A single editor command.
@@ -291,9 +326,17 @@ public struct CommandRegistry {
     /// The Search > token style commands, in menu order.
     public let tokenStyleCommands: [EditorCommand]
 
+    /// The Search > Multi-select commands, in menu order.
+    public let multiSelectCommands: [EditorCommand]
+
     private var lookup: [String: EditorCommand]
 
     /// All commands offered by this registry, line-editing commands first.
+    ///
+    /// The Multi-select group is intentionally not part of this legacy list:
+    /// callers that enumerate it expect the original command groups only, and
+    /// the new commands are reached through ``multiSelectCommands`` and
+    /// ``command(for:)`` instead.
     public var allCommands: [EditorCommand] {
         commands + bookmarkCommands + toolCommands + dateCommands + lineOpCommands
             + caseCommands + indentCommands + viewCommands + tokenStyleCommands
@@ -321,7 +364,8 @@ public struct CommandRegistry {
                   caseCommands: CommandRegistry.defaultCaseCommands(),
                   indentCommands: CommandRegistry.defaultIndentCommands(settings: indentSettings),
                   viewCommands: CommandRegistry.defaultViewCommands(),
-                  tokenStyleCommands: CommandRegistry.defaultTokenStyleCommands())
+                  tokenStyleCommands: CommandRegistry.defaultTokenStyleCommands(),
+                  multiSelectCommands: CommandRegistry.defaultMultiSelectCommands())
     }
 
     /// Creates a registry from explicit command lists. When identifiers
@@ -335,7 +379,8 @@ public struct CommandRegistry {
                 caseCommands: [EditorCommand] = [],
                 indentCommands: [EditorCommand] = [],
                 viewCommands: [EditorCommand] = [],
-                tokenStyleCommands: [EditorCommand] = []) {
+                tokenStyleCommands: [EditorCommand] = [],
+                multiSelectCommands: [EditorCommand] = []) {
         self.commands = commands
         self.bookmarkCommands = bookmarkCommands
         self.toolCommands = toolCommands
@@ -345,10 +390,11 @@ public struct CommandRegistry {
         self.indentCommands = indentCommands
         self.viewCommands = viewCommands
         self.tokenStyleCommands = tokenStyleCommands
+        self.multiSelectCommands = multiSelectCommands
         var lookup: [String: EditorCommand] = [:]
         for command in commands + bookmarkCommands + toolCommands + dateCommands
             + lineOpCommands + caseCommands + indentCommands + viewCommands
-            + tokenStyleCommands
+            + tokenStyleCommands + multiSelectCommands
         where lookup[command.identifier] == nil {
             lookup[command.identifier] = command
         }
@@ -869,6 +915,40 @@ public struct CommandRegistry {
                                       title: "Word Wrap",
                                       viewExecute: { $0.toggleWordWrap?() ?? false }))
         return commands
+    }
+
+    /// The Search > Multi-select commands, in Notepad++ menu order.
+    ///
+    /// These are view-only commands: the caret set and the find query are owned
+    /// by the app, so their real effect runs through
+    /// ``EditorCommandContext/multiSelect``. The pure `execute` is the identity
+    /// for the same reason folding is — replay and macros can still record the
+    /// identifier, but a headless run is a no-op.
+    ///
+    /// "Multi-select Next" is one menu item whose submenu carries the three
+    /// mode commands below. The pinned mapping is Ignore Case = case-insensitive,
+    /// Match Case = case-sensitive, Whole Word = case-insensitive + whole word.
+    public static func defaultMultiSelectCommands() -> [EditorCommand] {
+        [
+            EditorCommand(identifier: "select-all-occurrences",
+                          title: "Select All Occurrences",
+                          viewExecute: { $0.multiSelect?(.selectAllOccurrences) ?? false }),
+            EditorCommand(identifier: "multi-select-next-ignore-case",
+                          title: "Ignore Case",
+                          viewExecute: { $0.multiSelect?(.nextIgnoreCase) ?? false }),
+            EditorCommand(identifier: "multi-select-next-match-case",
+                          title: "Match Case",
+                          viewExecute: { $0.multiSelect?(.nextMatchCase) ?? false }),
+            EditorCommand(identifier: "multi-select-next-whole-word",
+                          title: "Whole Word",
+                          viewExecute: { $0.multiSelect?(.nextWholeWord) ?? false }),
+            EditorCommand(identifier: "multi-select-undo-latest",
+                          title: "Undo Latest Multi-select",
+                          viewExecute: { $0.multiSelect?(.undoLatest) ?? false }),
+            EditorCommand(identifier: "multi-select-skip-current",
+                          title: "Skip Current and Go to Next",
+                          viewExecute: { $0.multiSelect?(.skipCurrentAndGoToNext) ?? false })
+        ]
     }
 
     /// The Search > token style commands, in Notepad++ menu order.

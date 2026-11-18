@@ -168,3 +168,152 @@ public struct MultiCaretState: Equatable {
         return result
     }
 }
+
+/// Pure model for the Search > Multi-select commands.
+///
+/// ``MultiCaretState`` keeps the carets themselves in document order with
+/// overlaps collapsed. The N++ commands need two extra pieces of bookkeeping a
+/// caret set cannot express: the order carets were added in (for "Undo Latest
+/// Multi-select") and the occurrences the user explicitly skipped (so "Skip
+/// Current and Go to Next" never selects one again). This value holds all three
+/// and exposes one mutating entry point per command. It is deliberately Kit-side
+/// and AppKit-free so the semantics are testable headlessly.
+///
+/// Match ranges are UTF-16 `NSRange`s in document order, as returned by
+/// ``SearchEngine/search(_:pattern:options:range:)``. Callers refresh them on
+/// every command; this type never touches the document text.
+public struct MultiSelectState: Equatable {
+
+    /// The live carets, always normalized by ``MultiCaretState``.
+    public private(set) var carets: MultiCaretState
+
+    /// The collected matches for the current query, in document order.
+    public private(set) var matches: [NSRange]
+
+    /// Carets in the order the user added them. The last element is "current".
+    public private(set) var addOrder: [NSRange]
+
+    /// Occurrences dropped by Skip Current, excluded from later selection.
+    public private(set) var skipped: [NSRange]
+
+    public init(carets: MultiCaretState = MultiCaretState(),
+                matches: [NSRange] = [],
+                addOrder: [NSRange] = [],
+                skipped: [NSRange] = []) {
+        self.carets = carets
+        self.matches = matches
+        self.addOrder = addOrder
+        self.skipped = skipped
+    }
+
+    /// Replaces the collected match set without disturbing the caret set or its
+    /// add-order / skip bookkeeping. Call this before each command so a changed
+    /// query or buffer is reflected in the next pick.
+    public mutating func updateMatches(_ newMatches: [NSRange]) {
+        matches = newMatches
+    }
+
+    /// Every match becomes a caret. The resulting set is in document order with
+    /// overlaps collapsed by ``MultiCaretState``.
+    ///
+    /// Returns `false` (a no-op) when the match set is empty or already exactly
+    /// the current caret set. Add order is reset to the resulting carets, so a
+    /// following Undo Latest removes the bottom-most one.
+    @discardableResult
+    public mutating func selectAllOccurrences() -> Bool {
+        guard !matches.isEmpty else { return false }
+        let result = MultiCaretState(carets: matches)
+        guard result != carets else { return false }
+        carets = result
+        addOrder = result.carets
+        skipped = []
+        return true
+    }
+
+    /// Adds the next match after the most recently added caret as a new caret.
+    ///
+    /// The anchor is `addOrder.last`, falling back to the primary caret when
+    /// nothing was added this session. Already-selected and skipped matches are
+    /// excluded. There is deliberately no wrap: at the document end the command
+    /// is a no-op.
+    @discardableResult
+    public mutating func selectNext() -> Bool {
+        guard let anchor = addOrder.last ?? carets.primaryCaret else { return false }
+        let excluded = carets.carets + skipped
+        guard let index = SearchEngine.nextMatchIndex(from: anchor.location,
+                                                       in: matches,
+                                                       excluding: excluded) else { return false }
+        let next = matches[index]
+        var result = carets
+        result.addCaret(next)
+        guard result != carets else { return false }
+        carets = result
+        reconcileAddOrder()
+        addOrder.append(concreteCaret(for: next) ?? next)
+        return true
+    }
+
+    /// Drops the current (most recently added) caret, marks its match skipped,
+    /// and adds the following match in its place.
+    ///
+    /// The skipped occurrence is recorded before the pick, so it can never be
+    /// re-added by a later Next or Skip. When there is no following match the
+    /// current caret is still removed, matching N++'s "skip" half of the
+    /// command; Undo Latest can bring it back.
+    @discardableResult
+    public mutating func skipCurrentAndGoToNext() -> Bool {
+        guard let current = addOrder.last ?? carets.primaryCaret else { return false }
+        let before = carets
+        var result = carets
+        result.removeCaret(current)
+        skipped.append(current)
+
+        let excluded = result.carets + skipped
+        if let index = SearchEngine.nextMatchIndex(from: current.upperBound,
+                                                     in: matches,
+                                                     excluding: excluded) {
+            let next = matches[index]
+            result.addCaret(next)
+            carets = result
+            reconcileAddOrder()
+            addOrder.append(concreteCaret(for: next) ?? next)
+        } else {
+            carets = result
+            reconcileAddOrder()
+        }
+        return carets != before
+    }
+
+    /// Removes the most recently added caret. Returns `false` when nothing was
+    /// added this session. Skipped occurrences stay skipped: undo reverses the
+    /// caret, not the user's explicit skip.
+    @discardableResult
+    public mutating func undoLatest() -> Bool {
+        guard let last = addOrder.popLast() else { return false }
+        var result = carets
+        result.removeCaret(last)
+        carets = result
+        reconcileAddOrder()
+        return true
+    }
+
+    // MARK: - Add-order bookkeeping
+
+    /// Maps each stored add-order range onto the exact caret now in the set.
+    ///
+    /// ``MultiCaretState`` merges overlapping ranges, so an added caret can end
+    /// up folded into a larger one. Without this pass Undo Latest would try to
+    /// remove a range that no longer exists verbatim.
+    private mutating func reconcileAddOrder() {
+        addOrder = addOrder.compactMap { concreteCaret(for: $0) }
+    }
+
+    private func concreteCaret(for range: NSRange) -> NSRange? {
+        if carets.carets.contains(range) { return range }
+        return carets.carets.first { caret in
+            NSLocationInRange(range.location, caret)
+                || NSLocationInRange(caret.location, NSRange(location: range.location,
+                                                              length: max(0, range.length)))
+        }
+    }
+}

@@ -122,6 +122,15 @@ class MainWindowController: NSViewController {
     /// validation/action tests in the app test bundle.
     var editorTextView: NSTextView? { editorContainer?.textView }
 
+    /// The focused editor, exposed for menu validation and app tests that need
+    /// to inspect the multi-caret state a Search command produced.
+    var focusedEditor: EditorContainer? { editorContainer }
+
+    /// The current find query. These commands deliberately reuse the FindBar's
+    /// field the same way `showDocumentSearchResults` does; they do not own a
+    /// second query store.
+    var findQuery: String { findBar?.searchField.stringValue ?? "" }
+
     /// Whether the macro recorder is currently appending commands.
     var isRecordingMacro: Bool { macroRecorder.isRecording }
     
@@ -3233,6 +3242,13 @@ class MainWindowController: NSViewController {
     /// document. The identifiers mirror ``CommandRegistry/defaultViewCommands``.
     private func canPerformViewCommand(_ identifier: String) -> Bool {
         switch identifier {
+        case "select-all-occurrences",
+             "multi-select-next-ignore-case",
+             "multi-select-next-match-case",
+             "multi-select-next-whole-word",
+             "multi-select-skip-current",
+             "multi-select-undo-latest":
+            return canPerformMultiSelectCommand(identifier)
         case "fold-all": return canFoldAll()
         case "unfold-all": return canUnfoldAll()
         case "fold-current-level": return canFoldCurrentLevel()
@@ -3247,6 +3263,21 @@ class MainWindowController: NSViewController {
             }
             return false
         }
+    }
+
+    /// Menu validation for the Search > Multi-select commands.
+    ///
+    /// Every command needs a focused, non-empty buffer. Query-driven commands
+    /// also need a non-empty find query — without one there is no match list to
+    /// select from. Undo Latest instead needs a caret that was actually added
+    /// this session, which the editor tracks in its add-order stack.
+    private func canPerformMultiSelectCommand(_ identifier: String) -> Bool {
+        guard editorContainer != nil,
+              (tabStore.selectedDocument?.textStorage.length ?? 0) > 0 else { return false }
+        if identifier == "multi-select-undo-latest" {
+            return editorContainer?.canUndoLatestMultiSelect ?? false
+        }
+        return !findQuery.isEmpty
     }
 
     /// The 1-based depth encoded in a fold/unfold level command identifier.
@@ -3364,7 +3395,11 @@ class MainWindowController: NSViewController {
             foldCurrentLevel: { editor.foldCurrentLevel() },
             unfoldCurrentLevel: { editor.unfoldCurrentLevel() },
             foldLevel: { editor.foldLevel($0) > 0 },
-            unfoldLevel: { editor.unfoldLevel($0) > 0 }
+            unfoldLevel: { editor.unfoldLevel($0) > 0 },
+            multiSelect: { [weak self] operation in
+                guard let self else { return false }
+                return editor.performMultiSelect(operation, query: self.findQuery)
+            }
         )
     }
 
@@ -3497,6 +3532,17 @@ class MainWindowController: NSViewController {
     /// They share ``performCommand(identifier:)`` with every other registry
     /// command; the separate selector only groups them for menu validation.
     @objc func performTokenStyleCommand(withIdentifier sender: Any?) {
+        guard let item = sender as? NSMenuItem,
+              let identifier = item.representedObject as? String else { return }
+        performCommand(identifier: identifier)
+    }
+
+    /// First-responder entry point for the Search > Multi-select items.
+    ///
+    /// Mirrors the token-style group: the menu item carries a registry
+    /// identifier in `representedObject`, so one selector covers every command
+    /// and validation runs through ``canPerformCommand(identifier:)``.
+    @objc func performMultiSelectCommand(withIdentifier sender: Any?) {
         guard let item = sender as? NSMenuItem,
               let identifier = item.representedObject as? String else { return }
         performCommand(identifier: identifier)
@@ -3971,7 +4017,8 @@ extension MainWindowController: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(MainWindowController.performCommand(withIdentifier:))
             || menuItem.action == #selector(MainWindowController.performBookmarkCommand(withIdentifier:))
-            || menuItem.action == #selector(MainWindowController.performTokenStyleCommand(withIdentifier:)) {
+            || menuItem.action == #selector(MainWindowController.performTokenStyleCommand(withIdentifier:))
+            || menuItem.action == #selector(MainWindowController.performMultiSelectCommand(withIdentifier:)) {
             guard let identifier = menuItem.representedObject as? String else { return false }
             return canPerformCommand(identifier: identifier)
         }

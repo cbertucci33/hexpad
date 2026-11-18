@@ -300,3 +300,39 @@ public final class SearchEngine {
         return results
     }
 }
+
+// MARK: - Multi-select match iteration
+//
+// The Search > Multi-select commands repeatedly walk one collected match list:
+// "next" picks the following unselected occurrence, "skip" excludes the one it
+// just dropped. Keeping that pick in the Kit (rather than in a menu action)
+// makes the no-wrap rule and the "skipped stays skipped" rule testable without
+// a window, and gives every variant the same notion of "next".
+
+public extension SearchEngine {
+
+    /// Index of the first match whose location is at or after `location` and
+    /// which is not in `excluded`.
+    ///
+    /// `matches` must be in ascending document order, which `search` always
+    /// produces. Returning `nil` at the end is the deliberate no-wrap rule for
+    /// the Multi-select commands: they never cycle back to the first match.
+    static func nextMatchIndex(from location: Int,
+                               in matches: [NSRange],
+                               excluding excluded: [NSRange]) -> Int? {
+        matches.firstIndex { range in
+            range.location >= location && !excluded.contains(range)
+        }
+    }
+
+    /// Whether `token` is one word token (alphanumerics plus `_`, matching the
+    /// `\\b` boundaries Whole Word uses).
+    ///
+    /// The S18a token-style commands enforce whole-word matching for word
+    /// tokens; the Select All / Skip multi-select commands follow the same
+    /// precedent when they derive options from the find-bar query.
+    static func isWordToken(_ token: String) -> Bool {
+        guard !token.isEmpty else { return false }
+        return wordRange(at: 0, in: token)?.length == (token as NSString).length
+    }
+}
