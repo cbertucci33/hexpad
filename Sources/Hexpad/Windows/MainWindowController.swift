@@ -1715,6 +1715,16 @@ class MainWindowController: NSViewController {
             commentPrefix(for: activePane.tabStore.selectedDocument)
         )
         refreshChrome()
+        // The Edit > Read-Only checkmark belongs to the focused document; a tab
+        // or pane switch must refresh it even if the menu has not reopened.
+        refreshReadOnlyMenuCheckmarks()
+    }
+
+    /// Pushes the focused document's read-only flag to the delegate-owned Edit
+    /// menu items. The delegate is the menu target, so it owns the checkmarks;
+    /// this controller only tells it when focus/state may have moved.
+    private func refreshReadOnlyMenuCheckmarks() {
+        (NSApp.delegate as? HexpadAppDelegate)?.updateReadOnlyCheckmarks()
     }
 
     /// Binds only panes whose selected document actually changed. Focus
@@ -3020,6 +3030,30 @@ class MainWindowController: NSViewController {
         performCommand(identifier: "toggle-word-wrap")
     }
 
+    // MARK: - Read-Only (P16d-3)
+
+    /// Edit > Read-Only: flip only the focused document. The editor veto reads
+    /// the flag directly, so no rebind is needed; the dirty flag is untouched.
+    @objc func toggleReadOnly() {
+        guard let doc = tabStore.selectedDocument else { return }
+        doc.setReadOnly(!doc.isReadOnly)
+        refreshReadOnlyMenuCheckmarks()
+    }
+
+    /// Edit > Read-Only for All Documents: the focused document's NEW state
+    /// wins, so a read-only toggle locks every tab and unlocking unlocks them.
+    /// Spans both split panes, matching the other "all documents" commands.
+    @objc func toggleReadOnlyForAll() {
+        guard let doc = tabStore.selectedDocument else { return }
+        let newState = !doc.isReadOnly
+        for pane in allPanes {
+            for document in pane.tabStore.documents {
+                document.setReadOnly(newState)
+            }
+        }
+        refreshReadOnlyMenuCheckmarks()
+    }
+
     /// View > Document Map. The preference is global, so the store is the
     /// single write path: it posts `.preferencesDidChange` and
     /// `handlePreferencesDidChange` applies the new value to every pane.
@@ -4126,6 +4160,15 @@ extension MainWindowController: NSTextViewDelegate {
     func textView(_ textView: NSTextView,
                   shouldChangeTextIn affectedCharRange: NSRange,
                   replacementString: String?) -> Bool {
+        // Read-Only veto. AppKit routes typing, paste, drag-and-drop drops and
+        // programmatic insertText through this one delegate callback, so
+        // returning false stops the text-storage mutation for all of them.
+        // Caret movement, selection and folding never call it, so those keep
+        // working on a locked buffer. Resolve against the pane that owns the
+        // text view, so a split view can lock one side independently.
+        let boundDoc = pane(containing: textView)?.boundDocument ?? tabStore.selectedDocument
+        if boundDoc?.isReadOnly == true { return false }
+
         // Remember the post-edit range so textDidChange can re-tokenize only
         // the touched line band instead of the whole document.
         pendingEditRange = NSRange(location: affectedCharRange.location,

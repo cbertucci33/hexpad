@@ -25,6 +25,12 @@ public final class DocumentModel: Identifiable, ObservableObject {
     /// Posted after a programmatic mutation of `textStorage`. Typing is
     /// reported by NSTextView through its delegate instead.
     public static let textDidChangeNotification = Notification.Name("DocumentModelTextDidChange")
+
+    /// Posted by `setReadOnly(_:)` so window chrome (menu checkmarks) can follow
+    /// the explicit read-only toggle. The notification's object is the document
+    /// whose flag changed; read-only is independent of the dirty flag, so this
+    /// is deliberately separate from `DocumentModifiedDidChange`.
+    public static let readOnlyDidChangeNotification = Notification.Name("DocumentReadOnlyDidChange")
     
     /// Dirty means the in-memory text differs from what was last saved.
     /// This used to compare the file's on-disk mtime, which ordinary typing
@@ -103,6 +109,20 @@ public final class DocumentModel: Identifiable, ObservableObject {
 
     public var language: String { _language }
     public func setLanguage(_ language: String) { _language = language }
+
+    /// Edit > Read-Only. A read-only buffer rejects editing at the TextKit
+    /// delegate seam but stays navigable and copyable. This is the explicit
+    /// menu flag only: file-system locking is deliberately out of scope.
+    /// Unlike `isModified`, toggling this never marks the buffer dirty.
+    public private(set) var isReadOnly: Bool = false
+
+    /// Flips the explicit read-only flag and publishes the change so menus can
+    /// refresh their checkmarks. The editor veto reads `isReadOnly`, so no
+    /// rebind is needed here.
+    public func setReadOnly(_ readOnly: Bool) {
+        isReadOnly = readOnly
+        NotificationCenter.default.post(name: Self.readOnlyDidChangeNotification, object: self)
+    }
 
     /// Per-document editor state (caret, scroll, word wrap, zoom). The model
     /// only stores and persists these values: the app reads and writes them,
@@ -423,6 +443,7 @@ public final class DocumentModel: Identifiable, ObservableObject {
             "eolType": self.eolType,
             "language": self.language,
             "isModified": self.isModified,
+            "isReadOnly": self.isReadOnly,
             "editorState": self.editorState.toSessionData(),
             "foldState": self.foldState.toSessionData(),
             "bookmarkState": self.bookmarkState.toSessionData()
@@ -460,6 +481,9 @@ public final class DocumentModel: Identifiable, ObservableObject {
         doc.name = name
         doc._language = language
         doc.keepsBOM = keepsBOM
+        // Sessions written before Edit > Read-Only existed have no key; a
+        // missing (or malformed) value restores a writable document.
+        doc.isReadOnly = data["isReadOnly"] as? Bool ?? false
         // Sessions written before per-document editor state existed have no
         // "editorState" key; absence restores the startup defaults.
         doc.editorState = DocumentEditorState.fromSessionData(data["editorState"] as? [String: Any])

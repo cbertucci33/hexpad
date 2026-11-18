@@ -159,7 +159,36 @@ extension HexpadAppDelegate {
         editMenu.addItem(insertItem)
         editMenu.addItem(.separator())
         editMenu.addItem(findItem)
+
+        // Notepad++ puts Read-Only near the end of Edit. Two delegate-targeted
+        // entries: one toggles the focused document, the other applies the
+        // focused document's NEW state to every open tab in both split groups.
+        // Both are stored on the delegate so checkmarks can be refreshed from
+        // the controller's tab-switch path as well as from menu validation.
+        editMenu.addItem(.separator())
+        let readOnlyItem = NSMenuItem(title: "Read-Only",
+                                      action: #selector(HexpadAppDelegate.toggleReadOnly),
+                                      keyEquivalent: "")
+        readOnlyItem.target = self
+        let readOnlyAllItem = NSMenuItem(title: "Read-Only for All Documents",
+                                         action: #selector(HexpadAppDelegate.toggleReadOnlyForAll),
+                                         keyEquivalent: "")
+        readOnlyAllItem.target = self
+        readOnlyMenuItem = readOnlyItem
+        readOnlyAllMenuItem = readOnlyAllItem
+        editMenu.addItem(readOnlyItem)
+        editMenu.addItem(readOnlyAllItem)
         return editMenu
+    }
+
+    /// Mirrors the focused document's read-only flag onto both Edit items.
+    /// Called by menu validation and by the controller whenever the focused tab
+    /// changes, so the checkmark is correct even before the menu next opens.
+    func updateReadOnlyCheckmarks() {
+        let on = activeController?.tabStore.selectedDocument?.isReadOnly == true
+        let state: NSControl.StateValue = on ? .on : .off
+        readOnlyMenuItem?.state = state
+        readOnlyAllMenuItem?.state = state
     }
 
     /// Runs an Edit > Indent item against the focused window with the user's

@@ -26,6 +26,10 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     var appearanceMenu: NSMenu?
     var playMacroMenu: NSMenu?
     var deleteMacroMenu: NSMenu?
+    /// Edit > Read-Only items, retained so the controller's tab-switch path can
+    /// refresh their checkmarks without waiting for the menu to open again.
+    var readOnlyMenuItem: NSMenuItem?
+    var readOnlyAllMenuItem: NSMenuItem?
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         restoreAppearance()
@@ -80,7 +84,7 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     /// The controller for the key window, so File/Edit actions follow the window
     /// the user is working in. Falls back to the primary window (also the case
     /// while a sheet or panel owns key status).
-    private var activeController: MainWindowController? {
+    var activeController: MainWindowController? {
         if let override = activeControllerOverride { return override }
         if let controller = NSApp.keyWindow?.contentViewController as? MainWindowController {
             return controller
@@ -372,6 +376,20 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     
     @objc func toggleWordWrap() {
         activeController?.toggleWordWrap()
+    }
+
+    // MARK: - Read-Only (P16d-3)
+
+    /// Edit > Read-Only. Flips just the focused document; the controller owns
+    /// the flag mutation and the checkmark refresh.
+    @objc func toggleReadOnly() {
+        activeController?.toggleReadOnly()
+    }
+
+    /// Edit > Read-Only for All Documents. Uses the focused document's NEW
+    /// state as the value applied to every open tab.
+    @objc func toggleReadOnlyForAll() {
+        activeController?.toggleReadOnlyForAll()
     }
 
     @objc func toggleDocumentMap() {
@@ -726,6 +744,12 @@ extension HexpadAppDelegate: NSMenuItemValidation {
     /// Every other delegate item remains enabled, as it was before this
     /// conformance.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(HexpadAppDelegate.toggleReadOnly)
+            || menuItem.action == #selector(HexpadAppDelegate.toggleReadOnlyForAll) {
+            // Checkmark follows the focused document; both items need a tab.
+            updateReadOnlyCheckmarks()
+            return activeController?.tabStore.selectedDocument != nil
+        }
         if let scope = closeScope(for: menuItem.action) {
             return activeController?.canCloseMultipleDocuments(scope) ?? false
         }
