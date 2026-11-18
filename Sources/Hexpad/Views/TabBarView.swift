@@ -33,6 +33,10 @@ class TabBarView: NSView {
     /// Called after a tab selection/reorder/transfer so the controller can
     /// rebind the affected editors.
     var onChange: (() -> Void)?
+    /// Called when the user double-clicks the empty part of the bar, so the
+    /// controller can create a new tab. The bar deliberately has no controller
+    /// reference; like `onFocus`/`onChange`, this per-pane closure is the bridge.
+    var onNewTabRequested: (() -> Void)?
     /// Called with the index of a right-clicked tab. The owning pane builds the
     /// tab's context menu (and focuses its group) before returning it. The bar
     /// deliberately has no controller reference: this per-pane closure is the
@@ -123,6 +127,20 @@ class TabBarView: NSView {
         fitWidthToClip()
     }
 
+    /// Double-clicking the empty part of the bar creates a new tab (Notepad++
+    /// behaviour). A click that lands on a tab button belongs to that button's
+    /// own `mouseDown` (selection, drag, double-click-to-close), so only the
+    /// no-button case is ours. Empty space has no drag state, so we return
+    /// without calling `super`.
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2,
+           tabButtons.first { $0.frame.contains(convert(event.locationInWindow, from: nil)) } == nil {
+            onNewTabRequested?()
+            return
+        }
+        super.mouseDown(with: event)
+    }
+    
     // MARK: - Drag reorder
 
     /// TabStore.moveDocument existed from the start but nothing drove it.
@@ -416,6 +434,13 @@ class TabButton: NSButton {
         if let menu, let window, window.isVisible {
             NSMenu.popUpContextMenu(menu, with: event, for: self)
         }
+    }
+
+    /// Middle-click closes the tab through the exact same path as the × button:
+    /// a "TabCloseRequested" carrying this bar and index, which the controller
+    /// handles (focusing the owning group before closing).
+    override func otherMouseDown(with event: NSEvent) {
+        closeTabClicked()
     }
 
     override func mouseDown(with event: NSEvent) {

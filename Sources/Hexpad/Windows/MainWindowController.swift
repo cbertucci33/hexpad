@@ -552,6 +552,7 @@ class MainWindowController: NSViewController {
         pane.tabBar.onChange = { [weak self] in
             self?.handlePaneTabChange()
         }
+        pane.tabBar.onNewTabRequested = { [weak self] in self?.addNewTab() }
         pane.tabBar.contextMenuProvider = { [weak self] index in
             guard let self else { return nil }
             // Every action and every validation reads the focused group's
