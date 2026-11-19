@@ -92,6 +92,17 @@ extension HexpadAppDelegate {
         zoomInItem.target = self
         let zoomOutItem = NSMenuItem(title: "Zoom Out", action: #selector(zoomOut), keyEquivalent: "-")
         zoomOutItem.target = self
+        // View > Synchronize Across Views. Sits inside the zoom group (the
+        // app has no Zoom submenu; N++ parity treats Zoom In/Out/Reset Zoom
+        // plus this toggle as the zoom block). Placed between Zoom Out and
+        // Reset Zoom: MenuWiringTests pins that Reset Zoom leads the zoom
+        // group, so nothing may be inserted after it. Nil-targeted; the
+        // checkmark mirrors the stored state via
+        // MainWindowController.validateMenuItem.
+        let synchronizeZoomItem = NSMenuItem(title: "Synchronize Across Views",
+                                             action: #selector(MainWindowController.toggleZoomSynchronize(_:)),
+                                             keyEquivalent: "")
+        synchronizeZoomItem.target = nil
         let resetZoomItem = NSMenuItem(title: "Reset Zoom", action: #selector(resetZoom), keyEquivalent: "0")
         resetZoomItem.target = self
         
@@ -177,6 +188,7 @@ extension HexpadAppDelegate {
         viewMenu.addItem(.separator())
         viewMenu.addItem(zoomInItem)
         viewMenu.addItem(zoomOutItem)
+        viewMenu.addItem(synchronizeZoomItem)
         viewMenu.addItem(resetZoomItem)
         viewMenu.addItem(.separator())
         // V19e window modes (N++ View menu parity). All three are nil-targeted
@@ -311,6 +323,14 @@ extension HexpadAppDelegate {
         viewMenu.addItem(viewCurrentFileInItem)
         viewMenu.addItem(.separator())
         viewMenu.addItem(appearanceItem)
+        // V19h: document stats. Nil-targeted like the fold items; the
+        // controller validates it against a focused document, so it greys
+        // out while a window is on the last untitled tab.
+        let summaryItem = NSMenuItem(title: "Summary…",
+                                     action: #selector(MainWindowController.showSummary(_:)),
+                                     keyEquivalent: "")
+        summaryItem.target = nil
+        viewMenu.addItem(summaryItem)
         return viewMenu
     }
 

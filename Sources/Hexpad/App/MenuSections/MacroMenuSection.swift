@@ -20,6 +20,13 @@ extension HexpadAppDelegate {
                                       action: #selector(MainWindowController.playLastMacro(_:)),
                                       keyEquivalent: "")
         playLastItem.target = nil
+        // M22a: N++'s repeat-count command. Nil-targeted like the other
+        // macro actions; MainWindowController validates it against a recorded
+        // macro and a focused document.
+        let runMultipleItem = NSMenuItem(title: "Run a Macro Multiple Times…",
+                                         action: #selector(MainWindowController.showRunMacroMultipleTimesDialog(_:)),
+                                         keyEquivalent: "")
+        runMultipleItem.target = nil
 
         let playMacroMenu = macroListMenu(title: "Play Macro",
                                           action: #selector(MainWindowController.playSavedMacro(_:)))
@@ -44,6 +51,7 @@ extension HexpadAppDelegate {
         macroMenu.addItem(stopRecordingItem)
         macroMenu.addItem(.separator())
         macroMenu.addItem(playLastItem)
+        macroMenu.addItem(runMultipleItem)
         macroMenu.addItem(playMacroItem)
         macroMenu.addItem(.separator())
         macroMenu.addItem(saveRecordingItem)

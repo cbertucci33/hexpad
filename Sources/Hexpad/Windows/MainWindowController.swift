@@ -164,6 +164,15 @@ class MainWindowController: NSViewController {
             : UserDefaults.standard.bool(forKey: "synchronizeScrolling")
     }()
 
+    /// View > Synchronize Across Views. While on, the zoom commands step every
+    /// open editor together; while off they only reach the focused editor, as
+    /// they always have. Persisted and defaulted like `synchronizeScrolling`.
+    private(set) var synchronizeZoom: Bool = {
+        UserDefaults.standard.object(forKey: "synchronizeZoom") == nil
+            ? true
+            : UserDefaults.standard.bool(forKey: "synchronizeZoom")
+    }()
+
     /// Re-entrancy guard for the leader/follower scroll pair. Set while the
     /// follower is being scrolled; the follower's own coalesced viewport
     /// notification is ignored, so one wheel event cannot bounce between panes.
@@ -2046,6 +2055,15 @@ class MainWindowController: NSViewController {
         UserDefaults.standard.set(synchronizeScrolling, forKey: "synchronizeScrolling")
     }
 
+    /// View > Synchronize Across Views. Toggles the per-window zoom-sync
+    /// setting; the zoom commands read it on each invocation, so there is no
+    /// live effect beyond future zoom calls. Inert while the split is closed
+    /// (the menu item is disabled), like Synchronize Scrolling.
+    @objc func toggleZoomSynchronize(_ sender: Any?) {
+        synchronizeZoom.toggle()
+        UserDefaults.standard.set(synchronizeZoom, forKey: "synchronizeZoom")
+    }
+
     /// View > Move to Other View. Moves the focused group's selected tab into
     /// the other group and leaves focus there. Live caret/scroll is captured
     /// first; dirty state, undo stack and editor state travel with the
@@ -3135,16 +3153,43 @@ class MainWindowController: NSViewController {
         try? PreferencesStore.update { $0.showIndentGuide = visible }
     }
     
+    /// Applies `adjust` to the editors the View menu zoom command reaches: the
+    /// focused editor alone when zoom-sync is off, or every open editor (both
+    /// split groups) when it is on.
+    private func applyZoomAdjustment(_ adjust: (EditorContainer) -> Void) {
+        if synchronizeZoom {
+            for pane in allPanes {
+                adjust(pane.editor)
+            }
+        } else {
+            if let editor = editorContainer {
+                adjust(editor)
+            }
+        }
+    }
+
+    /// View > Zoom In. With Synchronize Across Views on, every editor steps.
     func zoomIn() {
-        editorContainer?.adjustZoom(byPoints: 1)
+        applyZoomAdjustment { $0.adjustZoom(byPoints: 1) }
     }
-    
+
+    /// View > Zoom Out. With Synchronize Across Views on, every editor steps.
     func zoomOut() {
-        editorContainer?.adjustZoom(byPoints: -1)
+        applyZoomAdjustment { $0.adjustZoom(byPoints: -1) }
     }
-    
+
+    /// View > Reset Zoom. With Synchronize Across Views on, every editor resets.
     func resetZoom() {
-        editorContainer?.resetZoom()
+        applyZoomAdjustment { $0.resetZoom() }
+    }
+
+    // MARK: - View > Summary… (V19h)
+
+    /// View > Summary…. The dialog itself is the pure `SummaryWindowController`
+    /// report generator over a copyable alert; the menu item is nil-targeted
+    /// and validated against a focused document.
+    @objc func showSummary(_ sender: Any?) {
+        SummaryWindowController.showSummary(activeController: self)
     }
     
     // MARK: - Encoding
@@ -3736,6 +3781,58 @@ class MainWindowController: NSViewController {
         return applied
     }
 
+    // MARK: - Macro > Run a Macro Multiple Times… (M22a)
+
+    /// Macro > Run a Macro Multiple Times…. Nil-targeted; the dialog parses
+    /// its count and "Run until end of file" choice and calls the core.
+    @objc func showRunMacroMultipleTimesDialog(_ sender: Any?) {
+        MacroRepeatWindowController.showRunMacroMultipleTimes(for: self)
+    }
+
+    /// A last macro needs steps and an open document to replay against.
+    func canRunMacroMultipleTimes() -> Bool {
+        tabStore.selectedDocument != nil && !(lastMacro?.isEmpty ?? true)
+    }
+
+    /// Upper bound on until-EOF passes, so a macro that changes the document on
+    /// every pass cannot loop forever.
+    static let macroRepeatEOFCap = 1000
+
+    /// Number of macro replays the most recent `runMacroMultipleTimes(count:untilEOF:)`
+    /// performed; a test seam for pinning the cap behaviour.
+    var lastMacroRepeatPasses = 0
+
+    /// Macro > Run a Macro Multiple Times…: replays the last recorded macro
+    /// (the same replay path as Play Last Macro) `count` times, or until a
+    /// replay pass produces no document change when `untilEOF` is set. The
+    /// until-EOF loop is capped at ``macroRepeatEOFCap`` passes; hitting the
+    /// cap flashes a status message.
+    func runMacroMultipleTimes(count: Int, untilEOF: Bool) {
+        guard let macro = lastMacro,
+              !macro.isEmpty,
+              editorContainer != nil,
+              tabStore.selectedDocument != nil else { return }
+
+        var passes = 0
+        if untilEOF {
+            while passes < Self.macroRepeatEOFCap {
+                let textBefore = tabStore.selectedDocument?.text
+                _ = playMacro(macro)
+                passes += 1
+                if tabStore.selectedDocument?.text == textBefore { break }
+            }
+            if passes >= Self.macroRepeatEOFCap {
+                flashStatus("Macro “\(macro.name)”: reached the \(Self.macroRepeatEOFCap)-pass cap to end of file")
+            }
+        } else {
+            for _ in 0..<max(0, count) {
+                _ = playMacro(macro)
+                passes += 1
+            }
+        }
+        lastMacroRepeatPasses = passes
+    }
+
     // MARK: - Macro menu validation
 
     /// Only a non-empty recording can be saved.
@@ -4155,6 +4252,9 @@ extension MainWindowController: NSMenuItemValidation {
         if menuItem.action == #selector(MainWindowController.playLastMacro(_:)) {
             return canPlayLastMacro()
         }
+        if menuItem.action == #selector(MainWindowController.showRunMacroMultipleTimesDialog(_:)) {
+            return canRunMacroMultipleTimes()
+        }
         if menuItem.action == #selector(MainWindowController.playSavedMacro(_:)) {
             guard let name = menuItem.representedObject as? String else { return false }
             return canPlaySavedMacro(named: name)
@@ -4242,6 +4342,13 @@ extension MainWindowController: NSMenuItemValidation {
         if menuItem.action == #selector(MainWindowController.toggleSynchronizeScrolling(_:)) {
             menuItem.state = synchronizeScrolling ? .on : .off
             return canSynchronizeScrolling()
+        }
+        if menuItem.action == #selector(MainWindowController.toggleZoomSynchronize(_:)) {
+            menuItem.state = synchronizeZoom ? .on : .off
+            return canSynchronizeScrolling()
+        }
+        if menuItem.action == #selector(MainWindowController.showSummary(_:)) {
+            return tabStore.selectedDocument != nil
         }
         if menuItem.action == #selector(MainWindowController.moveToOtherView(_:)) {
             return canMoveToOtherView()

@@ -196,6 +196,7 @@ final class MacroUITests: XCTestCase {
 
         XCTAssertEqual(macroMenu.items.filter { !$0.isSeparatorItem }.map(\.title),
                        ["Record Macro", "Stop Recording", "Play Last Macro",
+                        "Run a Macro Multiple Times…",
                         "Play Macro", "Save Recording As…", "Delete Macro"])
 
         for item in macroMenu.items where !item.isSeparatorItem && item.submenu == nil {
