@@ -24,6 +24,13 @@ class TabBarView: NSView {
     private let tabStore: TabStore
     private var tabButtons: [TabButton] = []
 
+    /// Creation moments of the bar's tabs, keyed by document identity. The
+    /// bar records each document's first sight here and every later rebuild
+    /// of the buttons reuses the stored date, so a tab's tooltip "created"
+    /// time does not drift with `reloadTabs()`. Entries for tabs that closed
+    /// are dropped on the next reload.
+    private var creationDates: [UUID: Date] = [:]
+
     /// The other group's bar while the split view is open. Drags that leave
     /// this bar over its sibling move the tab between the two TabStores.
     weak var siblingTabBar: TabBarView?
@@ -113,18 +120,27 @@ class TabBarView: NSView {
         finishDragPreview()
         tabButtons.forEach { $0.removeFromSuperview() }
         tabButtons.removeAll()
-        
+
+        // Creation is tracked per document, not per button: drop entries for
+        // tabs that closed, then record each present document's first-sight
+        // moment so the rebuilt buttons show the same "created" time.
+        let presentIDs = Set(tabStore.documents.map { $0.id })
+        creationDates = creationDates.filter { presentIDs.contains($0.key) }
+
         let tabWidth: CGFloat = 140
         let spacing: CGFloat = 2
         let tabHeight = bounds.height
-        
+
         for (index, doc) in tabStore.documents.enumerated() {
+            let created = creationDates[doc.id] ?? Date()
+            creationDates[doc.id] = created
             let button = TabButton(doc: doc,
                                    index: index,
                                    tabWidth: tabWidth,
                                    tabHeight: tabHeight,
                                    maxLabelLength: maxTabLabelLength,
-                                   closeButtonVisibility: closeButtonVisibility)
+                                   closeButtonVisibility: closeButtonVisibility,
+                                   created: created)
             button.frame = NSRect(x: CGFloat(index) * (tabWidth + spacing), y: 0, width: tabWidth, height: tabHeight)
             button.isSelected = index == tabStore.selectedIndex
             button.target = self
@@ -331,11 +347,13 @@ class TabButton: NSButton {
     let tabHeight: CGFloat
     let maxLabelLength: Int
 
-    /// The moment this tab button was created. `DocumentModel` has no creation
-    /// timestamp, so for a buffer that has never been saved this is the honest
-    /// meaning of "created": when the document was opened in a tab. Captured as
-    /// an inline default so it is fixed before ``setupUI()`` runs.
-    private let created: Date = Date()
+    /// The moment this tab was first seen by its bar. `DocumentModel` has no
+    /// creation timestamp, so for a buffer that has never been saved this is
+    /// the honest meaning of "created": when the document was opened in a
+    /// tab. Passed in by the bar, which keys the moment by document identity
+    /// so it survives the bar's rebuilds instead of being stamped with the
+    /// rebuild time.
+    private let created: Date
 
     /// `.medium`/`.short` with the current locale is the same display format
     /// the inspector uses for timestamps. Cached because `modifiedDidChange`
@@ -370,13 +388,15 @@ class TabButton: NSButton {
          tabWidth: CGFloat,
          tabHeight: CGFloat,
          maxLabelLength: Int = 0,
-         closeButtonVisibility: CloseButtonVisibility = .always) {
+         closeButtonVisibility: CloseButtonVisibility = .always,
+         created: Date = Date()) {
         self.doc = doc
         self.index = index
         self.tabWidth = tabWidth
         self.tabHeight = tabHeight
         self.maxLabelLength = maxLabelLength
         self.closeButtonVisibility = closeButtonVisibility
+        self.created = created
         super.init(frame: .zero)
         setupUI()
     }

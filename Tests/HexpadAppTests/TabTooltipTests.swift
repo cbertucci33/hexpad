@@ -78,23 +78,57 @@ final class TabTooltipTests: XCTestCase {
     func testUnsavedDocumentTooltipHasNameAndCreationTime() throws {
         let doc = DocumentModel(text: "draft")   // filePath == nil, name == "Untitled"
         let (bar, _) = makeBar(for: [doc])
-        let before = Date()
-        bar.reloadTabs()                          // fresh TabButtons (`created`) are born here
-        let after = Date()
 
         let button = try XCTUnwrap(tabButtons(in: bar).first)
-        let tooltip = button.toolTip ?? ""
+        let tooltip = try XCTUnwrap(button.toolTip)
         XCTAssertTrue(tooltip.hasPrefix(unsavedPrefix),
                       "unsaved tooltip starts with the name and 'created': \(tooltip)")
 
-        let suffix = String(tooltip.dropFirst(unsavedPrefix.count))
-        let formatter = tooltipDateFormatter()
-        // `created` lies between `before` and `after`. DateFormatter's .short
-        // time style has minute precision, so the rendered value is one of the
-        // two bracket strings even when creation straddles a minute boundary.
-        XCTAssertTrue(suffix == formatter.string(from: before)
-                   || suffix == formatter.string(from: after),
-                      "the date is rendered from the tab's creation moment: \(tooltip)")
+        // The creation moment is the document's first sight in the bar, so it
+        // survives the bar's rebuilds: reload a few times and the tooltip
+        // must show the same time again.
+        bar.reloadTabs()
+        bar.reloadTabs()
+        bar.reloadTabs()
+        XCTAssertEqual(tooltip, tabButtons(in: bar).first?.toolTip,
+                       "reloading the bar must not change the tab's creation time")
+    }
+
+    func testNewDocumentInBarGetsItsOwnCreationTime() throws {
+        let doc = DocumentModel(text: "first draft")
+        let (bar, store) = makeBar(for: [doc])
+        let firstTooltip = try XCTUnwrap(tabButtons(in: bar).first?.toolTip)
+        XCTAssertTrue(firstTooltip.hasPrefix(unsavedPrefix))
+
+        // A newly opened document gets its own first-sight moment: the new
+        // tab's time is not earlier than the old tab's.
+        let newDoc = DocumentModel(text: "second draft")
+        store.addDocument(newDoc)
+        bar.reloadTabs()
+
+        let newTooltip = try XCTUnwrap(
+            tabButtons(in: bar).first(where: { $0.doc === newDoc })?.toolTip)
+        XCTAssertTrue(newTooltip.hasPrefix(unsavedPrefix), newTooltip)
+        XCTAssertGreaterThanOrEqual(tooltipTime(newTooltip),
+                                    tooltipTime(firstTooltip),
+                                    "the new document gets its own, not-earlier creation time")
+
+        // The new tab's time is stable across later rebuilds, too.
+        bar.reloadTabs()
+        XCTAssertEqual(newTooltip,
+                       tabButtons(in: bar).first(where: { $0.doc === newDoc })?.toolTip,
+                       "the new tab's creation time survives later rebuilds")
+    }
+
+    /// Parses a tooltip's rendered creation time with the same format the
+    /// button displays, so moments can be compared.
+    private func tooltipTime(_ tooltip: String) -> Date {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        formatter.locale = .current
+        return formatter.date(from: String(tooltip.dropFirst(unsavedPrefix.count)))
+            ?? Date.distantPast
     }
 
     func testRenamedUnsavedDocumentTooltipUsesItsName() throws {

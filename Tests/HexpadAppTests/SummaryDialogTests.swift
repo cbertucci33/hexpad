@@ -91,6 +91,54 @@ final class SummaryDialogTests: XCTestCase {
         XCTAssertTrue(report.contains("Words: 0"), report)
     }
 
+    // MARK: - Bytes
+
+    /// Writes to a fresh temp file via the public save path and returns the
+    /// URL; the caller owns cleanup of the containing directory.
+    private func temporaryFileURL(named name: String) throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hexpad-summary-bytes-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.appendingPathComponent(name)
+    }
+
+    func testSummaryBytesMatchesSavedFileForUTF16Fixture() throws {
+        // A UTF-16LE doc with a BOM: "Bytes" counts the bytes a save writes
+        // (BOM + 2 per code unit), not the UTF-8 size of the buffer.
+        let doc = DocumentModel(text: "caf\u{e9} = 42\n", encoding: "UTF-16LE")
+        doc.keepsBOM = true
+        controller.tabStore.addDocument(doc)
+        let file = try temporaryFileURL(named: "fixture-utf16.txt")
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        try doc.saveAs(to: file)
+
+        let actual = try XCTUnwrap(Data(contentsOf: file).count)
+        XCTAssertGreaterThan(actual, doc.text.utf8.count,
+                             "the UTF-16 file holds more bytes than the UTF-8 buffer")
+        XCTAssertEqual(actual, SummaryWindowController.onDiskByteCount(of: doc),
+                       "the reported byte count matches the saved file's size")
+        XCTAssertTrue(SummaryWindowController.summaryReport(activeController: controller)
+                          .contains("Bytes: \(actual)"),
+                      "the report shows the on-disk byte count")
+    }
+
+    func testSummaryBytesMatchesSavedFileForCRLFFixture() throws {
+        // A doc whose next save writes CRLF: the buffer is LF, so the old
+        // text.utf8.count undercounted by the line endings.
+        let doc = DocumentModel(text: "first line\nsecond line\n", eolType: EOLDetective.crlf)
+        controller.tabStore.addDocument(doc)
+        let file = try temporaryFileURL(named: "fixture-crlf.txt")
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        try doc.saveAs(to: file)
+
+        let actual = try XCTUnwrap(Data(contentsOf: file).count)
+        XCTAssertEqual(actual, "first line\r\nsecond line\r\n".utf8.count)
+        XCTAssertEqual(actual, SummaryWindowController.onDiskByteCount(of: doc))
+        XCTAssertTrue(SummaryWindowController.summaryReport(activeController: controller)
+                          .contains("Bytes: \(actual)"),
+                      "the report shows the on-disk byte count")
+    }
+
     // MARK: - Selection stats
 
     func testSelectionStatsFollowTheEditorSelection() throws {

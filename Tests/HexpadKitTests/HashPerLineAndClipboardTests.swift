@@ -56,6 +56,31 @@ final class HashPerLineAndClipboardTests: XCTestCase {
                        md5abc + "\r\n" + md5def)
     }
 
+    func testDigestPerLineSplitsCROnlyFiles() {
+        // CR-only text has no LF: each CR terminates a line instead of the
+        // whole text hashing as one giant line. Empty lines stay empty.
+        XCTAssertEqual(HashKit.digestPerLine("a\r b\r c", HashKit.md5),
+                       "0cc175b9c0f1b6a831c399e269772661" + "\r"
+                       + "f6897073ddb650de60056fa4f394f487" + "\r"
+                       + "9bf5231767340fd1cf18bd162ea1787f")
+        XCTAssertEqual(HashKit.digestPerLine("a\rb", HashKit.md5),
+                       "0cc175b9c0f1b6a831c399e269772661\r"
+                       + "92eb5ffee6ae2fec3ad71c777531578f")
+        // An empty line between the two CR terminators stays empty.
+        XCTAssertEqual(HashKit.digestPerLine("a\r\r b", HashKit.md5),
+                       "0cc175b9c0f1b6a831c399e269772661\r\r"
+                       + "f6897073ddb650de60056fa4f394f487")
+    }
+
+    func testDigestPerLineMixedEndings() {
+        // LF, CRLF and CR mix freely; every terminator style is preserved.
+        XCTAssertEqual(HashKit.digestPerLine("a\nb\r\nc\rd", HashKit.md5),
+                       "0cc175b9c0f1b6a831c399e269772661\n"
+                       + "92eb5ffee6ae2fec3ad71c777531578f\r\n"
+                       + "4a8a08f09d37b73795649038408b5f33\r"
+                       + "8277e0910d750195b448797616e091ad")
+    }
+
     func testDigestPerLineIsLowercaseHex() {
         let result = HashKit.digestPerLine(twoLines, HashKit.sha512)
         XCTAssertEqual(result, result.lowercased())

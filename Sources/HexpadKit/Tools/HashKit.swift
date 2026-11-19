@@ -66,26 +66,43 @@ public enum HashKit {
 
     /// Returns `text` with every non-empty line replaced by `digest(line)`.
     ///
-    /// Line breaks are preserved exactly, empty lines stay empty (matching
-    /// Notepad++'s per-line behavior, which never hashes a blank line into the
-    /// digest of the empty string), and no trailing newline is appended. A
-    /// trailing `\r` is treated as part of a CRLF terminator rather than as
-    /// line content, so the digest is identical for LF and CRLF input.
+    /// Lines are terminated by CR, LF or CRLF, so a CR-only file hashes as
+    /// several lines rather than one giant line. The terminator is preserved
+    /// exactly after each digest, empty lines stay empty, and no trailing
+    /// newline is appended.
+    ///
+    /// The splitting follows the codebase's line model (`components(separatedBy:)`
+    /// style: every terminator opens the next line, a trailing terminator opens
+    /// a final empty line) while widening the accepted terminators to CR and
+    /// CRLF, so hashing agrees with the editor's line model for LF text and
+    /// treats CR/CRLF text the way the editor treats its line endings.
     public static func digestPerLine(_ text: String, _ digest: (String) -> String) -> String {
-        // Split on the LF *scalar*: Swift treats a CRLF pair as one Character,
-        // so a Character-based split would not find line breaks in CRLF text.
-        text.unicodeScalars
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .map { segment in
-                let line = String(segment)
-                guard !line.isEmpty else { return line }
-                if line.hasSuffix("\r") {
-                    let content = String(line.dropLast())
-                    return content.isEmpty ? line : digest(content) + "\r"
-                }
-                return digest(line)
+        var result = ""
+        var line = String.UnicodeScalarView()
+        let scalars = text.unicodeScalars
+        var index = scalars.startIndex
+        while index < scalars.endIndex {
+            let scalar = scalars[index]
+            if scalar == "\r" || scalar == "\n" {
+                // CRLF is one terminator; a lone CR or LF is its own.
+                let next = scalars.index(after: index)
+                let isCRLF = scalar == "\r" && next < scalars.endIndex && scalars[next] == "\n"
+                let terminator = isCRLF ? "\r\n" : String(scalar)
+                index = isCRLF ? scalars.index(after: next) : next
+                result += line.isEmpty ? "" : digest(String(line))
+                result += terminator
+                line = String.UnicodeScalarView()
+            } else {
+                line.append(scalar)
+                index = scalars.index(after: index)
             }
-            .joined(separator: "\n")
+        }
+        // The final line has no terminator of its own; digest it when
+        // non-empty and add nothing else, so no trailing newline appears.
+        if !line.isEmpty {
+            result += digest(String(line))
+        }
+        return result
     }
 
     // MARK: - Helpers

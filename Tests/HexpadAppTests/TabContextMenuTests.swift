@@ -57,15 +57,21 @@ final class TabContextMenuTests: XCTestCase {
             "Close Tab", "Close All Tabs", "Close All but Active Document",
             "Close All to the Left", "Close All to the Right", "Close All Unchanged",
             "",
-            "Save", "Save As...", "Reload from Disk", "Print…",
+            "Save", "Save As...", "Rename…", "Save a Copy As",
+            "Reload from Disk", "Print…",
             "",
             "Open Containing Folder",
             "",
             "Move to Other View", "Move Tab to Start", "Move Tab to End",
+            "Move to Trash",
+            "Read-Only",
+            "",
+            "Sort By",
         ])
-        XCTAssertEqual(menu.items.indices.filter { menu.items[$0].isSeparatorItem }, [6, 11, 13])
+        XCTAssertEqual(menu.items.indices.filter { menu.items[$0].isSeparatorItem },
+                       [6, 13, 15, 21])
 
-        // Delegate commands keep the File menu's explicit target so close-scope
+        // Delegate commands keep the File menu's explicit target so
         // validation reaches HexpadAppDelegate.validateMenuItem.
         let delegateActions: [(String, Selector)] = [
             ("Close Tab", #selector(HexpadAppDelegate.closeTab)),
@@ -76,12 +82,20 @@ final class TabContextMenuTests: XCTestCase {
             ("Close All Unchanged", #selector(HexpadAppDelegate.closeAllUnchangedDocuments)),
             ("Save", #selector(HexpadAppDelegate.saveFile)),
             ("Save As...", #selector(HexpadAppDelegate.saveAsFile)),
+            ("Rename…", #selector(HexpadAppDelegate.renameFile(_:))),
+            ("Save a Copy As", #selector(HexpadAppDelegate.saveACopyAs(_:))),
+            ("Move to Trash", #selector(HexpadAppDelegate.moveToTrash(_:))),
+            ("Read-Only", #selector(HexpadAppDelegate.toggleReadOnly)),
         ]
         for (title, action) in delegateActions {
             let item = menu.item(withTitle: title)
             XCTAssertTrue(item?.target === delegate, "\(title) targets the delegate")
             XCTAssertEqual(item?.action, action, title)
         }
+
+        // Read-Only is the checkmarked toggle of the focused document.
+        XCTAssertEqual(menu.item(withTitle: "Read-Only")?.state, .off,
+                       "a focused writable document shows the toggle off")
 
         // Controller commands stay nil-targeted, exactly like File/View.
         let responderActions: [(String, Selector)] = [
@@ -97,12 +111,35 @@ final class TabContextMenuTests: XCTestCase {
             XCTAssertEqual(item?.action, action, title)
         }
 
-        // The not-yet-shipped N++ commands must not leak into this slice.
+        // Sort By mirrors Window > Sort By: the same ten commands, the same
+        // representedObject/tag encoding, and nil targets.
+        let sortBy = menu.item(withTitle: "Sort By")
+        XCTAssertNotNil(sortBy?.submenu, "Sort By has a submenu")
+        let expectedSortCommands: [(title: String, key: TabSortKey, ascending: Bool)] = [
+            ("Name (Ascending)", .name, true),
+            ("Name (Descending)", .name, false),
+            ("Path (Ascending)", .path, true),
+            ("Path (Descending)", .path, false),
+            ("Type (Ascending)", .type, true),
+            ("Type (Descending)", .type, false),
+            ("Length (Ascending)", .length, true),
+            ("Length (Descending)", .length, false),
+            ("Modified (Ascending)", .modified, true),
+            ("Modified (Descending)", .modified, false),
+        ]
+        XCTAssertEqual(sortBy?.submenu?.items.map(\.title), expectedSortCommands.map(\.title))
+        for (item, command) in zip(sortBy!.submenu!.items, expectedSortCommands) {
+            XCTAssertEqual(item.action, #selector(MainWindowController.sortDocumentsBy(_:)))
+            XCTAssertNil(item.target)
+            XCTAssertEqual(item.representedObject as? String, command.key.rawValue)
+            XCTAssertEqual(item.tag, command.ascending ? 1 : 0)
+        }
+
+        // Genuinely-absent N++ commands, verified against the tree: this slice
+        // does not ship Clone to Other View or Move to New Instance.
         let titles = menu.items.map(\.title)
-        for absent in ["Rename", "Save a Copy As", "Move to Recycle Bin",
-                       "Move to New Instance", "Clone to Other View",
-                       "Read-Only", "Sort By"] {
-            XCTAssertFalse(titles.contains(absent), "\(absent) belongs to a later slice")
+        for absent in ["Clone to Other View", "Move to New Instance"] {
+            XCTAssertFalse(titles.contains(absent), "\(absent) is not in this slice")
         }
     }
 
