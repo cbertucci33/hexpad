@@ -257,6 +257,17 @@ class EditorContainer: NSView {
         !textView.isHorizontallyResizable
     }
 
+    /// Whether the focused editor is in overwrite (OVR) typing mode.
+    var isOverwriteMode: Bool {
+        get { textView.isOverwriteMode }
+        set { textView.isOverwriteMode = newValue }
+    }
+
+    /// Flips overwrite typing on the focused editor.
+    func toggleOverwriteMode() {
+        textView.toggleOverwriteMode()
+    }
+
     /// A scroll origin to re-apply after the next layout pass. AppKit only
     /// knows the new document's height once layout has run, so a restore that
     /// the clip view clamped during bind is retried here.
@@ -607,6 +618,12 @@ class EditorContainer: NSView {
         }
         ruler.onToggleFold = { [weak self] line in
             self?.toggleFold(atLine: line)
+        }
+        ruler.onExpandFoldSubtree = { [weak self] line in
+            _ = self?.expandFoldSubtree(atLine: line)
+        }
+        ruler.onCollapseFoldSubtree = { [weak self] line in
+            _ = self?.collapseFoldSubtree(atLine: line)
         }
         ruler.bookmarkLinesProvider = { [weak self] in
             self?.bookmarkLines ?? []
@@ -1138,6 +1155,30 @@ class EditorContainer: NSView {
     func toggleFold(atLine line: Int) -> Bool {
         refreshFoldModelIfStale()
         guard var model = foldModel, model.toggleFold(atLine: line) else { return false }
+        adoptFoldStateAndRedraw(model)
+        return true
+    }
+
+    /// Expands the fold that starts on `line` together with every fold nested
+    /// inside it (Shift+click on the fold margin).
+    @discardableResult
+    func expandFoldSubtree(atLine line: Int) -> Bool {
+        refreshFoldModelIfStale()
+        guard var model = foldModel else { return false }
+        let changed = model.expandSubtree(atLine: line)
+        guard changed > 0 else { return false }
+        adoptFoldStateAndRedraw(model)
+        return true
+    }
+
+    /// Collapses the fold that starts on `line` together with every fold nested
+    /// inside it (Option+click on the fold margin).
+    @discardableResult
+    func collapseFoldSubtree(atLine line: Int) -> Bool {
+        refreshFoldModelIfStale()
+        guard var model = foldModel else { return false }
+        let changed = model.collapseSubtree(atLine: line)
+        guard changed > 0 else { return false }
         adoptFoldStateAndRedraw(model)
         return true
     }

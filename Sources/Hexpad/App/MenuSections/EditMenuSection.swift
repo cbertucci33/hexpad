@@ -159,7 +159,12 @@ extension HexpadAppDelegate {
         editMenu.addItem(insertItem)
         editMenu.addItem(.separator())
         editMenu.addItem(findItem)
-
+        editMenu.addItem(.separator())
+        let characterPanelItem = NSMenuItem(title: "Character Panel…",
+                                           action: #selector(HexpadAppDelegate.toggleCharacterPanel),
+                                           keyEquivalent: "")
+        characterPanelItem.target = self
+        editMenu.addItem(characterPanelItem)
         // Notepad++ puts Read-Only near the end of Edit. Two delegate-targeted
         // entries: one toggles the focused document, the other applies the
         // focused document's NEW state to every open tab in both split groups.

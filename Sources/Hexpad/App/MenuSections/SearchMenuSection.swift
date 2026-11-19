@@ -51,6 +51,17 @@ extension HexpadAppDelegate {
         incrementalSearchItem.target = nil
         searchMenu.addItem(incrementalSearchItem)
 
+        // N++ Insert-key overwrite mode. No standard Mac chord; bind to the
+        // Insert function key when the keyboard has one, otherwise it simply
+        // has no chord. Nil-targeted so the focused window's controller owns
+        // the toggle and validation.
+        let toggleOverwriteItem = NSMenuItem(title: "Toggle Overwrite Mode",
+                                            action: #selector(MainWindowController.toggleOverwriteMode(_:)),
+                                            keyEquivalent: "\u{F727}")
+        toggleOverwriteItem.keyEquivalentModifierMask = []
+        toggleOverwriteItem.target = nil
+        searchMenu.addItem(toggleOverwriteItem)
+
         // The Find dialog's "Find All" pair lives here as direct N++-style
         // items. Nil-targeted so the focused window's controller (which owns
         // the open documents) runs them and supplies validation.

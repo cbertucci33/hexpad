@@ -6,11 +6,6 @@ import HexpadKit
 /// A compact floating bar over the top of the focused editor. It owns its own
 /// query and match list; it deliberately shares nothing with `FindBar`, so
 /// opening it never rewrites the main Find query, history or match counter.
-///
-/// Highlighting is a lightweight in-viewport pass: matches come from the same
-/// `SearchEngine.search` used by FindBar, but only the matches intersecting the
-/// editor's visible character range get a temporary background attribute, so a
-/// large document costs O(visible glyphs) per keystroke instead of O(matches).
 final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
 
     var isVisible = false
@@ -19,6 +14,22 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
     private let previousButton = NSButton()
     private let nextButton = NSButton()
     private let closeButton = NSButton()
+
+    /// Missing pieces from the docs review (item 24): match-case, highlight-all
+    /// and count toggles, an i/n counter, and an inline wrap message.
+    var matchCaseButton: NSButton!
+    var highlightAllButton: NSButton!
+    var countButton: NSButton!
+    var matchCountLabel: NSTextField!
+    var wrapLabel: NSTextField!
+
+    /// Aliases so callers/tests can use either the button or checkbox spelling.
+    var matchCaseCheckbox: NSButton { matchCaseButton }
+    var highlightAllCheckbox: NSButton { highlightAllButton }
+    var countCheckbox: NSButton { countButton }
+    var counterLabel: NSTextField { matchCountLabel }
+    var wrapMessageLabel: NSTextField { wrapLabel }
+    var wrapMessage: NSTextField { wrapLabel }
 
     /// The focused pane's editor, injected by MainWindowController. The bar
     /// acts on the text view directly and never binds a document.
@@ -62,6 +73,37 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
         searchField.delegate = self
         addSubview(searchField)
 
+        matchCaseButton = NSButton(checkboxWithTitle: "Match case",
+                                  target: self,
+                                  action: #selector(matchCaseToggled))
+        matchCaseButton.font = NSFont.systemFont(ofSize: 11)
+        matchCaseButton.state = .off
+        addSubview(matchCaseButton)
+
+        highlightAllButton = NSButton(checkboxWithTitle: "Highlight all",
+                                     target: self,
+                                     action: #selector(highlightAllToggled))
+        highlightAllButton.font = NSFont.systemFont(ofSize: 11)
+        highlightAllButton.state = .on
+        addSubview(highlightAllButton)
+
+        countButton = NSButton(checkboxWithTitle: "Count",
+                              target: self,
+                              action: #selector(countToggled))
+        countButton.font = NSFont.systemFont(ofSize: 11)
+        countButton.state = .on
+        addSubview(countButton)
+
+        matchCountLabel = NSTextField(labelWithString: "")
+        matchCountLabel.font = NSFont.systemFont(ofSize: 11)
+        matchCountLabel.alignment = .center
+        addSubview(matchCountLabel)
+
+        wrapLabel = NSTextField(labelWithString: "")
+        wrapLabel.font = NSFont.systemFont(ofSize: 11)
+        wrapLabel.textColor = .secondaryLabelColor
+        addSubview(wrapLabel)
+
         configure(previousButton, symbol: "chevron.up", action: #selector(findPreviousAction))
         previousButton.toolTip = "Previous match (Shift+Return)"
         configure(nextButton, symbol: "chevron.down", action: #selector(findNextAction))
@@ -88,25 +130,40 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
         super.layout()
         let inset: CGFloat = 5
         let buttonSize: CGFloat = 22
-        let gap: CGFloat = 2
+        let gap: CGFloat = 4
         let buttonsWidth = buttonSize * 3 + gap * 2
         let height = max(18, bounds.height - 8)
-        let fieldWidth = max(60, bounds.width - inset - buttonsWidth - inset - 4)
-        searchField.frame = NSRect(x: inset, y: (bounds.height - height) / 2,
+        let cbWidths: [CGFloat] = [74, 86, 56]
+        let cbTotal = cbWidths.reduce(0, +) + gap * CGFloat(cbWidths.count - 1)
+        let counterWidth: CGFloat = 40
+        let wrapWidth: CGFloat = 120
+        let reserved = inset + cbTotal + gap + counterWidth + gap + wrapWidth + gap + buttonsWidth + inset + 4
+        let fieldWidth = max(60, bounds.width - reserved)
+        var x = inset
+        searchField.frame = NSRect(x: x, y: (bounds.height - height) / 2,
                                    width: fieldWidth, height: height)
-        var x = bounds.width - inset - buttonsWidth
+        x += fieldWidth + gap
+        for (cb, w) in zip([matchCaseButton, highlightAllButton, countButton], cbWidths) {
+            cb?.frame = NSRect(x: x, y: (bounds.height - height) / 2,
+                               width: w, height: height)
+            x += w + gap
+        }
+        matchCountLabel?.frame = NSRect(x: x, y: (bounds.height - height) / 2,
+                                        width: counterWidth, height: height)
+        x += counterWidth + gap
+        wrapLabel?.frame = NSRect(x: x, y: (bounds.height - height) / 2,
+                                  width: wrapWidth, height: height)
+        x += wrapWidth + gap
+        var bx = bounds.width - inset - buttonsWidth
         for button in [previousButton, nextButton, closeButton] {
-            button.frame = NSRect(x: x, y: (bounds.height - buttonSize) / 2,
+            button.frame = NSRect(x: bx, y: (bounds.height - buttonSize) / 2,
                                   width: buttonSize, height: buttonSize)
-            x += buttonSize + gap
+            bx += buttonSize + gap
         }
     }
 
     // MARK: - Show / hide
 
-    /// Opens the bar with an optional seed (the editor selection). A seed is
-    /// searched immediately so the first live highlight is not an extra
-    /// keystroke away.
     func show(initialQuery: String = "") {
         isVisible = true
         isHidden = false
@@ -120,10 +177,10 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
         if !initialQuery.isEmpty {
             performSearch()
         }
+        updateCounter()
         needsLayout = true
     }
 
-    /// Closes the bar and clears its highlights. Safe to call when hidden.
     func hide() {
         guard !isHiding else { return }
         isHiding = true
@@ -137,6 +194,8 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
         matches = []
         currentMatchIndex = -1
         lastQuery = ""
+        wrapLabel?.stringValue = ""
+        updateCounter()
         stopObservingTabSelection()
         isHiding = false
         onClose?()
@@ -144,14 +203,12 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
 
     // MARK: - Searching
 
-    /// Re-runs the incremental query against the focused editor. Called on
-    /// every keystroke; the match list drives navigation while only visible
-    /// matches are painted.
     func performSearch(select: Bool = true) {
         clearHighlights()
         guard isVisible, let textView = editorRef?.textView else {
             matches = []
             currentMatchIndex = -1
+            updateCounter()
             return
         }
         let query = searchField.stringValue
@@ -162,38 +219,59 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
         guard !query.isEmpty else {
             matches = []
             currentMatchIndex = -1
+            wrapLabel?.stringValue = ""
+            updateCounter()
             return
         }
-        matches = SearchEngine.search(textView.string, pattern: query, options: [])
+        let options: SearchOptions = matchCaseButton?.state == .on ? .caseSensitive : []
+        matches = SearchEngine.search(textView.string, pattern: query, options: options)
         guard !matches.isEmpty else {
             currentMatchIndex = -1
+            wrapLabel?.stringValue = ""
+            updateCounter()
             return
         }
         if currentMatchIndex < 0 || currentMatchIndex >= matches.count {
             currentMatchIndex = 0
         }
-        applyHighlights(in: textView)
+        if highlightAllButton?.state == .on {
+            applyHighlights(in: textView)
+        }
         if select {
             revealCurrentMatch(in: textView)
         }
+        wrapLabel?.stringValue = ""
+        updateCounter()
     }
 
-    /// Return: advance one match, wrapping at the end.
     func findNext() {
         guard isVisible, !matches.isEmpty else { return }
+        let wrapped = matches.count > 1 && currentMatchIndex == matches.count - 1
         currentMatchIndex = (currentMatchIndex + 1) % matches.count
         if let textView = editorRef?.textView {
             revealCurrentMatch(in: textView)
         }
+        if wrapped {
+            wrapLabel?.stringValue = "Wrapped to top"
+        } else {
+            wrapLabel?.stringValue = ""
+        }
+        updateCounter()
     }
 
-    /// Shift+Return: step back one match, wrapping at the start.
     func findPrevious() {
         guard isVisible, !matches.isEmpty else { return }
+        let wrapped = matches.count > 1 && currentMatchIndex == 0
         currentMatchIndex = (currentMatchIndex - 1 + matches.count) % matches.count
         if let textView = editorRef?.textView {
             revealCurrentMatch(in: textView)
         }
+        if wrapped {
+            wrapLabel?.stringValue = "Wrapped to bottom"
+        } else {
+            wrapLabel?.stringValue = ""
+        }
+        updateCounter()
     }
 
     private func revealCurrentMatch(in textView: NSTextView) {
@@ -208,10 +286,6 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
 
     // MARK: - Highlighting
 
-    /// Paints only matches intersecting the visible character range. Matches
-    /// that scroll into view after this pass are picked up by the next
-    /// keystroke/navigation; preserving them across scrolling would need a
-    /// viewport observer (deferred with the rest of highlight persistence).
     private func applyHighlights(in textView: NSTextView) {
         guard let layoutManager = textView.layoutManager,
               let container = textView.textContainer else { return }
@@ -221,8 +295,6 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
         let visibleRect = textView.visibleRect
         let visibleRange: NSRange
         if visibleRect.isEmpty {
-            // Offscreen (tests, or before the first layout): paint the whole
-            // buffer rather than nothing.
             visibleRange = NSRange(location: 0, length: length)
         } else {
             let glyphRange = layoutManager.glyphRange(forBoundingRect: visibleRect, in: container)
@@ -249,10 +321,43 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
                                               forCharacterRange: NSRange(location: 0, length: length))
     }
 
+    private func updateCounter() {
+        guard let label = matchCountLabel else { return }
+        guard countButton?.state == .on else {
+            label.stringValue = ""
+            label.isHidden = true
+            return
+        }
+        label.isHidden = false
+        if matches.isEmpty || currentMatchIndex < 0 {
+            label.stringValue = ""
+        } else {
+            label.stringValue = "\(currentMatchIndex + 1)/\(matches.count)"
+        }
+    }
+
+    // MARK: - Toggles
+
+    @objc private func matchCaseToggled() {
+        performSearch()
+    }
+
+    @objc private func highlightAllToggled() {
+        guard let textView = editorRef?.textView else { return }
+        if highlightAllButton.state == .on {
+            // Re-run to repaint highlights for the current match list.
+            applyHighlights(in: textView)
+        } else {
+            clearHighlights()
+        }
+    }
+
+    @objc private func countToggled() {
+        updateCounter()
+    }
+
     // MARK: - Focus / tab lifecycle
 
-    /// A tab switch invalidates the match ranges and the editor identity, so
-    /// the bar closes rather than acting on the previous buffer.
     private func startObservingTabSelection() {
         guard tabSelectionObserver == nil else { return }
         tabSelectionObserver = NotificationCenter.default.addObserver(
@@ -278,9 +383,6 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
         performSearch()
     }
 
-    /// Hides when the field editor resigns focus (the user clicked into the
-    /// document or another control). Command handling is excluded so Return
-    /// does not close the bar it is meant to navigate.
     func controlTextDidEndEditing(_ obj: Notification) {
         guard isVisible, !isHiding, !isHandlingCommand else { return }
         hide()
@@ -307,13 +409,16 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
         return false
     }
 
-    /// Escape reaches the bar as `cancelOperation` when the field editor or
-    /// the bar itself holds focus.
     override func cancelOperation(_ sender: Any?) {
         hide()
     }
 
     override func keyDown(with event: NSEvent) {
+        // F3 (and Shift+F3) navigate matches while the bar has focus.
+        if event.keyCode == 99 { // F3
+            if event.modifierFlags.contains(.shift) { findPrevious() } else { findNext() }
+            return
+        }
         switch event.characters ?? "" {
         case "\r":
             if event.modifierFlags.contains(.shift) { findPrevious() } else { findNext() }

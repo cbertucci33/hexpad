@@ -38,8 +38,18 @@ final class MultiCaretTextView: NSTextView {
     /// Overwrite (OVR) typing. Session-only UI state: it lives on the shared
     /// text view, so it survives tab switches in this window but is not a
     /// preference and is not persisted per document. The status bar's INS/OVR
-    /// field is the only toggle (no Insert key in v1; see KEYBINDINGS notes).
+    /// field and the Search > Toggle Overwrite Mode command are the toggles.
     var isOverwriteMode = false
+
+    /// Flips overwrite typing directly, for menu/command callers and tests.
+    func toggleOverwriteMode() {
+        isOverwriteMode.toggle()
+    }
+
+    /// Sets overwrite typing directly.
+    func setOverwriteMode(_ isOverwrite: Bool) {
+        isOverwriteMode = isOverwrite
+    }
 
     // MARK: - Symbol rendering
     //
