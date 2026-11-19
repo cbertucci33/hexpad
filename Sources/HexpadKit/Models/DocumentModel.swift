@@ -111,9 +111,10 @@ public final class DocumentModel: Identifiable, ObservableObject {
     public func setLanguage(_ language: String) { _language = language }
 
     /// Edit > Read-Only. A read-only buffer rejects editing at the TextKit
-    /// delegate seam but stays navigable and copyable. This is the explicit
-    /// menu flag only: file-system locking is deliberately out of scope.
-    /// Unlike `isModified`, toggling this never marks the buffer dirty.
+    /// delegate seam and at the DocumentModel mutation seam (see
+    /// `replaceCharacters`), but stays navigable and copyable. This is the
+    /// explicit menu flag only: file-system locking is deliberately out of
+    /// scope. Unlike `isModified`, toggling this never marks the buffer dirty.
     public private(set) var isReadOnly: Bool = false
 
     /// Flips the explicit read-only flag and publishes the change so menus can
@@ -179,8 +180,10 @@ public final class DocumentModel: Identifiable, ObservableObject {
     }
 
     /// Sets both the decode and save encoding. "Convert to" uses
-    /// `convertEncoding(to:)` instead so the two can diverge.
+    /// `convertEncoding(to:)` instead so the two can diverge. Read-only is a
+    /// no-op: a locked buffer rejects user-facing encoding changes too.
     public func setEncoding(_ encoding: String) {
+        guard !isReadOnly else { return }
         _encoding = encoding
         _saveEncoding = encoding
     }
@@ -265,7 +268,25 @@ public final class DocumentModel: Identifiable, ObservableObject {
     /// Replaces `range` in the shared buffer and registers the change on this
     /// document's undo stack. All programmatic edits go through here so the
     /// attached editor shows them immediately and Cmd+Z can revert them.
+    ///
+    /// Read-only is the user's lock (`setReadOnly(_:)`): while the document is
+    /// read-only this is a no-op — no buffer change, no dirty flag, no
+    /// ``textDidChangeNotification``. Every user-facing caller (registry
+    /// commands, macro replay, find-and-replace, the `text` setter, line ops,
+    /// multi-select) funnels through here, so they are rejected together,
+    /// matching the AppKit typing veto. The loader seam
+    /// (``replaceCharactersUnchecked(_:with:)``, used by `reloadText(_:)`)
+    /// bypasses the lock because it is not a user edit.
     public func replaceCharacters(in range: NSRange, with replacement: String) {
+        guard !isReadOnly else { return }
+        replaceCharactersUnchecked(in: range, with: replacement)
+    }
+
+    /// The unchecked twin of ``replaceCharacters(in:with:)`` — the seam the
+    /// loader paths use, because they are not user edits. Only `reloadText(_:)`
+    /// may call this; user-facing mutations must go through the guarded
+    /// `replaceCharacters`.
+    func replaceCharactersUnchecked(in range: NSRange, with replacement: String) {
         let current = textStorage.string as NSString
         let length = current.length
         guard range.location != NSNotFound,
@@ -296,13 +317,20 @@ public final class DocumentModel: Identifiable, ObservableObject {
     /// Loads on-disk text as the new clean baseline. The replacement is still
     /// undoable, but observers see the final baseline in the single notification
     /// instead of a transient dirty state.
+    ///
+    /// The loader seam: this bypasses the read-only guard (via
+    /// `replaceCharactersUnchecked`) because reloading the buffer from disk or
+    /// the session store is not a user edit. User-facing mutations are blocked
+    /// by `replaceCharacters`.
     public func reloadText(_ newText: String) {
         _originalText = newText
         _saveConversionPending = false
         hasExternalChange = false
-        replaceAllText(with: newText)
-        // replaceAllText marks the buffer dirty through the storage observer;
-        // the on-disk text it just loaded is the clean baseline.
+        replaceCharactersUnchecked(in: NSRange(location: 0,
+                                               length: (textStorage.string as NSString).length),
+                                   with: newText)
+        // replaceCharactersUnchecked marks the buffer dirty through the
+        // storage observer; the on-disk text it just loaded is the clean baseline.
         _isDirty = false
     }
     
@@ -370,6 +398,7 @@ public final class DocumentModel: Identifiable, ObservableObject {
     /// `\n`; `encodedData()` applies the chosen style when bytes are written.
     /// The document becomes dirty so the conversion is not forgotten.
     public func convertEOL(to newType: String) {
+        guard !isReadOnly else { return }
         self._eolType = newType
         self._saveConversionPending = true
     }
@@ -384,6 +413,9 @@ public final class DocumentModel: Identifiable, ObservableObject {
     /// Returns false when the bytes cannot be decoded with `encoding`.
     @discardableResult
     public func redecode(from data: Data, as encoding: String) -> Bool {
+        // "Encode in" is user-facing, so the read-only lock rejects it; the
+        // loader seam for re-decoding buffers is `reloadText(_:)`.
+        guard !isReadOnly else { return false }
         let nsEncoding = String.Encoding(rawValue: EncodingDetective.nsEncoding(from: encoding))
         let body = EncodingDetective.strippingBOM(from: data)
         guard let text = String(data: body, encoding: nsEncoding) else { return false }
@@ -418,6 +450,8 @@ public final class DocumentModel: Identifiable, ObservableObject {
     ///
     /// Throws when the text cannot be represented in `encoding`.
     public func convertEncoding(to encoding: String) throws {
+        // "Convert to" is user-facing: the read-only lock rejects it too.
+        guard !isReadOnly else { return }
         guard canEncode(as: encoding) else {
             throw DocumentError.saveFailed("cannot encode text as \(encoding)")
         }

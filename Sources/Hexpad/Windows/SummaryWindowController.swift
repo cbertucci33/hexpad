@@ -36,7 +36,7 @@ final class SummaryWindowController {
             lines.append("Path: \(doc == nil ? "(none)" : "(untitled)")")
         }
         lines.append("Characters: \(text.count)")
-        lines.append("Bytes: \(text.utf8.count)")
+        lines.append("Bytes: \(onDiskByteCount(of: doc))")
         lines.append("Lines: \(doc == nil ? 0 : GutterGeometry.lineCount(in: text))")
         lines.append("Selection: \(selectionActive ? selection.length : 0) chars, \(selectionLineSpan) lines")
         lines.append("Words: \(text.split(whereSeparator: \.isWhitespace).count)")
@@ -44,6 +44,24 @@ final class SummaryWindowController {
         lines.append("EOL: \(doc?.eolType ?? "(none)")")
         lines.append("Type: \(doc?.language ?? "(none)")")
         return lines.joined(separator: "\n")
+    }
+
+    /// The byte count a save of `doc` would write: the document's
+    /// `saveEncoding` applied to the text converted back to the document's
+    /// `eolType`, plus the BOM when `keepsBOM`. This is `DocumentModel`'s
+    /// `encodedData()` computation (private there), replicated so the report
+    /// shows what an actual save writes rather than the UTF-8 buffer size.
+    static func onDiskByteCount(of doc: DocumentModel?) -> Int {
+        guard let doc else { return 0 }
+        let encoding = String.Encoding(rawValue: EncodingDetective.nsEncoding(from: doc.saveEncoding))
+        var data = EOLDetective.converting(doc.text, to: doc.eolType)
+            .data(using: encoding) ?? Data()
+        if doc.keepsBOM,
+           let bom = EncodingDetective.bomBytes(for: doc.saveEncoding),
+           !data.starts(with: bom) {
+            data = bom + data
+        }
+        return data.count
     }
 
     // MARK: - Dialog

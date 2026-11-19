@@ -634,9 +634,15 @@ class MainWindowController: NSViewController {
 
         menu.addItem(.separator())
 
-        // Save / reload / print group.
+        // Save / reload / print group. Rename… and Save a Copy As are the
+        // same-day-shipped File-menu commands; delegate-targeted like Save /
+        // Save As above so their validation and confirmations run through
+        // HexpadAppDelegate.
         menu.addItem(delegateItem("Save", #selector(HexpadAppDelegate.saveFile)))
         menu.addItem(delegateItem("Save As...", #selector(HexpadAppDelegate.saveAsFile)))
+        menu.addItem(delegateItem("Rename…", #selector(HexpadAppDelegate.renameFile(_:))))
+        menu.addItem(delegateItem("Save a Copy As",
+                                  #selector(HexpadAppDelegate.saveACopyAs(_:))))
         menu.addItem(responderItem("Reload from Disk",
                                    #selector(MainWindowController.reloadActiveDocument(_:))))
         menu.addItem(responderItem("Print…",
@@ -658,13 +664,54 @@ class MainWindowController: NSViewController {
 
         menu.addItem(.separator())
 
-        // Move group.
+        // Move group: Move to Trash is the File-menu command (delegate-targeted
+        // like the other save/close items).
         menu.addItem(responderItem("Move to Other View",
                                    #selector(MainWindowController.moveToOtherView(_:))))
         menu.addItem(responderItem("Move Tab to Start",
                                    #selector(MainWindowController.moveTabToStart(_:))))
         menu.addItem(responderItem("Move Tab to End",
                                    #selector(MainWindowController.moveTabToEnd(_:))))
+        menu.addItem(delegateItem("Move to Trash",
+                                  #selector(HexpadAppDelegate.moveToTrash(_:))))
+
+        // Notepad++ puts Read-Only near the end of the tab menu. The item is a
+        // checkmarked toggle of the focused document; its state is read here so
+        // the next hover shows the right value.
+        let readOnlyItem = delegateItem("Read-Only",
+                                        #selector(HexpadAppDelegate.toggleReadOnly))
+        readOnlyItem.state = tabStore.selectedDocument?.isReadOnly == true ? .on : .off
+        menu.addItem(readOnlyItem)
+
+        menu.addItem(.separator())
+        // Sort By: the same ten commands as Window > Sort By — same
+        // representedObject/tag encoding — so the controller's
+        // sortDocumentsBy(_:) handles them identically.
+        let sortByItem = NSMenuItem(title: "Sort By", action: nil, keyEquivalent: "")
+        let sortByMenu = NSMenu(title: "Sort By")
+        let sortCommands: [(title: String, key: TabSortKey, ascending: Bool)] = [
+            ("Name (Ascending)", .name, true),
+            ("Name (Descending)", .name, false),
+            ("Path (Ascending)", .path, true),
+            ("Path (Descending)", .path, false),
+            ("Type (Ascending)", .type, true),
+            ("Type (Descending)", .type, false),
+            ("Length (Ascending)", .length, true),
+            ("Length (Descending)", .length, false),
+            ("Modified (Ascending)", .modified, true),
+            ("Modified (Descending)", .modified, false),
+        ]
+        for command in sortCommands {
+            let item = NSMenuItem(title: command.title,
+                                  action: #selector(MainWindowController.sortDocumentsBy(_:)),
+                                  keyEquivalent: "")
+            item.target = nil
+            item.representedObject = command.key.rawValue
+            item.tag = command.ascending ? 1 : 0
+            sortByMenu.addItem(item)
+        }
+        sortByItem.submenu = sortByMenu
+        menu.addItem(sortByItem)
         return menu
     }
     
@@ -3211,6 +3258,10 @@ class MainWindowController: NSViewController {
     /// faithful decode of those same bytes, so the document stays clean.
     @objc func encodeIn(_ encoding: String) {
         guard let doc = tabStore.selectedDocument, doc.filePath != nil else { return }
+        guard !doc.isReadOnly else {
+            showError("This document is read-only. Edit > Read-Only to unlock it first.")
+            return
+        }
         guard doc.redecodeFromDisk(as: encoding) else {
             showError("This file's bytes are not valid \(encoding).")
             return
@@ -3552,15 +3603,19 @@ class MainWindowController: NSViewController {
         if result.text != original {
             // Apply the smallest replacement so bookmark remapping sees a
             // meaningful edit instead of a whole-buffer rewrite, and the whole
-            // command stays a single undo step.
-            if let change = MultiCaretEditing.change(from: original, to: result.text) {
-                doc.replaceCharacters(in: change.range, with: change.replacement)
+            // command stays a single undo step. On a read-only document the
+            // model rejects both calls; report no change rather than a
+            // rejected edit.
+            if !doc.isReadOnly {
+                if let change = MultiCaretEditing.change(from: original, to: result.text) {
+                    doc.replaceCharacters(in: change.range, with: change.replacement)
+                }
+                // Defensive fallback: the diff must reproduce the command's text.
+                if doc.text != result.text {
+                    doc.replaceAllText(with: result.text)
+                }
             }
-            // Defensive fallback: the diff must reproduce the command's text.
-            if doc.text != result.text {
-                doc.replaceAllText(with: result.text)
-            }
-            didChange = true
+            didChange = !doc.isReadOnly
         }
 
         if result.bookmarkState != doc.bookmarkState {

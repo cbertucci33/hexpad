@@ -230,12 +230,14 @@ final class ReadOnlyMenuTests: XCTestCase {
         XCTAssertEqual(doc.text, "pastedbase", "the same paste lands once writable")
     }
 
-    /// Locking a buffer is not a content edit: its dirty dot is unaffected.
+    /// Locking a buffer is not a content edit: its dirty dot is unaffected,
+    /// and while it is locked every programmatic mutation is a no-op.
     func testReadOnlyDoesNotChangeTheDirtyFlag() throws {
         let controller = makeController()
         let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
         doc.setModified(false)
         XCTAssertFalse(doc.isModified)
+        let text = doc.text
 
         delegateToggle(controller)
         XCTAssertTrue(doc.isReadOnly)
@@ -243,10 +245,83 @@ final class ReadOnlyMenuTests: XCTestCase {
 
         doc.replaceCharacters(in: NSRange(location: 0, length: doc.textStorage.length),
                               with: "changed")
-        XCTAssertTrue(doc.isModified)
+        XCTAssertEqual(doc.text, text, "a read-only buffer rejects direct mutations")
+        XCTAssertFalse(doc.isModified, "a rejected mutation leaves the dirty flag alone")
+
         delegateToggle(controller)
         XCTAssertFalse(doc.isReadOnly)
-        XCTAssertTrue(doc.isModified)
+        doc.replaceCharacters(in: NSRange(location: 0, length: doc.textStorage.length),
+                              with: "changed")
+        XCTAssertTrue(doc.isModified, "the buffer accepts mutations once unlocked")
+    }
+
+    // MARK: - Programmatic enforcement (registry commands, macros, find)
+
+    /// The command registry funnels through the shared buffer: on a read-only
+    /// document a case transform or a sort must not change the text.
+    func testPerformCommandOnReadOnlyDocumentIsANoOp() throws {
+        let controller = makeController()
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        doc.replaceAllText(with: "beta\nalpha")
+        controller.updateEditor()
+        doc.setReadOnly(true)
+
+        controller.performCommand(identifier: "sort-lines-ascending")
+        XCTAssertEqual(doc.text, "beta\nalpha",
+                       "a read-only buffer rejects registry commands")
+
+        controller.performCommand(identifier: "case-uppercase")
+        XCTAssertEqual(doc.text, "beta\nalpha",
+                       "a read-only buffer rejects case commands")
+    }
+
+    /// Macro replay applies its steps through the same command path; a macro
+    /// that would change a read-only buffer must not change it.
+    func testMacroReplayOnReadOnlyDocumentIsANoOp() throws {
+        let controller = makeController()
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        doc.replaceAllText(with: "beta\nalpha")
+        controller.updateEditor()
+
+        let macro = MacroModel(name: "Sort replay",
+                               steps: [MacroStep(identifier: "sort-lines-ascending")])
+
+        // Baseline: the same replay sorts when the buffer is writable.
+        XCTAssertTrue(controller.playMacro(macro))
+        XCTAssertEqual(doc.text, "alpha\nbeta")
+
+        doc.replaceAllText(with: "beta\nalpha")
+        doc.setReadOnly(true)
+        controller.playMacro(macro)
+        XCTAssertEqual(doc.text, "beta\nalpha", "a read-only buffer rejects macro replay")
+    }
+
+    /// The Find & Replace path applies through `doc.replaceCharacters`; a
+    /// read-only buffer must reject it too.
+    func testFindReplaceOnReadOnlyDocumentIsANoOp() throws {
+        let controller = makeController()
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        doc.replaceAllText(with: "one two one two")
+        controller.updateEditor()
+        let bar = try XCTUnwrap(controller.findBar)
+        if !bar.isVisible {
+            controller.toggleFindBar()
+        }
+        doc.setReadOnly(true)
+
+        bar.searchField.stringValue = "one"
+        let replaceField = try XCTUnwrap(
+            bar.subviews.compactMap { $0 as? NSSearchField }
+                .first { $0.placeholderString == "Replace..." })
+        replaceField.stringValue = "X"
+        bar.performFind()
+
+        let replaceButton = try XCTUnwrap(
+            bar.subviews.compactMap { $0 as? NSButton }
+                .first { $0.title == "Replace" })
+        replaceButton.performClick(nil)
+
+        XCTAssertEqual(doc.text, "one two one two", "Replace must not mutate a read-only buffer")
     }
 
     private func delegateToggle(_ controller: MainWindowController) {

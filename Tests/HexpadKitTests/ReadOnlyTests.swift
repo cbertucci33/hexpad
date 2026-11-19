@@ -86,7 +86,8 @@ final class ReadOnlyTests: XCTestCase {
 
     /// Locking is a view policy, not a content edit: a clean buffer stays clean
     /// and a dirty buffer stays dirty. `setReadOnly` must never post the dirty
-    /// flag's general-purpose notification either.
+    /// flag's general-purpose notification either. While locked, mutations are
+    /// rejected at the model seam, so the text and the dirty flag stay put.
     func testReadOnlyLeavesDirtyStateUntouched() {
         let doc = DocumentModel(text: "draft")
         doc.setModified(false)
@@ -105,8 +106,13 @@ final class ReadOnlyTests: XCTestCase {
         XCTAssertEqual(dirtyNotices, 0)
 
         doc.replaceCharacters(in: NSRange(location: 0, length: 5), with: "revised")
-        XCTAssertTrue(doc.isModified)
+        XCTAssertEqual(doc.text, "draft", "a read-only buffer rejects mutations")
+        XCTAssertFalse(doc.isModified, "a rejected mutation leaves the dirty flag alone")
+        XCTAssertEqual(dirtyNotices, 0)
+
         doc.setReadOnly(false)
-        XCTAssertTrue(doc.isModified, "unlocking must not silently clear unsaved edits")
+        XCTAssertFalse(doc.isModified)
+        doc.replaceCharacters(in: NSRange(location: 0, length: 5), with: "revised")
+        XCTAssertTrue(doc.isModified, "a writable buffer accepts the mutation")
     }
 }
