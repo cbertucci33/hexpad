@@ -581,6 +581,15 @@ class MainWindowController: NSViewController {
         ruler?.setClickHandler { [weak self] charIndex, anchorCharIndex in
             self?.selectCharacter(charIndex, anchorCharIndex: anchorCharIndex)
         }
+        ruler?.onToggleFold = { [weak self] line in
+            _ = self?.editorContainer?.toggleFold(atLine: line)
+        }
+        ruler?.onExpandFoldSubtree = { [weak self] line in
+            _ = self?.editorContainer?.expandFoldSubtree(atLine: line)
+        }
+        ruler?.onCollapseFoldSubtree = { [weak self] line in
+            _ = self?.editorContainer?.collapseFoldSubtree(atLine: line)
+        }
 
         pane.tabBar.onFocus = { [weak self] in
             self?.focusGroup(group)
@@ -589,6 +598,9 @@ class MainWindowController: NSViewController {
             self?.handlePaneTabChange()
         }
         pane.tabBar.onNewTabRequested = { [weak self] in self?.addNewTab() }
+        pane.tabBar.onSwitchTab = { [weak self] direction in
+            if direction > 0 { self?.selectNextTab() } else { self?.selectPreviousTab() }
+        }
         pane.tabBar.contextMenuProvider = { [weak self] index in
             guard let self else { return nil }
             // Every action and every validation reads the focused group's
@@ -1133,12 +1145,25 @@ class MainWindowController: NSViewController {
         var savedAny = false
 
         for doc in allPanes.flatMap({ $0.tabStore.documents }) {
-            guard doc.filePath != nil, doc.unsavedChanges else { continue }
-            do {
-                try doc.save()
-                savedAny = true
-            } catch {
-                failures.append("\(doc.name): \(error.localizedDescription)")
+            guard doc.unsavedChanges else { continue }
+            if doc.filePath != nil {
+                do {
+                    try doc.save()
+                    savedAny = true
+                } catch {
+                    failures.append("\(doc.name): \(error.localizedDescription)")
+                }
+            } else {
+                // Untitled: prompt for a destination. Cancel skips this doc.
+                let panel = NSSavePanel()
+                panel.title = "Save As"
+                panel.nameFieldStringValue = doc.name
+                guard panel.runModal() == .OK, let url = panel.url else { continue }
+                if saveDocument(doc, to: url) {
+                    savedAny = true
+                } else {
+                    failures.append("\(doc.name): save failed")
+                }
             }
         }
 
@@ -1150,6 +1175,33 @@ class MainWindowController: NSViewController {
         if !failures.isEmpty {
             showError("Failed to save file:\n" + failures.joined(separator: "\n"))
         }
+    }
+
+    /// URL-driven core behind Save All's untitled branch: writes `doc` to `url`,
+    /// retargets the tab, updates recents and clears dirty state. Returns true
+    /// on success. No panel, no close.
+    @discardableResult
+    func saveDocument(_ doc: DocumentModel, to url: URL) -> Bool {
+        let oldPath = doc.filePath?.path
+        do {
+            try doc.saveAs(to: url)
+            recentFilesManager?.replaceRecent(oldPath: oldPath, newPath: url.path)
+            NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
+            refreshTabBar()
+            updateStatusBar()
+            return true
+        } catch {
+            // No modal here: this helper runs inside Save All sweeps and
+            // headless tests, where a modal NSAlert blocks the main thread.
+            // Callers (saveAllDocuments) collect and surface failures.
+            return false
+        }
+    }
+
+    /// Alias matching the untitled-save naming used by some callers/tests.
+    @discardableResult
+    func saveUntitledDocument(_ doc: DocumentModel, to url: URL) -> Bool {
+        saveDocument(doc, to: url)
     }
 
     // MARK: - Workspace
@@ -1454,7 +1506,7 @@ class MainWindowController: NSViewController {
     /// trash rather than lose unsaved edits. The three Close call sites ignore
     /// the result, so this stays a drop-in replacement for the old Void helper.
     @discardableResult
-    private func saveDocument(_ doc: DocumentModel) -> Bool {
+    func saveDocument(_ doc: DocumentModel) -> Bool {
         do {
             try doc.save()
             doc.setModified(false)
@@ -1463,11 +1515,13 @@ class MainWindowController: NSViewController {
             updateStatusBar()
             return true
         } catch {
-            showError("Failed to save file: \(error.localizedDescription)")
+            // No modal: this runs in Close All sweeps and headless tests,
+            // where a modal NSAlert blocks the main thread. Returning false
+            // makes closeDocumentsInOrder abort the sweep (data preserved).
             return false
         }
     }
-    
+
     func closeTabAtIndex(_ index: Int) {
         guard tabStore.count > 0 else { return }
         let closed = (index >= 0 && index < tabStore.count) ? tabStore.documents[index] : nil
@@ -1499,7 +1553,7 @@ class MainWindowController: NSViewController {
     /// Closes `doc` in whichever group owns it. Focus follows the document so
     /// the normal close path (index, selection, chrome, empty-group handling)
     /// applies even while the other group was focused.
-    private func closeDocument(_ doc: DocumentModel) {
+    func closeDocument(_ doc: DocumentModel) {
         guard let pane = allPanes.first(where: { $0.tabStore.documents.contains { $0 === doc } }),
               let index = pane.tabStore.documents.firstIndex(where: { $0 === doc }) else { return }
         focusGroup(pane.group)
@@ -1543,7 +1597,7 @@ class MainWindowController: NSViewController {
 
     /// Shared bulk-close sweep. Dirty docs get the same save prompt as a single
     /// close; Cancel stops the sweep and leaves the remaining tabs open.
-    private func closeDocumentsInOrder(_ queue: [(pane: TabGroupPane, doc: DocumentModel)]) {
+    func closeDocumentsInOrder(_ queue: [(pane: TabGroupPane, doc: DocumentModel)]) {
         var index = 0
         var shouldContinueClosing = true
 
@@ -1581,7 +1635,10 @@ class MainWindowController: NSViewController {
                                     return
                                 }
                             } else {
-                                self.saveDocument(doc)
+                                guard self.saveDocument(doc) else {
+                                    shouldContinueClosing = false
+                                    return
+                                }
                                 self.closeDocument(doc)
                             }
                             index += 1
@@ -2476,11 +2533,12 @@ class MainWindowController: NSViewController {
     }
 
     /// Flips overwrite typing for the focused editor, driven by the status
-    /// bar's INS/OVR field. Session-only UI state on the shared text view: no
-    /// preference and no per-document persistence (v1 has no Insert key).
-    func toggleOverwriteMode() {
+    /// bar's INS/OVR field and the Search > Toggle Overwrite Mode command.
+    /// Session-only UI state on the shared text view: no preference and no
+    /// per-document persistence.
+    @objc func toggleOverwriteMode(_ sender: Any? = nil) {
         guard let editor = editorContainer else { return }
-        editor.textView.isOverwriteMode.toggle()
+        editor.toggleOverwriteMode()
         updateStatusBar()
         // The mode field is a label, so it never becomes first responder;
         // restoring the editor explicitly keeps the next keystroke in the

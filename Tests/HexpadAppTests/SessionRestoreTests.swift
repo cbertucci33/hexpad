@@ -249,10 +249,12 @@ final class SessionRestoreTests: XCTestCase {
         primaryDoc.text = "primary edit\n"
         let secondaryDoc = DocumentModel(text: "original\n", filePath: secondaryURL)
         secondaryDoc.text = "secondary edit\n"
-        let untitled = DocumentModel(text: "scratch")
-        untitled.text = "scratch edit"
+        // NOTE: Save All now prompts Save As for UNTITLED dirty docs (N++
+        // parity, Wave 1 lane 1A) — a modal NSSavePanel, which would hang this
+        // headless run, so untitled docs are exercised by the URL-core test in
+        // DataLossFixTests instead. This test pins the file-backed sweep only.
 
-        controller.tabStore.documents = [primaryDoc, untitled]
+        controller.tabStore.documents = [primaryDoc]
         let secondaryStore = try XCTUnwrap(
             controller.allPanes.first { $0.group == .secondary }?.tabStore
         )
@@ -267,7 +269,5 @@ final class SessionRestoreTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: secondaryURL, encoding: .utf8), "secondary edit\n")
         XCTAssertFalse(primaryDoc.unsavedChanges)
         XCTAssertFalse(secondaryDoc.unsavedChanges)
-        XCTAssertTrue(untitled.unsavedChanges,
-                      "Save All leaves untitled buffers for a per-tab Save As")
     }
 }

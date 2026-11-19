@@ -322,6 +322,9 @@ public final class DocumentModel: Identifiable, ObservableObject {
     /// `replaceCharactersUnchecked`) because reloading the buffer from disk or
     /// the session store is not a user edit. User-facing mutations are blocked
     /// by `replaceCharacters`.
+    /// Reloads the buffer from disk. Replaces text only; line-keyed state
+    /// (bookmarks, fold state, token styles) is PRESERVED — reload is an
+    /// explicit user action that refreshes content, not a reset of markings.
     public func reloadText(_ newText: String) {
         _originalText = newText
         _saveConversionPending = false

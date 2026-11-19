@@ -21,6 +21,7 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     /// watchers stay alive; removed when the window closes.
     private var extraWindowControllers: [MainWindowController] = []
     private var preferencesWindowController: PreferencesWindowController?
+    private var characterPanelController: CharacterPanelWindowController?
     private let recentFilesManager = RecentFilesManager()
     var openRecentMenu: NSMenu?
     var appearanceMenu: NSMenu?
@@ -63,11 +64,58 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Quit confirmation for unsaved changes: matches the close-tab alert
+        // style (Save All / Don't Save / Cancel). Save All writes every dirty
+        // document before proceeding; Don't Save discards; Cancel aborts.
+        let dirtyDocs = allWindowControllers.flatMap { $0.allPanes.flatMap { $0.tabStore.documents } }
+            .filter { $0.unsavedChanges }
+        if !dirtyDocs.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = "Do you want to save the changes you made to your documents?"
+            alert.informativeText = "Your changes will be lost if you don't save them."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Save All")
+            alert.addButton(withTitle: "Don't Save")
+            alert.addButton(withTitle: "Cancel")
+            let response = alert.runModal()
+            let resolution = Self.quitResolution(dirtyCount: dirtyDocs.count, response: response)
+            if resolution == .terminateCancel {
+                return .terminateCancel
+            }
+            if response == .alertFirstButtonReturn {
+                // Save All: write every dirty document in every open window.
+                for controller in allWindowControllers {
+                    controller.saveAllDocuments()
+                }
+            }
+        }
         // Dirty documents stay dirty on quit; the session store preserves dirty
         // buffers. saveMergedSession writes immediately (superseding the
         // debounced write), so the quit path never waits for a pending timer.
+        // The prompt above governs whether unsaved EDITS are preserved; the
+        // snapshot behavior is unchanged.
         saveMergedSession()
         return .terminateNow
+    }
+
+    /// Testable quit decision. With no dirty documents termination proceeds
+    /// immediately. Otherwise the modal response maps as follows, matching the
+    /// alert button order (Save All / Don't Save / Cancel):
+    ///   .alertFirstButtonReturn  (Save All)  -> .terminateNow
+    ///   .alertSecondButtonReturn (Don't Save) -> .terminateNow
+    ///   .alertThirdButtonReturn  (Cancel)     -> .terminateCancel
+    static func quitResolution(dirtyCount: Int, response: NSApplication.ModalResponse) -> NSApplication.TerminateReply {
+        guard dirtyCount > 0 else { return .terminateNow }
+        switch response {
+        case .alertFirstButtonReturn:  // Save All
+            return .terminateNow
+        case .alertSecondButtonReturn: // Don't Save
+            return .terminateNow
+        case .alertThirdButtonReturn:  // Cancel
+            return .terminateCancel
+        default:
+            return .terminateCancel
+        }
     }
 
     /// Every open window's controller, primary first. Menu actions that are
@@ -525,6 +573,30 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         preferencesWindowController?.showWindow(nil)
         preferencesWindowController?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    // MARK: - Character Panel
+
+    /// Edit > Character Panel… floating character map. Reuses one panel for
+    /// the lifetime of the app, like the Find in Files window.
+    @objc func toggleCharacterPanel() {
+        if let controller = characterPanelController,
+           controller.window?.isVisible == true {
+            controller.window?.close()
+            return
+        }
+        if characterPanelController == nil {
+            characterPanelController = CharacterPanelWindowController()
+        }
+        if let font = CharacterPanelWindowController.fontFromFocusedEditor() {
+            characterPanelController?.setFont(font)
+        }
+        characterPanelController?.showWindow(nil)
+        characterPanelController?.window?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc func showCharacterPanel() {
+        toggleCharacterPanel()
     }
 
     // MARK: - Help

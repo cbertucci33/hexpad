@@ -414,6 +414,55 @@ public struct FoldModel {
         return toggle(fold)
     }
 
+    // MARK: - Subtree (expand/collapse a whole branch)
+
+    /// Every foldable range contained in `fold`, including `fold` itself.
+    public func foldsContained(in fold: FoldRange) -> [FoldRange] {
+        foldableRanges.filter { other in
+            other.location >= fold.location && other.upperBound <= fold.upperBound
+        }
+    }
+
+    /// Expands `fold` and every foldable range nested inside it.
+    @discardableResult
+    public mutating func expandSubtree(_ fold: FoldRange) -> Int {
+        guard let canonical = canonicalFold(for: fold) else { return 0 }
+        let targets = foldsContained(in: canonical)
+        var expanded = 0
+        for target in targets {
+            if foldState.remove(target) {
+                expanded += 1
+            }
+        }
+        return expanded
+    }
+
+    /// Collapses `fold` and every foldable range nested inside it.
+    @discardableResult
+    public mutating func collapseSubtree(_ fold: FoldRange) -> Int {
+        guard let canonical = canonicalFold(for: fold) else { return 0 }
+        let targets = foldsContained(in: canonical)
+        let before = foldState.count
+        for target in targets {
+            foldState.insert(target)
+        }
+        return foldState.count - before
+    }
+
+    /// Expands the subtree rooted at the fold that starts on `line`.
+    @discardableResult
+    public mutating func expandSubtree(atLine line: Int) -> Int {
+        guard let fold = foldableRange(startingAtLine: line) else { return 0 }
+        return expandSubtree(fold)
+    }
+
+    /// Collapses the subtree rooted at the fold that starts on `line`.
+    @discardableResult
+    public mutating func collapseSubtree(atLine line: Int) -> Int {
+        guard let fold = foldableRange(startingAtLine: line) else { return 0 }
+        return collapseSubtree(fold)
+    }
+
     // MARK: - Visibility
 
     /// Visible and hidden spans for the current fold state.

@@ -2,6 +2,13 @@ import Foundation
 import HexpadKit
 
 /// Manages the list of recently opened files and the File > Open Recent submenu.
+///
+/// Ratified semantic (CB): record on OPEN (matches macOS Open Recent convention).
+/// The list keeps open + recently-opened files, most-recent-first, capped at
+/// `recentFilesMax`. It is NOT restricted to closed files — macOS shows open
+/// files in Open Recent too. `mostRecentClosedFile(openPaths:)` is the only
+/// place that filters out currently-open paths, and only for the
+/// Restore Recent Closed File command.
 final class RecentFilesManager: NSObject {
     
     /// Notification posted when the recents list changes; menu rebuilds in response.

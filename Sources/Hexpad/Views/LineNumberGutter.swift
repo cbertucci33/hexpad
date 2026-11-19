@@ -254,6 +254,14 @@ final class LineNumberGutter: NSView {
     /// Called with the 1-based logical line whose fold marker was clicked.
     var onToggleFold: ((Int) -> Void)?
 
+    /// Called with the 1-based logical line whose fold marker was clicked with
+    /// Shift held: expands that fold and every fold nested inside it.
+    var onExpandFoldSubtree: ((Int) -> Void)?
+
+    /// Called with the 1-based logical line whose fold marker was clicked with
+    /// Option held: collapses that fold and every fold nested inside it.
+    var onCollapseFoldSubtree: ((Int) -> Void)?
+
     /// Supplies the bookmarked logical lines at draw time. Like the fold
     /// provider this is pulled, so a remap that happened during the edit is
     /// already reflected when the redraw runs.
@@ -573,12 +581,18 @@ final class LineNumberGutter: NSView {
     ///   (including the marker column on a line with no fold), preserving the
     ///   gutter's existing line-selection behavior.
     @discardableResult
-    func handleFoldMarkerClick(at point: NSPoint) -> Bool {
+    func handleFoldMarkerClick(at point: NSPoint, modifierFlags: NSEvent.ModifierFlags = []) -> Bool {
         guard point.x < Self.markerColumnWidth,
               let line = logicalLine(atViewPoint: point),
               markerState(forLine: line) != nil else { return false }
         dragAnchorCharIndex = nil
-        onToggleFold?(line)
+        if modifierFlags.contains(.shift) {
+            onExpandFoldSubtree?(line)
+        } else if modifierFlags.contains(.option) {
+            onCollapseFoldSubtree?(line)
+        } else {
+            onToggleFold?(line)
+        }
         return true
     }
 
@@ -626,7 +640,7 @@ final class LineNumberGutter: NSView {
         }
         // A press on a drawn fold marker toggles the fold and intentionally does
         // not start a line selection.
-        if handleFoldMarkerClick(at: point) {
+        if handleFoldMarkerClick(at: point, modifierFlags: event.modifierFlags) {
             return
         }
         // The bookmark margin toggles a bookmark on any line and likewise does

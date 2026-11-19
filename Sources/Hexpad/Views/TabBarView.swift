@@ -44,6 +44,11 @@ class TabBarView: NSView {
     /// controller can create a new tab. The bar deliberately has no controller
     /// reference; like `onFocus`/`onChange`, this per-pane closure is the bridge.
     var onNewTabRequested: (() -> Void)?
+    /// Called to switch tabs from a wheel gesture. Argument is +1 (next) or -1
+    /// (previous); the controller wires this to `selectNextTab`/`selectPreviousTab`
+    /// so the wheel reuses the exact selection/rebind path the menu items use.
+    /// When nil, the bar falls back to wrapping selection on its own store.
+    var onSwitchTab: ((Int) -> Void)?
     /// Called with the index of a right-clicked tab. The owning pane builds the
     /// tab's context menu (and focuses its group) before returning it. The bar
     /// deliberately has no controller reference: this per-pane closure is the
@@ -165,6 +170,73 @@ class TabBarView: NSView {
             return
         }
         super.mouseDown(with: event)
+    }
+
+    // MARK: - Scroll-wheel gestures
+    //
+    // Pinned semantics (N++ Ctrl+wheel / Shift+wheel mapped to macOS):
+    //   * Plain two-finger scroll (no modifiers): horizontal scroll of the
+    //     overflowing bar. The bar is the document view of an NSScrollView, so
+    //     this is delegated to `super` which lets the enclosing scroll view
+    //     handle it.
+    //   * Cmd+scrollWheel: switch tab. deltaY > 0 (down/right) = next tab,
+    //     deltaY < 0 (up/left) = previous tab, WITH wrap. Reuses the
+    //     controller's selectNextTab/selectPreviousTab path through
+    //     `onSwitchTab` when wired; otherwise wraps on the bar's own store.
+    //   * Option+scrollWheel: MOVE the active tab one position. deltaY > 0
+    //     moves it right, deltaY < 0 moves it left, WITHOUT wrap (move-with-wrap
+    //     is disorienting on Mac, so we diverge from N++'s wrap here). Always
+    //     handled bar-side through `moveTab(from:to:)`, which calls `onChange`.
+    override func scrollWheel(with event: NSEvent) {
+        let mods = event.modifierFlags
+        if mods.contains(.command) {
+            onFocus?()
+            if event.deltaY > 0 {
+                if let cb = onSwitchTab {
+                    cb(1)
+                } else {
+                    selectAdjacentTab(offset: 1)
+                }
+            } else if event.deltaY < 0 {
+                if let cb = onSwitchTab {
+                    cb(-1)
+                } else {
+                    selectAdjacentTab(offset: -1)
+                }
+            }
+            return
+        }
+        if mods.contains(.option) {
+            onFocus?()
+            moveActiveTab(direction: event.deltaY > 0 ? 1 : -1)
+            return
+        }
+        // Plain wheel (and Shift+wheel, which macOS reserves for horizontal
+        // scroll in text views): let the enclosing scroll view scroll the bar.
+        super.scrollWheel(with: event)
+    }
+
+    /// Wrapping tab selection used by the wheel fallback path. Mirrors the
+    /// controller's selectNextTab/selectPreviousTab wrap arithmetic.
+    private func selectAdjacentTab(offset: Int) {
+        let count = tabStore.count
+        guard count > 1 else { return }
+        let next = (tabStore.selectedIndex + offset + count * count) % count
+        // Reuse the bar's existing selection path so buttons/notifications/
+        // onChange stay consistent with a click.
+        selectTab(at: next)
+    }
+
+    /// Moves the active tab one slot in `direction` (+1 right, -1 left) without
+    /// wrap, using the existing drag-reorder commit path.
+    private func moveActiveTab(direction: Int) {
+        guard !lockTabBar else { return }
+        let count = tabStore.count
+        guard count > 1 else { return }
+        let current = tabStore.selectedIndex
+        let dest = current + direction
+        guard dest >= 0, dest < count else { return }
+        moveTab(from: current, to: dest)
     }
     
     // MARK: - Drag reorder
