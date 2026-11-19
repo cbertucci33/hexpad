@@ -527,6 +527,32 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    // MARK: - Help
+
+    @objc func showDebugInfo() {
+        DebugInfoWindowController.showDebugInfo(activeController: activeController)
+    }
+
+    @objc func showCommandLineArguments() {
+        DebugInfoWindowController.showCommandLineArguments()
+    }
+
+    /// Testable report generator (H25a). Delegates to the window controller so
+    /// both call sites share one implementation.
+    static func debugReport(activeController: MainWindowController?) -> String {
+        DebugInfoWindowController.debugReport(activeController: activeController)
+    }
+    static func debugInfoReport(activeController: MainWindowController?) -> String {
+        DebugInfoWindowController.debugReport(activeController: activeController)
+    }
+
+    static func commandLineArgumentsText() -> String {
+        DebugInfoWindowController.commandLineArgumentsText()
+    }
+    static func commandLineArguments() -> String {
+        DebugInfoWindowController.commandLineArgumentsText()
+    }
+
     @objc func setEOLLF() { activeController?.setEOL("LF") }
     @objc func setEOLCRLF() { activeController?.setEOL("CRLF") }
     @objc func setEOLCR() { activeController?.setEOL("CR") }

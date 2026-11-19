@@ -20,6 +20,16 @@ extension HexpadAppDelegate {
                                       urlString: Self.onlineManualURL))
         helpMenu.addItem(helpLinkItem(title: "Hexpad Project Page",
                                       urlString: Self.projectPageURL))
+        let debugInfo = NSMenuItem(title: "Debug Info…",
+                                  action: #selector(showDebugInfo),
+                                  keyEquivalent: "")
+        debugInfo.target = self
+        helpMenu.addItem(debugInfo)
+        let commandLineArguments = NSMenuItem(title: "Command Line Arguments…",
+                                             action: #selector(showCommandLineArguments),
+                                             keyEquivalent: "")
+        commandLineArguments.target = self
+        helpMenu.addItem(commandLineArguments)
         return helpMenu
     }
 
