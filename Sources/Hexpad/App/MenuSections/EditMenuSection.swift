@@ -79,6 +79,18 @@ extension HexpadAppDelegate {
         }
         copyPathItem.submenu = copyPathMenu
 
+        // Wave 5B: Notepad++'s Edit > Change History. Rows depend on the
+        // focused document and change on every save/typing burst, so the
+        // submenu is rebuilt from the controller's Kit model whenever it opens
+        // (NSMenuDelegate conformance at the bottom of this file). With no
+        // history it shows a single disabled "No History" row.
+        let changeHistoryItem = NSMenuItem(title: Self.changeHistoryTitle,
+                                           action: nil, keyEquivalent: "")
+        let changeHistoryMenu = NSMenu(title: Self.changeHistoryTitle)
+        changeHistoryMenu.delegate = self
+        changeHistoryItem.submenu = changeHistoryMenu
+        Self.populateChangeHistoryMenu(changeHistoryMenu, controller: activeController)
+
         // Notepad++ nests the eight text-case conversions under Edit >
         // Convert Case to. They run through the shared registry command path,
         // so validation (no-op cases disabled) and macro recording match the
@@ -213,6 +225,7 @@ extension HexpadAppDelegate {
                                            keyEquivalent: "")
         characterPanelItem.target = self
         editMenu.addItem(characterPanelItem)
+        editMenu.addItem(changeHistoryItem)
         // Notepad++ puts Read-Only near the end of Edit. Two delegate-targeted
         // entries: one toggles the focused document, the other applies the
         // focused document's NEW state to every open tab in both split groups.
@@ -304,5 +317,48 @@ extension HexpadAppDelegate {
             return controller
         }
         return NSApp.windows.lazy.compactMap { $0.contentViewController as? MainWindowController }.first
+    }
+}
+
+// MARK: - Edit > Change History (Wave 5B)
+
+extension HexpadAppDelegate {
+
+    static let changeHistoryTitle = "Change History"
+
+    /// Rebuilds the submenu from the focused document's history. Kept as a
+    /// static, controller-driven seam so tests can verify the rows without
+    /// opening a real menu (and so `menuNeedsUpdate` stays a two-line shim).
+    static func populateChangeHistoryMenu(_ menu: NSMenu, controller: MainWindowController?) {
+        menu.removeAllItems()
+
+        let entries: [ChangeHistoryEntry]
+        if let controller, let document = controller.tabStore.selectedDocument {
+            entries = controller.history(for: document).menuEntries
+        } else {
+            entries = []
+        }
+
+        guard !entries.isEmpty else {
+            let empty = NSMenuItem(title: "No History", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            menu.addItem(empty)
+            return
+        }
+
+        for entry in entries {
+            // Only saved rows have a snapshot to revert to; modified rows are
+            // shown for parity with N++ but stay greyed out.
+            let canRevert = entry.isSaved
+            let item = NSMenuItem(title: entry.title,
+                                  action: canRevert
+                                      ? #selector(MainWindowController.revertToHistoryEntry(_:))
+                                      : nil,
+                                  keyEquivalent: "")
+            item.isEnabled = canRevert
+            item.target = canRevert ? controller : nil
+            item.representedObject = entry
+            menu.addItem(item)
+        }
     }
 }

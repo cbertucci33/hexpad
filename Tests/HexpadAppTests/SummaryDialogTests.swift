@@ -53,8 +53,11 @@ final class SummaryDialogTests: XCTestCase {
 
         XCTAssertTrue(report.contains("File: hello.txt"), report)
         XCTAssertTrue(report.contains("Path: \(doc.filePath!.path)"), report)
-        XCTAssertTrue(report.contains("Characters: \(doc.text.count)"), report)
-        XCTAssertTrue(report.contains("Characters: 27"), report)
+        // Wave 5B: "Characters" excludes EOLs; the raw count moved to its own row.
+        XCTAssertTrue(report.contains("Characters: \(SummaryWindowController.characterCount(excludingEOLs: doc.text))"), report)
+        XCTAssertTrue(report.contains("Characters: 25"), report)
+        XCTAssertTrue(report.contains("Characters (with EOLs): \(doc.text.count)"), report)
+        XCTAssertTrue(report.contains("Characters (with EOLs): 27"), report)
         XCTAssertTrue(report.contains("Bytes: \(doc.text.utf8.count)"), report)
         XCTAssertTrue(report.contains("Bytes: 27"), report)
         XCTAssertTrue(report.contains("Lines: \(GutterGeometry.lineCount(in: doc.text))"), report)

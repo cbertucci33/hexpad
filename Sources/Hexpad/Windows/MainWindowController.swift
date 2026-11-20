@@ -118,6 +118,16 @@ class MainWindowController: NSViewController {
     /// Pending timer that clears a transient window-subtitle status flash.
     private var statusFlashWorkItem: DispatchWorkItem?
 
+    /// Wave 5B — Edit > Change History. One pure Kit model per document, keyed
+    /// by the document's stable id, so split panes keep independent histories
+    /// and switching tabs never loses save points. The controller only feeds
+    /// the models from the app's save and text-change seams.
+    private var changeHistories: [UUID: ChangeHistoryModel] = [:]
+
+    /// Suppresses the "modified" capture while a history revert writes its
+    /// snapshot back into the buffer (a revert is not a fresh user edit).
+    private var isRevertingHistory = false
+
     /// The text view backing the focused document. Exposed for menu
     /// validation/action tests in the app test bundle.
     var editorTextView: NSTextView? { editorContainer?.textView }
@@ -497,6 +507,11 @@ class MainWindowController: NSViewController {
 
     @objc private func handleModelTextChange(_ notification: Notification) {
         guard let doc = notification.object as? DocumentModel else { return }
+
+        // Wave 5B: the one "modified" capture seam. Typing republishes this
+        // notice from textDidChange; programmatic edits post it from the model.
+        // Coalescing into one row per burst lives in ChangeHistoryModel.
+        recordTextMutation(for: doc)
 
         // Typing reaches this path too (NSTextViewDelegate republishes the
         // model notice), so this is the keystroke-driven session save. The
@@ -997,6 +1012,50 @@ class MainWindowController: NSViewController {
         return nil
     }
 
+    // MARK: - Edit > Change History (Wave 5B)
+
+    /// The history for `document`, created on first use. Kept here rather than
+    /// on `DocumentModel` so the Kit model stays a pure, app-agnostic type.
+    func history(for document: DocumentModel) -> ChangeHistoryModel {
+        if let existing = changeHistories[document.id] { return existing }
+        let created = ChangeHistoryModel()
+        changeHistories[document.id] = created
+        return created
+    }
+
+    /// Appends a save point holding the buffer text at the instant the write
+    /// succeeded. Every successful `save()` / `saveAs(to:)` call site below
+    /// calls this; Save a Copy deliberately does not (it retargets nothing).
+    func recordSavePoint(for document: DocumentModel) {
+        history(for: document).recordSaved(snapshot: document.text)
+    }
+
+    /// The single text-mutation capture hook. Typing republishes the model's
+    /// notice from `textDidChange`, and programmatic edits post it directly,
+    /// so both bursts arrive here; the model's 2s window coalesces them.
+    private func recordTextMutation(for document: DocumentModel) {
+        guard !isRevertingHistory else { return }
+        history(for: document).recordModified()
+    }
+
+    /// Edit > Change History > "Saved on …". Reverts the focused buffer to the
+    /// exact snapshot, marks it clean, and notifies chrome exactly like Save.
+    @objc func revertToHistoryEntry(_ sender: NSMenuItem) {
+        guard let doc = tabStore.selectedDocument,
+              let entry = sender.representedObject as? ChangeHistoryEntry,
+              entry.isSaved,
+              !doc.isReadOnly,
+              let snapshot = history(for: doc).snapshot(for: entry) else { return }
+
+        isRevertingHistory = true
+        defer { isRevertingHistory = false }
+        doc.replaceAllText(with: snapshot)
+        doc.setModified(false)
+        NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: doc)
+        refreshTabBar()
+        updateStatusBar()
+    }
+
     func saveFile() {
         guard let doc = tabStore.selectedDocument else { return }
         do {
@@ -1004,6 +1063,7 @@ class MainWindowController: NSViewController {
                 saveAsFile()
             } else {
                 try doc.save()
+                recordSavePoint(for: doc)
                 doc.setModified(false)
                 NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
                 refreshTabBar()
@@ -1025,6 +1085,7 @@ class MainWindowController: NSViewController {
         let oldPath = doc.filePath?.path
         do {
             try doc.saveAs(to: url)
+            recordSavePoint(for: doc)
             recentFilesManager?.replaceRecent(oldPath: oldPath, newPath: url.path)
             NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
             refreshTabBar()
@@ -1101,6 +1162,7 @@ class MainWindowController: NSViewController {
             let oldPath = doc.filePath?.path
             do {
                 try doc.saveAs(to: url)
+                recordSavePoint(for: doc)
                 recentFilesManager?.replaceRecent(oldPath: oldPath, newPath: url.path)
                 NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
                 refreshTabBar()
@@ -1156,6 +1218,7 @@ class MainWindowController: NSViewController {
             if doc.filePath != nil {
                 do {
                     try doc.save()
+                    recordSavePoint(for: doc)
                     savedAny = true
                 } catch {
                     failures.append("\(doc.name): \(error.localizedDescription)")
@@ -1192,6 +1255,7 @@ class MainWindowController: NSViewController {
         let oldPath = doc.filePath?.path
         do {
             try doc.saveAs(to: url)
+            recordSavePoint(for: doc)
             recentFilesManager?.replaceRecent(oldPath: oldPath, newPath: url.path)
             NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
             refreshTabBar()
@@ -1492,6 +1556,7 @@ class MainWindowController: NSViewController {
         do {
             let oldPath = doc.filePath?.path
             try doc.saveAs(to: url)
+            recordSavePoint(for: doc)
             recentFilesManager?.replaceRecent(oldPath: oldPath, newPath: url.path)
             NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
             refreshTabBar()
@@ -1516,6 +1581,7 @@ class MainWindowController: NSViewController {
     func saveDocument(_ doc: DocumentModel) -> Bool {
         do {
             try doc.save()
+            recordSavePoint(for: doc)
             doc.setModified(false)
             NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
             refreshTabBar()
@@ -4553,6 +4619,10 @@ extension MainWindowController: NSMenuItemValidation {
         if menuItem.action == #selector(MainWindowController.printDocument(_:))
             || menuItem.action == #selector(MainWindowController.printDocumentNow(_:)) {
             return canPrintDocument()
+        }
+        if menuItem.action == #selector(MainWindowController.revertToHistoryEntry(_:)) {
+            // Reverting replaces the buffer, which a read-only tab rejects.
+            return tabStore.selectedDocument?.isReadOnly != true
         }
         return true
     }

@@ -28,6 +28,8 @@ final class SummaryWindowController {
             ? selectedText.components(separatedBy: "\n").count - 1 + 1
             : 0
 
+        let stamps = fileTimestamps(for: doc?.filePath)
+
         var lines: [String] = []
         lines.append("File: \(doc?.name ?? "(none)")")
         if let path = doc?.filePath?.path {
@@ -35,7 +37,13 @@ final class SummaryWindowController {
         } else {
             lines.append("Path: \(doc == nil ? "(none)" : "(untitled)")")
         }
-        lines.append("Characters: \(text.count)")
+        lines.append("Created: \(timestampString(stamps.created))")
+        lines.append("Modified: \(timestampString(stamps.modified))")
+        lines.append("Accessed: \(timestampString(stamps.accessed))")
+        // The doc's Characters row excludes EOLs (TextEdit convention). Keep
+        // the raw count as a separate row so nothing that needed it loses it.
+        lines.append("Characters: \(Self.characterCount(excludingEOLs: text))")
+        lines.append("Characters (with EOLs): \(text.count)")
         lines.append("Bytes: \(onDiskByteCount(of: doc))")
         lines.append("Lines: \(doc == nil ? 0 : GutterGeometry.lineCount(in: text))")
         lines.append("Selection: \(selectionActive ? selection.length : 0) chars, \(selectionLineSpan) lines")
@@ -44,6 +52,34 @@ final class SummaryWindowController {
         lines.append("EOL: \(doc?.eolType ?? "(none)")")
         lines.append("Type: \(doc?.language ?? "(none)")")
         return lines.joined(separator: "\n")
+    }
+
+    /// Characters excluding line breaks. A CRLF pair is one `Character` in
+    /// Swift, so filtering by `isNewline` handles LF, CRLF and CR alike.
+    static func characterCount(excludingEOLs text: String) -> Int {
+        text.filter { !$0.isNewline }.count
+    }
+
+    /// "-" for untitled or unreadable files, otherwise a stable POSIX stamp.
+    static func timestampString(_ date: Date?) -> String {
+        guard let date else { return "-" }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return formatter.string(from: date)
+    }
+
+    /// Created/modified come from `FileManager`'s item attributes. macOS does
+    /// not expose an access date through `attributesOfItem`, so that one is
+    /// read from the same file URL's resource values. All three are `nil` for
+    /// an untitled document, which the report renders as "-".
+    static func fileTimestamps(for url: URL?) -> (created: Date?, modified: Date?, accessed: Date?) {
+        guard let url else { return (nil, nil, nil) }
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        let resources = try? url.resourceValues(forKeys: [.contentAccessDateKey])
+        return (attributes?[.creationDate] as? Date,
+                attributes?[.modificationDate] as? Date,
+                resources?.contentAccessDate)
     }
 
     /// The byte count a save of `doc` would write: the document's
