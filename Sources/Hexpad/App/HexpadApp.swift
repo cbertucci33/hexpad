@@ -867,6 +867,10 @@ extension HexpadAppDelegate: NSMenuDelegate {
             populateMacroList(menu, action: #selector(MainWindowController.deleteMacro(_:)))
             return
         }
+        if menu.title == HexpadAppDelegate.changeHistoryTitle {
+            Self.populateChangeHistoryMenu(menu, controller: activeController)
+            return
+        }
         guard menu === openRecentMenu else { return }
         menu.removeAllItems()
         
