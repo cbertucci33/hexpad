@@ -466,6 +466,274 @@ public struct LineOps {
         text.components(separatedBy: "\n").joined(separator: replacement)
     }
 
+    // MARK: - Wave 5A: line-ops remainder
+
+    // All operations in this section are pure text-in/text-out transforms,
+    // matching the rest of `LineOps`. Callers apply them to a selection (or the
+    // whole buffer when there is none) through the registry's
+    // `LineCommandOps.applying`, the same way the earlier line ops are applied.
+
+    /// Sorts lines by character count, shortest first (N++ `Sort Lines By
+    /// Length Ascending`). Equal-length lines keep their document order.
+    public static func sortLinesByLengthAscending(_ text: String) -> String {
+        sortLinesByLength(text, ascending: true)
+    }
+
+    /// Sorts lines by character count, longest first (N++ `Sort Lines By
+    /// Length Descending`). The N++ macro command list pins both directions.
+    public static func sortLinesByLengthDescending(_ text: String) -> String {
+        sortLinesByLength(text, ascending: false)
+    }
+
+    /// N++ `Sort Lines Lex. Ascending Ignoring Case`. Compares lowercased lines
+    /// by character codepoint and keeps original order on ties. This is a
+    /// dedicated, explicitly named counterpart to `sortAscending` so callers
+    /// can ask for the N++ command by name.
+    public static func sortLinesLexicographicallyIgnoringCaseAscending(_ text: String) -> String {
+        sortLinesCaseInsensitive(text, ascending: true)
+    }
+
+    /// N++ `Sort Lines Lex. Descending Ignoring Case`; see the ascending form
+    /// for the comparison rule.
+    public static func sortLinesLexicographicallyIgnoringCaseDescending(_ text: String) -> String {
+        sortLinesCaseInsensitive(text, ascending: false)
+    }
+
+    /// Sorts by decimal numbers that use a comma as the decimal separator
+    /// (N++ `Sort Lines As Decimals (Comma) Ascending`). Shares the value
+    /// comparison of the existing dot-decimal sort; lines with no number trail
+    /// the numeric ones in relative order.
+    public static func sortLinesDecimalCommaAscending(_ text: String) -> String {
+        sortLinesNumerically(text,
+                             ascending: true,
+                             key: decimalCommaKey,
+                             compare: compareDecimalKeys)
+    }
+
+    /// Descending comma-decimal sort; see the ascending form for the key rule.
+    public static func sortLinesDecimalCommaDescending(_ text: String) -> String {
+        sortLinesNumerically(text,
+                             ascending: false,
+                             key: decimalCommaKey,
+                             compare: compareDecimalKeys)
+    }
+
+    /// Locale-aware ascending sort (N++ `Sort Lines In Locale Order
+    /// Ascending`). `localizedStandardCompare` is the Foundation equivalent of
+    /// N++'s linguistic flags: it is case-insensitive and treats digit runs as
+    /// numbers, and it follows the user's current locale.
+    public static func sortLinesLocaleAwareAscending(_ text: String) -> String {
+        sortLinesLocaleAware(text, ascending: true)
+    }
+
+    /// Locale-aware descending sort; see the ascending form for the rule.
+    public static func sortLinesLocaleAwareDescending(_ text: String) -> String {
+        sortLinesLocaleAware(text, ascending: false)
+    }
+
+    /// Randomizes line order (N++ `Randomize Line Order`) with a Fisher-Yates
+    /// shuffle. Pass `seed` for reproducible output (tests, macro replay); with
+    /// no seed the system generator is used.
+    public static func randomizeLines(_ text: String, seed: UInt64? = nil) -> String {
+        var lines = text.components(separatedBy: "\n")
+        if let seed {
+            var generator = SeededRandomNumberGenerator(seed: seed)
+            lines.shuffle(using: &generator)
+        } else {
+            lines.shuffle()
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Splits long lines at a wrap column, the Kit equivalent of N++ `Split
+    /// Lines`. N++ splits at the last configured Vertical Edge column, or at
+    /// the current editor width when no edge is set; neither view setting is
+    /// available in the Kit, so the caller supplies the column (the registry
+    /// command uses 80 by default and accepts a macro parameter override).
+    ///
+    /// Each line longer than `column` is broken into successive chunks of at
+    /// most `column` characters; shorter lines are unchanged. Counting is by
+    /// `Character` (extended grapheme cluster), not UTF-16 code unit, so emoji
+    /// and accented clusters stay intact. The N++ manual documents no separate
+    /// "split at caret" command, so the wrap-column form is the pinned Mac
+    /// equivalent. Non-positive columns are a no-op.
+    public static func splitLines(_ text: String, atColumn column: Int) -> String {
+        guard column > 0 else { return text }
+        return text.components(separatedBy: "\n")
+            .flatMap { line -> [String] in
+                guard line.count > column else { return [line] }
+                var chunks: [String] = []
+                var remaining = line[...]
+                while remaining.count > column {
+                    let boundary = remaining.index(remaining.startIndex, offsetBy: column)
+                    chunks.append(String(remaining[..<boundary]))
+                    remaining = remaining[boundary...]
+                }
+                chunks.append(String(remaining))
+                return chunks
+            }
+            .joined(separator: "\n")
+    }
+
+    /// Joins lines by replacing their endings with a single space. This is the
+    /// pure counterpart of N++ `Join Lines`; the existing `joinLines(_:)` is
+    /// reused rather than duplicated, and the registry applies it to the
+    /// selection (N++ requires a selection spanning two or more lines).
+    public static func joinSelectedLines(_ text: String) -> String {
+        joinLines(text)
+    }
+
+    /// Replaces tabs with spaces, expanding to the next tab stop of `tabWidth`
+    /// (N++ `TAB to Space`). With `leadingOnly`, only tabs in the whitespace
+    /// prefix of each line are converted, matching the leading-only blank-op
+    /// variants; tabs after the first non-whitespace character are preserved.
+    public static func tabToSpace(_ text: String,
+                                  tabWidth: Int = 4,
+                                  leadingOnly: Bool = false) -> String {
+        let width = max(1, tabWidth)
+        return text.components(separatedBy: "\n").map { line in
+            var result = ""
+            var column = 0
+            var inLeadingWhitespace = true
+            for character in line {
+                if character == "\t", !leadingOnly || inLeadingWhitespace {
+                    let spaces = width - (column % width)
+                    result.append(String(repeating: " ", count: spaces))
+                    column += spaces
+                } else {
+                    result.append(character)
+                    column += 1
+                }
+                if character != " " && character != "\t" {
+                    inLeadingWhitespace = false
+                }
+            }
+            return result
+        }.joined(separator: "\n")
+    }
+
+    /// Consolidates runs of spaces into tabs at tab stops of `tabWidth`
+    /// (N++ `Space to TAB (All)` and `Space to TAB (Leading)`). A run is
+    /// converted only where it reaches a tab stop; leftover spaces stay as
+    /// spaces. `leadingOnly` restricts conversion to the whitespace prefix.
+    public static func spaceToTab(_ text: String,
+                                  tabWidth: Int = 4,
+                                  leadingOnly: Bool = false) -> String {
+        let width = max(1, tabWidth)
+        return text.components(separatedBy: "\n").map { line in
+            let characters = Array(line)
+            var result = ""
+            var column = 0
+            var inLeadingWhitespace = true
+            var index = 0
+            while index < characters.count {
+                let character = characters[index]
+                if character == " ", !leadingOnly || inLeadingWhitespace {
+                    var runEnd = index
+                    while runEnd < characters.count, characters[runEnd] == " " {
+                        runEnd += 1
+                    }
+                    var consumed = 0
+                    let runLength = runEnd - index
+                    while runLength - consumed >= width - (column % width) {
+                        let step = width - (column % width)
+                        result.append("\t")
+                        column += step
+                        consumed += step
+                    }
+                    if consumed < runLength {
+                        result.append(String(repeating: " ", count: runLength - consumed))
+                        column += runLength - consumed
+                    }
+                    index = runEnd
+                } else {
+                    result.append(character)
+                    column += 1
+                    if character != " " && character != "\t" {
+                        inLeadingWhitespace = false
+                    }
+                    index += 1
+                }
+            }
+            return result
+        }.joined(separator: "\n")
+    }
+
+    /// N++ `Trim both and EOL to Space`: trim spaces and tabs from both ends
+    /// of every line, then fold the document onto one line with spaces. Uses
+    /// the same space/tab-only trim rule as the other blank operations and
+    /// preserves the line count until the final EOL conversion.
+    public static func trimBothAndEOLToSpace(_ text: String) -> String {
+        eolToWhitespace(trimmingLines(text, leading: true, trailing: true))
+    }
+
+    // MARK: - Wave 5A sort helpers
+
+    private static func sortLinesByLength(_ text: String, ascending: Bool) -> String {
+        let lines = text.components(separatedBy: "\n")
+        return lines.enumerated()
+            .sorted { lhs, rhs in
+                let left = lhs.element.count
+                let right = rhs.element.count
+                if left == right { return lhs.offset < rhs.offset }
+                return ascending ? left < right : left > right
+            }
+            .map(\.element)
+            .joined(separator: "\n")
+    }
+
+    private static func sortLinesCaseInsensitive(_ text: String, ascending: Bool) -> String {
+        let lines = text.components(separatedBy: "\n")
+        return lines.enumerated()
+            .sorted { lhs, rhs in
+                let left = lhs.element.lowercased()
+                let right = rhs.element.lowercased()
+                if left == right { return lhs.offset < rhs.offset }
+                return ascending ? left < right : left > right
+            }
+            .map(\.element)
+            .joined(separator: "\n")
+    }
+
+    private static func sortLinesLocaleAware(_ text: String, ascending: Bool) -> String {
+        let lines = text.components(separatedBy: "\n")
+        return lines.enumerated()
+            .sorted { lhs, rhs in
+                let result = lhs.element.localizedStandardCompare(rhs.element)
+                if result == .orderedSame { return lhs.offset < rhs.offset }
+                return ascending ? result == .orderedAscending : result == .orderedDescending
+            }
+            .map(\.element)
+            .joined(separator: "\n")
+    }
+
+    /// Comma-decimal key: reuses the dot-decimal regex by reading a comma as
+    /// the decimal mark, then parses with `Decimal` exactly like the existing
+    /// dot-decimal sort.
+    private static func decimalCommaKey(for line: String) -> [Decimal]? {
+        let pattern = "[-+]?[0-9]+(?:,[0-9]+)?"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let ns = line as NSString
+        let values = regex.matches(in: line, range: NSRange(location: 0, length: ns.length))
+            .compactMap { Decimal(string: ns.substring(with: $0.range).replacingOccurrences(of: ",", with: ".")) }
+        return values.isEmpty ? nil : values
+    }
+
+    /// Deterministic generator used by `randomizeLines(seed:)` so tests and
+    /// macro replay can pin a shuffle without depending on the system RNG.
+    private struct SeededRandomNumberGenerator: RandomNumberGenerator {
+        private var state: UInt64
+
+        init(seed: UInt64) {
+            state = seed == 0 ? 0x9E3779B97F4A7C15 : seed
+        }
+
+        mutating func next() -> UInt64 {
+            state = state &* 6364136223846793005 &+ 1442695040888963407
+            return state ^ (state >> 31)
+        }
+    }
+
     // MARK: - Private helpers
 
     /// A line's full range (including its terminator) and content range

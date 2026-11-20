@@ -371,6 +371,13 @@ public struct CommandRegistry {
     /// legacy command groups keep their pinned shape.
     public let blankOpCommands: [EditorCommand]
 
+    /// The remainder of the N++ Line Operations (sort by length, case-insensitive
+    /// lex, comma decimals, locale order, randomize, split and join). They are
+    /// registered for lookup but kept out of ``allCommands`` and the pinned
+    /// ``lineOpCommands`` array exactly like ``blankOpCommands``, so existing
+    /// callers keep seeing the original Line Ops menu shape.
+    public let lineOpsRemainderCommands: [EditorCommand]
+
     /// Whole-document bookmark line operations that are not part of the pinned
     /// ``bookmarkCommands`` navigation group (Remove Non-Bookmarked Lines).
     public let bookmarkLineOpCommands: [EditorCommand]
@@ -415,6 +422,7 @@ public struct CommandRegistry {
                   beginEndSelectCommands: CommandRegistry.defaultBeginEndSelectCommands(),
                   commentCommands: CommandRegistry.defaultCommentCommands(),
                   blankOpCommands: CommandRegistry.defaultBlankOpCommands(),
+                  lineOpsRemainderCommands: CommandRegistry.defaultLineOpsRemainderCommands(),
                   bookmarkLineOpCommands: CommandRegistry.defaultBookmarkLineOpCommands())
     }
 
@@ -434,6 +442,7 @@ public struct CommandRegistry {
                 beginEndSelectCommands: [EditorCommand] = [],
                 commentCommands: [EditorCommand] = [],
                 blankOpCommands: [EditorCommand] = [],
+                lineOpsRemainderCommands: [EditorCommand] = [],
                 bookmarkLineOpCommands: [EditorCommand] = []) {
         self.commands = commands
         self.bookmarkCommands = bookmarkCommands
@@ -448,12 +457,14 @@ public struct CommandRegistry {
         self.beginEndSelectCommands = beginEndSelectCommands
         self.commentCommands = commentCommands
         self.blankOpCommands = blankOpCommands
+        self.lineOpsRemainderCommands = lineOpsRemainderCommands
         self.bookmarkLineOpCommands = bookmarkLineOpCommands
         var lookup: [String: EditorCommand] = [:]
         for command in commands + bookmarkCommands + toolCommands + dateCommands
             + lineOpCommands + caseCommands + indentCommands + viewCommands
             + tokenStyleCommands + multiSelectCommands + beginEndSelectCommands
-            + commentCommands + blankOpCommands + bookmarkLineOpCommands
+            + commentCommands + blankOpCommands + lineOpsRemainderCommands
+            + bookmarkLineOpCommands
         where lookup[command.identifier] == nil {
             lookup[command.identifier] = command
         }
@@ -851,6 +862,112 @@ public struct CommandRegistry {
         ]
     }
 
+    /// The rest of the N++ Line Operations from the docs review, in N++ menu
+    /// order. Kept in their own group so the pinned ``lineOpCommands`` list (and
+    /// ``allCommands``, which includes it) remains byte-for-byte unchanged;
+    /// lookup through ``command(for:)`` still finds every entry.
+    ///
+    /// The Split Lines command has no view state in the Kit, so it uses a
+    /// documented fallback wrap column of 80 and accepts an integer macro
+    /// parameter to override it (see `LineOps.splitLines(_:atColumn:)`).
+    public static func defaultLineOpsRemainderCommands() -> [EditorCommand] {
+        [
+            EditorCommand(
+                identifier: "sort-lines-by-length-ascending",
+                title: "Sort Lines By Length Ascending",
+                execute: { text, selection in
+                    LineCommandOps.applying(LineOps.sortLinesByLengthAscending,
+                                            text: text, selection: selection)
+                }
+            ),
+            EditorCommand(
+                identifier: "sort-lines-by-length-descending",
+                title: "Sort Lines By Length Descending",
+                execute: { text, selection in
+                    LineCommandOps.applying(LineOps.sortLinesByLengthDescending,
+                                            text: text, selection: selection)
+                }
+            ),
+            EditorCommand(
+                identifier: "sort-lines-lexicographically-ascending-ignoring-case",
+                title: "Sort Lines Lex. Ascending Ignoring Case",
+                execute: { text, selection in
+                    LineCommandOps.applying(LineOps.sortLinesLexicographicallyIgnoringCaseAscending,
+                                            text: text, selection: selection)
+                }
+            ),
+            EditorCommand(
+                identifier: "sort-lines-lexicographically-descending-ignoring-case",
+                title: "Sort Lines Lex. Descending Ignoring Case",
+                execute: { text, selection in
+                    LineCommandOps.applying(LineOps.sortLinesLexicographicallyIgnoringCaseDescending,
+                                            text: text, selection: selection)
+                }
+            ),
+            EditorCommand(
+                identifier: "sort-lines-decimal-comma-ascending",
+                title: "Sort Lines As Decimals (Comma) Ascending",
+                execute: { text, selection in
+                    LineCommandOps.applying(LineOps.sortLinesDecimalCommaAscending,
+                                            text: text, selection: selection)
+                }
+            ),
+            EditorCommand(
+                identifier: "sort-lines-decimal-comma-descending",
+                title: "Sort Lines As Decimals (Comma) Descending",
+                execute: { text, selection in
+                    LineCommandOps.applying(LineOps.sortLinesDecimalCommaDescending,
+                                            text: text, selection: selection)
+                }
+            ),
+            EditorCommand(
+                identifier: "sort-lines-locale-ascending",
+                title: "Sort Lines In Locale Order Ascending",
+                execute: { text, selection in
+                    LineCommandOps.applying(LineOps.sortLinesLocaleAwareAscending,
+                                            text: text, selection: selection)
+                }
+            ),
+            EditorCommand(
+                identifier: "sort-lines-locale-descending",
+                title: "Sort Lines In Locale Order Descending",
+                execute: { text, selection in
+                    LineCommandOps.applying(LineOps.sortLinesLocaleAwareDescending,
+                                            text: text, selection: selection)
+                }
+            ),
+            EditorCommand(
+                identifier: "randomize-line-order",
+                title: "Randomize Line Order",
+                execute: { text, selection in
+                    LineCommandOps.applying({ LineOps.randomizeLines($0) }, text: text, selection: selection)
+                }
+            ),
+            EditorCommand(
+                identifier: "split-lines",
+                title: "Split Lines",
+                execute: { text, selection in
+                    LineCommandOps.applying({ LineOps.splitLines($0, atColumn: 80) },
+                                            text: text, selection: selection)
+                },
+                parameterizedExecute: { parameter in
+                    let column = Int(parameter.trimmingCharacters(in: .whitespaces)) ?? 80
+                    return { text, selection in
+                        LineCommandOps.applying({ LineOps.splitLines($0, atColumn: column) },
+                                                text: text, selection: selection)
+                    }
+                }
+            ),
+            EditorCommand(
+                identifier: "join-lines",
+                title: "Join Lines",
+                execute: { text, selection in
+                    LineCommandOps.applying(LineOps.joinSelectedLines, text: text, selection: selection)
+                }
+            )
+        ]
+    }
+
     /// The Edit > Convert Case to commands, in Notepad++ menu order.
     ///
     /// Each command converts the selection, or the word at the caret when the
@@ -1151,6 +1268,46 @@ public struct CommandRegistry {
                 title: "EOL to Space",
                 execute: { text, selection in
                     LineCommandOps.applying({ LineOps.eolToWhitespace($0) },
+                                            text: text, selection: selection)
+                }
+            ),
+            EditorCommand(
+                identifier: "trim-both-and-eol-to-space",
+                title: "Trim both and EOL to Space",
+                execute: { text, selection in
+                    LineCommandOps.applying(LineOps.trimBothAndEOLToSpace,
+                                            text: text, selection: selection)
+                }
+            ),
+            EditorCommand(
+                identifier: "tab-to-space",
+                title: "TAB to Space",
+                execute: { text, selection in
+                    LineCommandOps.applying({ LineOps.tabToSpace($0) },
+                                            text: text, selection: selection)
+                }
+            ),
+            EditorCommand(
+                identifier: "tab-to-space-leading",
+                title: "TAB to Space (Leading)",
+                execute: { text, selection in
+                    LineCommandOps.applying({ LineOps.tabToSpace($0, leadingOnly: true) },
+                                            text: text, selection: selection)
+                }
+            ),
+            EditorCommand(
+                identifier: "space-to-tab-all",
+                title: "Space to TAB (All)",
+                execute: { text, selection in
+                    LineCommandOps.applying({ LineOps.spaceToTab($0) },
+                                            text: text, selection: selection)
+                }
+            ),
+            EditorCommand(
+                identifier: "space-to-tab-leading",
+                title: "Space to TAB (Leading)",
+                execute: { text, selection in
+                    LineCommandOps.applying({ LineOps.spaceToTab($0, leadingOnly: true) },
                                             text: text, selection: selection)
                 }
             )
