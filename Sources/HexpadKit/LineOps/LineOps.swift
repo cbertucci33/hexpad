@@ -334,6 +334,76 @@ public struct LineOps {
         return (mutable as String, NSRange(location: start, length: max(0, end - start)))
     }
 
+    /// Toggles a block comment around the lines touched by `selection`.
+    ///
+    /// `open` is placed after the first non-blank line's indentation and
+    /// `close` at the end of the last non-blank line's content, so a multi-line
+    /// block keeps its delimiters on the right lines. Toggling again removes a
+    /// matching outer pair without disturbing nested comments. A blank-only
+    /// selection is left alone, matching ``toggleLineComment(_:selection:prefix:)``.
+    public static func toggleBlockComment(_ text: String,
+                                          selection: NSRange,
+                                          open: String = "/*",
+                                          close: String = "*/") -> (text: String, selection: NSRange) {
+        let ns = text as NSString
+        let sel = clamped(selection, in: ns)
+        guard !open.isEmpty, !close.isEmpty else { return (text, sel) }
+
+        let span = selectedLineSpan(sel, in: ns)
+        let lines = lineSpans(in: span, of: ns)
+        let openLength = (open as NSString).length
+        let closeLength = (close as NSString).length
+
+        struct LineInfo {
+            let span: LineSpan
+            let indentation: Int
+            let isBlank: Bool
+        }
+        let infos: [LineInfo] = lines.map { line in
+            let content = ns.substring(with: line.content)
+            return LineInfo(span: line,
+                            indentation: leadingWhitespaceLength(in: content),
+                            isBlank: content.trimmingCharacters(in: .whitespaces).isEmpty)
+        }
+        guard let first = infos.first(where: { !$0.isBlank }),
+              let last = infos.last(where: { !$0.isBlank }) else { return (text, sel) }
+
+        let firstContent = ns.substring(with: first.span.content)
+        let lastContent = ns.substring(with: last.span.content)
+        let openLocation = first.span.content.location + first.indentation
+        let closeLocation = last.span.content.upperBound
+        let firstRest = (firstContent as NSString).substring(from: first.indentation)
+
+        // Only a complete outer pair is removed. The overlap guard keeps short
+        // custom delimiters from producing invalid removal ranges.
+        let isCommented = firstRest.hasPrefix(open)
+            && (lastContent as NSString).hasSuffix(close)
+            && closeLocation - closeLength >= openLocation + openLength
+        let edits: [TextEdit]
+        if isCommented {
+            edits = [
+                TextEdit(location: openLocation, deletedLength: openLength, insertedText: ""),
+                TextEdit(location: closeLocation - closeLength, deletedLength: closeLength, insertedText: "")
+            ]
+        } else {
+            edits = [
+                TextEdit(location: openLocation, deletedLength: 0, insertedText: open),
+                TextEdit(location: closeLocation, deletedLength: 0, insertedText: close)
+            ]
+        }
+
+        let mutable = NSMutableString(string: text)
+        for edit in edits.sorted(by: { $0.location > $1.location }) {
+            mutable.replaceCharacters(in: NSRange(location: edit.location, length: edit.deletedLength),
+                                      with: edit.insertedText)
+        }
+
+        let isCaret = sel.length == 0
+        let start = mapOffset(sel.location, through: edits, shiftInsertionsAtOffset: isCaret)
+        let end = mapOffset(sel.location + sel.length, through: edits, shiftInsertionsAtOffset: false)
+        return (mutable as String, NSRange(location: start, length: max(0, end - start)))
+    }
+
     /// Uppercase the selected text. An empty selection is a no-op.
     public static func uppercase(_ text: String, selection: NSRange) -> (text: String, selection: NSRange) {
         transformCase(text, selection: selection, transform: { $0.uppercased() })
@@ -342,6 +412,58 @@ public struct LineOps {
     /// Lowercase the selected text. An empty selection is a no-op.
     public static func lowercase(_ text: String, selection: NSRange) -> (text: String, selection: NSRange) {
         transformCase(text, selection: selection, transform: { $0.lowercased() })
+    }
+
+    // MARK: - N++ bookmark and blank operations
+
+    /// Keeps only the lines whose 1-based number is in `bookmarkedLines`, in
+    /// document order. This is the pure counterpart of Notepad++'s
+    /// `Remove Non-Bookmarked Lines`: the caller owns the bookmark state and
+    /// remaps it to the surviving lines.
+    public static func removeNonBookmarkedLines(_ lines: [String],
+                                                bookmarkedLines: Set<Int>) -> [String] {
+        var result: [String] = []
+        result.reserveCapacity(bookmarkedLines.count)
+        for (index, line) in lines.enumerated() where bookmarkedLines.contains(index + 1) {
+            result.append(line)
+        }
+        return result
+    }
+
+    /// Text convenience wrapper over the line-array form.
+    public static func removeNonBookmarkedLines(_ text: String,
+                                                bookmarkedLines: Set<Int>) -> String {
+        removeNonBookmarkedLines(text.components(separatedBy: "\n"),
+                                 bookmarkedLines: bookmarkedLines)
+            .joined(separator: "\n")
+    }
+
+    /// Inserts a blank line between every pair of lines (Notepad++ `Open Lines`).
+    public static func openLines(_ text: String) -> String {
+        text.components(separatedBy: "\n").joined(separator: "\n\n")
+    }
+
+    /// Collapses runs of blank lines to a single blank line and removes blank
+    /// lines at the start and end of the document (Notepad++'s `Remove
+    /// Unnecessary Blank and EOL`). Whitespace-only lines count as blank; every
+    /// surviving line keeps its original whitespace.
+    public static func removeUnnecessaryBlankLines(_ text: String) -> String {
+        let isBlank = { (line: String) in line.trimmingCharacters(in: .whitespaces).isEmpty }
+        var result: [String] = []
+        for line in text.components(separatedBy: "\n") {
+            if isBlank(line), let last = result.last, isBlank(last) { continue }
+            result.append(line)
+        }
+        while let last = result.last, isBlank(last) {
+            result.removeLast()
+        }
+        return result.joined(separator: "\n")
+    }
+
+    /// Replaces every line ending with `replacement` (a single space for
+    /// Notepad++'s `EOL to Space`), folding the document onto one line.
+    public static func eolToWhitespace(_ text: String, replacement: String = " ") -> String {
+        text.components(separatedBy: "\n").joined(separator: replacement)
     }
 
     // MARK: - Private helpers

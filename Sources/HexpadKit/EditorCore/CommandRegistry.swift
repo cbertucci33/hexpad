@@ -362,6 +362,19 @@ public struct CommandRegistry {
     /// and reached through ``command(for:)``.
     public let beginEndSelectCommands: [EditorCommand]
 
+    /// The Edit > Comment/Uncomment commands (block comment). Kept in their own
+    /// group so the pinned Text-menu ``commands`` list stays unchanged.
+    public let commentCommands: [EditorCommand]
+
+    /// The remaining N++ Blank Operations. They are registered for lookup but
+    /// absent from ``allCommands``, just like the Multi-select groups, so the
+    /// legacy command groups keep their pinned shape.
+    public let blankOpCommands: [EditorCommand]
+
+    /// Whole-document bookmark line operations that are not part of the pinned
+    /// ``bookmarkCommands`` navigation group (Remove Non-Bookmarked Lines).
+    public let bookmarkLineOpCommands: [EditorCommand]
+
     private var lookup: [String: EditorCommand]
 
     /// All commands offered by this registry, line-editing commands first.
@@ -399,7 +412,10 @@ public struct CommandRegistry {
                   viewCommands: CommandRegistry.defaultViewCommands(),
                   tokenStyleCommands: CommandRegistry.defaultTokenStyleCommands(),
                   multiSelectCommands: CommandRegistry.defaultMultiSelectCommands(),
-                  beginEndSelectCommands: CommandRegistry.defaultBeginEndSelectCommands())
+                  beginEndSelectCommands: CommandRegistry.defaultBeginEndSelectCommands(),
+                  commentCommands: CommandRegistry.defaultCommentCommands(),
+                  blankOpCommands: CommandRegistry.defaultBlankOpCommands(),
+                  bookmarkLineOpCommands: CommandRegistry.defaultBookmarkLineOpCommands())
     }
 
     /// Creates a registry from explicit command lists. When identifiers
@@ -415,7 +431,10 @@ public struct CommandRegistry {
                 viewCommands: [EditorCommand] = [],
                 tokenStyleCommands: [EditorCommand] = [],
                 multiSelectCommands: [EditorCommand] = [],
-                beginEndSelectCommands: [EditorCommand] = []) {
+                beginEndSelectCommands: [EditorCommand] = [],
+                commentCommands: [EditorCommand] = [],
+                blankOpCommands: [EditorCommand] = [],
+                bookmarkLineOpCommands: [EditorCommand] = []) {
         self.commands = commands
         self.bookmarkCommands = bookmarkCommands
         self.toolCommands = toolCommands
@@ -427,10 +446,14 @@ public struct CommandRegistry {
         self.tokenStyleCommands = tokenStyleCommands
         self.multiSelectCommands = multiSelectCommands
         self.beginEndSelectCommands = beginEndSelectCommands
+        self.commentCommands = commentCommands
+        self.blankOpCommands = blankOpCommands
+        self.bookmarkLineOpCommands = bookmarkLineOpCommands
         var lookup: [String: EditorCommand] = [:]
         for command in commands + bookmarkCommands + toolCommands + dateCommands
             + lineOpCommands + caseCommands + indentCommands + viewCommands
             + tokenStyleCommands + multiSelectCommands + beginEndSelectCommands
+            + commentCommands + blankOpCommands + bookmarkLineOpCommands
         where lookup[command.identifier] == nil {
             lookup[command.identifier] = command
         }
@@ -1079,6 +1102,85 @@ public struct CommandRegistry {
         return commands
     }
 
+    /// The Edit > Comment/Uncomment block-comment command.
+    ///
+    /// The delimiter pair travels as a macro-style parameter in `"open close"`
+    /// form so a language-aware caller can pass `<!-- -->` or `(* *)`; the
+    /// default stays `/* */` for headless callers.
+    public static func defaultCommentCommands() -> [EditorCommand] {
+        [EditorCommand(
+            identifier: "toggle-block-comment",
+            title: "Block Comment",
+            execute: { text, selection in
+                LineOps.toggleBlockComment(text, selection: selection)
+            },
+            parameterizedExecute: { parameter in
+                let delimiters = blockDelimiters(from: parameter)
+                return { text, selection in
+                    LineOps.toggleBlockComment(text,
+                                               selection: selection,
+                                               open: delimiters.open,
+                                               close: delimiters.close)
+                }
+            }
+        )]
+    }
+
+    /// The N++ Blank Operations that were not already in ``lineOpCommands``:
+    /// Remove Blank Lines, the three trims and the blank-line removal variant
+    /// already exist there; these three complete the group.
+    public static func defaultBlankOpCommands() -> [EditorCommand] {
+        [
+            EditorCommand(
+                identifier: "open-lines",
+                title: "Open Lines",
+                execute: { text, selection in
+                    LineCommandOps.applying(LineOps.openLines, text: text, selection: selection)
+                }
+            ),
+            EditorCommand(
+                identifier: "remove-unnecessary-blank-lines",
+                title: "Remove Unnecessary Blank Lines",
+                execute: { text, selection in
+                    LineCommandOps.applying(LineOps.removeUnnecessaryBlankLines,
+                                            text: text, selection: selection)
+                }
+            ),
+            EditorCommand(
+                identifier: "eol-to-space",
+                title: "EOL to Space",
+                execute: { text, selection in
+                    LineCommandOps.applying({ LineOps.eolToWhitespace($0) },
+                                            text: text, selection: selection)
+                }
+            )
+        ]
+    }
+
+    /// Whole-document bookmark line removal, alongside the pinned bookmark
+    /// navigation group. It needs ``DocumentState`` because the surviving
+    /// bookmarks must slide up to their new line numbers.
+    public static func defaultBookmarkLineOpCommands() -> [EditorCommand] {
+        [EditorCommand(
+            identifier: "remove-non-bookmarked-lines",
+            title: "Remove Non-Bookmarked Lines",
+            execute: { text, selection in (text, selection) },
+            documentExecute: BookmarkCommandOps.removeNonBookmarked
+        )]
+    }
+
+    /// Parses the `"open close"` macro parameter for the block-comment command.
+    /// A missing or malformed pair falls back to the C-family delimiters.
+    private static func blockDelimiters(from parameter: String) -> (open: String, close: String) {
+        let parts = parameter.split(maxSplits: 1,
+                                    omittingEmptySubsequences: false,
+                                    whereSeparator: { $0 == " " || $0 == "\t" })
+        guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else {
+            return ("/*", "*/")
+        }
+        return (String(parts[0]), String(parts[1]))
+    }
+
     /// Returns the command registered under `identifier`, if any.
     public func command(for identifier: String) -> EditorCommand? {
         lookup[identifier]
@@ -1349,6 +1451,49 @@ enum BookmarkCommandOps {
         applying(BookmarkLineOps.inverse(state.text,
                                          selection: state.selection,
                                          bookmarks: state.bookmarkState))
+    }
+
+    /// Removes every line without a bookmark, keeping the bookmarked lines in
+    /// document order. Surviving bookmarks slide up to their new line numbers
+    /// and keep their notes. With no bookmarks the buffer is emptied, matching
+    /// Notepad++; with every line bookmarked the state is returned unchanged.
+    static func removeNonBookmarked(_ state: DocumentState) -> DocumentState {
+        let lineCount = GutterGeometry.lineCount(in: state.text)
+        let valid = state.bookmarkState.bookmarks.filter { $0.line >= 1 && $0.line <= lineCount }
+        if valid.count == lineCount { return state }
+
+        let kept = Set(valid.map(\.line))
+        let lines = state.text.components(separatedBy: "\n")
+        let newText = LineOps.removeNonBookmarkedLines(lines, bookmarkedLines: kept)
+            .joined(separator: "\n")
+        let bookmarks = BookmarkState(bookmarks: valid.enumerated().map {
+            Bookmark(line: $0.offset + 1, note: $0.element.note)
+        })
+        return DocumentState(text: newText,
+                             selection: mappedSelection(state.selection,
+                                                        in: state.text,
+                                                        keptLines: kept.sorted(),
+                                                        newText: newText),
+                             bookmarkState: bookmarks,
+                             tokenStyleState: state.tokenStyleState)
+    }
+
+    /// Puts the caret at the first surviving line at or after its old line.
+    /// A whole-line removal has no meaningful column, so the selection collapses.
+    private static func mappedSelection(_ selection: NSRange,
+                                        in text: String,
+                                        keptLines: [Int],
+                                        newText: String) -> NSRange {
+        let newLength = (newText as NSString).length
+        guard !newText.isEmpty, !keptLines.isEmpty else {
+            return NSRange(location: 0, length: 0)
+        }
+        let ns = text as NSString
+        let clamped = HashCommandOps.clampedSelection(selection, in: ns.length)
+        let originalLine = GutterGeometry.logicalLine(of: clamped.location, in: text)
+        let position = keptLines.firstIndex { $0 >= originalLine } ?? keptLines.count - 1
+        let location = min(GutterGeometry.firstCharIndex(of: position + 1, in: newText), newLength)
+        return NSRange(location: location, length: 0)
     }
 
     /// Wraps a line-operation result as a document state.
