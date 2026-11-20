@@ -152,6 +152,22 @@ extension HexpadAppDelegate {
                                      action: #selector(HexpadAppDelegate.toggleShowAllCharacters),
                                      keyEquivalent: "")
         showAllItem.target = nil
+        // Wave 4A: the two remaining N++ Show Symbol leaves. Targeted at the
+        // app delegate (not nil-targeted) so their checkmarks can be owned here
+        // without touching the shared Preferences struct or the controller's
+        // large validateMenuItem, both owned by other lanes.
+        let showControlCharsItem = NSMenuItem(
+            title: "Show Non-Printing Characters",
+            action: #selector(HexpadAppDelegate.toggleShowControlCharacters(_:)),
+            keyEquivalent: "")
+        showControlCharsItem.target = self
+        showControlCharsItem.state = ShowSymbolExtras.showControlCharacters ? .on : .off
+        let showWrapSymbolItem = NSMenuItem(
+            title: "Show Wrap Symbol",
+            action: #selector(HexpadAppDelegate.toggleShowWrapSymbol(_:)),
+            keyEquivalent: "")
+        showWrapSymbolItem.target = self
+        showWrapSymbolItem.state = ShowSymbolExtras.showWrapSymbol ? .on : .off
         let showIndentGuideItem = NSMenuItem(title: "Show Indent Guide",
                                              action: #selector(HexpadAppDelegate.toggleShowIndentGuide),
                                              keyEquivalent: "")
@@ -159,6 +175,8 @@ extension HexpadAppDelegate {
         showSymbolMenu.addItem(showWhitespaceItem)
         showSymbolMenu.addItem(showEOLItem)
         showSymbolMenu.addItem(showAllItem)
+        showSymbolMenu.addItem(showControlCharsItem)
+        showSymbolMenu.addItem(showWrapSymbolItem)
         showSymbolMenu.addItem(.separator())
         showSymbolMenu.addItem(showIndentGuideItem)
         showSymbolItem.submenu = showSymbolMenu
@@ -361,6 +379,52 @@ extension HexpadAppDelegate {
         case 2: return "\(number)nd"
         case 3: return "\(number)rd"
         default: return "\(number)th"
+        }
+    }
+}
+
+/// View-only Show Symbol state for the two wave 4A glyph families. They are
+/// not fields on `Preferences` (that type is owned by another lane), so they
+/// live in UserDefaults under the text view's own keys; the text view reads
+/// them on its first preference push and the menu action writes them.
+enum ShowSymbolExtras {
+    static var showControlCharacters: Bool {
+        get { UserDefaults.standard.bool(forKey: MultiCaretTextView.controlCharactersDefaultsKey) }
+        set { UserDefaults.standard.set(newValue,
+                                        forKey: MultiCaretTextView.controlCharactersDefaultsKey) }
+    }
+
+    static var showWrapSymbol: Bool {
+        get { UserDefaults.standard.bool(forKey: MultiCaretTextView.wrapSymbolDefaultsKey) }
+        set { UserDefaults.standard.set(newValue,
+                                        forKey: MultiCaretTextView.wrapSymbolDefaultsKey) }
+    }
+}
+
+extension HexpadAppDelegate {
+    /// View > Show Symbol > Show Non-Printing Characters. Flips the render flag
+    /// on every open editor (both split groups) and updates the menu checkmark.
+    @objc func toggleShowControlCharacters(_ sender: Any?) {
+        ShowSymbolExtras.showControlCharacters.toggle()
+        applyShowSymbolExtras()
+        (sender as? NSMenuItem)?.state = ShowSymbolExtras.showControlCharacters ? .on : .off
+    }
+
+    /// View > Show Symbol > Show Wrap Symbol.
+    @objc func toggleShowWrapSymbol(_ sender: Any?) {
+        ShowSymbolExtras.showWrapSymbol.toggle()
+        applyShowSymbolExtras()
+        (sender as? NSMenuItem)?.state = ShowSymbolExtras.showWrapSymbol ? .on : .off
+    }
+
+    private func applyShowSymbolExtras() {
+        guard let controller = activeController else { return }
+        let showControlCharacters = ShowSymbolExtras.showControlCharacters
+        let showWrapSymbol = ShowSymbolExtras.showWrapSymbol
+        for pane in controller.allPanes {
+            pane.editor.textView.setExtraSymbolVisibility(
+                showControlCharacters: showControlCharacters,
+                showWrapSymbol: showWrapSymbol)
         }
     }
 }

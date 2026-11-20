@@ -14,6 +14,36 @@ struct DocumentSearchGroup {
     }
 }
 
+/// One Find All run. Results accumulate as batches instead of erasing the
+/// previous search, so a later query can be folded away without losing the
+/// earlier hits. Re-running the *same* query refreshes its batch in place (the
+/// pre-upgrade replace behaviour existing callers/tests rely on).
+struct DocumentSearchBatch {
+    let description: String
+    let groups: [DocumentSearchGroup]
+}
+
+/// The table owns the two keyboard gestures the results window adds on top of
+/// AppKit's selection machinery: Delete prunes the selected hit, Return jumps
+/// to it. N++ uses F7 to *focus* its results window; that key is Windows/F-key
+/// specific and would collide with AppKit/KeybindingStore chords here, so the
+/// Mac equivalent is Enter/double-click on the row (see `openSelectedRow`).
+private final class ResultsTableView: NSTableView {
+    var onDeleteKey: (() -> Void)?
+    var onEnterKey: (() -> Void)?
+
+    override func keyDown(with event: NSEvent) {
+        switch Int(event.keyCode) {
+        case 51, 118: // Delete / Forward Delete (fn+Delete)
+            onDeleteKey?()
+        case 36, 76: // Return / keypad Enter
+            onEnterKey?()
+        default:
+            super.keyDown(with: event)
+        }
+    }
+}
+
 /// Find in Files panel. SearchEngine.searchInFiles shipped complete but had no
 /// UI at all. Runs the search off the main thread and opens a hit in a tab.
 ///
@@ -23,6 +53,10 @@ struct DocumentSearchGroup {
 /// group headers with one row per match so every hit is individually
 /// double-clickable. Clicking a group header folds/unfolds it; folded matches
 /// leave both the table and the F4 / Shift+F4 navigation order.
+///
+/// Wave 4A upgrades: different queries accumulate as foldable search batches,
+/// Delete prunes the selected hit, a small context menu copies the path/line or
+/// removes a hit, and Enter joins double-click as the jump-to-match gesture.
 final class FindInFilesWindowController: NSWindowController {
 
     private let chooseButton = NSButton(title: "Choose Folder...", target: nil, action: nil)
@@ -38,7 +72,7 @@ final class FindInFilesWindowController: NSWindowController {
     private let caseCheckbox = NSButton(checkboxWithTitle: "Case sensitive", target: nil, action: nil)
     private let searchButton = NSButton(title: "Search", target: nil, action: nil)
     private let replaceAllButton = NSButton(title: "Replace All in Files", target: nil, action: nil)
-    private let resultsTable = NSTableView()
+    private let resultsTable = ResultsTableView()
     private let resultsScrollView = NSScrollView()
     private let statusLabel = NSTextField(labelWithString: "")
 
@@ -48,9 +82,11 @@ final class FindInFilesWindowController: NSWindowController {
     }
     private var mode: Mode = .files
 
-    /// Row model for the document mode: one header per opened buffer followed
-    /// by one row per match. Clicking a match row jumps to that exact range.
+    /// Row model for the document mode. A batch header (present once two or
+    /// more searches are accumulated) wraps the per-file headers; each file
+    /// header is followed by one row per match. Clicking a header folds it.
     private enum DocumentRow {
+        case batchHeader(batch: Int)
         case header(group: Int)
         case match(group: Int, index: Int)
     }
@@ -61,14 +97,26 @@ final class FindInFilesWindowController: NSWindowController {
     /// Kept alongside the search hits so the table can show both counts.
     private var replaceCounts: [URL: Int] = [:]
 
-    private(set) var documentGroups: [DocumentSearchGroup] = []
+    /// Accumulated Find All runs, oldest first. `documentGroups` is the flat
+    /// view of every batch so existing callers keep seeing one group per file.
+    private(set) var searchBatches: [DocumentSearchBatch] = []
+    private struct BatchLayout {
+        let description: String
+        let groupRange: Range<Int>
+    }
+    private var batchLayouts: [BatchLayout] = []
+    private var lastSearchDescription = ""
+
+    var documentGroups: [DocumentSearchGroup] { searchBatches.flatMap { $0.groups } }
+
     /// Visible document rows in display order. A folded group contributes its
     /// header but none of its match rows, so every consumer (table, F4
     /// navigation, openRow) reads the same list without a visibility filter.
     private var documentRows: [DocumentRow] = []
-    /// Group indices the user collapsed by clicking their header. Cleared when
-    /// a new result set is shown.
+    /// Group indices the user collapsed by clicking their header.
     private var foldedGroups: Set<Int> = []
+    /// Batch indices the user collapsed by clicking a search header.
+    private var foldedBatches: Set<Int> = []
 
     /// Table row indices in navigation order: every file row in files mode,
     /// every match row (headers excluded) in documents mode. F4 / Shift+F4
@@ -170,6 +218,11 @@ final class FindInFilesWindowController: NSWindowController {
         resultsTable.target = self
         resultsTable.action = #selector(handleResultsRowClick)
         resultsTable.doubleAction = #selector(openSelected)
+        // Keyboard additions (Delete prunes, Enter jumps). Header rows are not
+        // selectable, so both gestures only ever act on a real hit row.
+        resultsTable.onDeleteKey = { [weak self] in self?.deleteSelectedResult() }
+        resultsTable.onEnterKey = { [weak self] in self?.openSelectedRow() }
+        resultsTable.menu = makeContextMenu()
         resultsScrollView.documentView = resultsTable
         content.addSubview(resultsScrollView)
 
@@ -213,21 +266,44 @@ final class FindInFilesWindowController: NSWindowController {
 
     /// Shows Find All results for open documents. `searchDescription` is the
     /// query echoed in the status line; the controller stays dumb about how the
-    /// search was produced.
+    /// search was produced. A different query appends a new foldable batch;
+    /// the same query refreshes the existing batch in place.
     func showDocumentResults(groups: [DocumentSearchGroup], searchDescription: String) {
         mode = .documents
         window?.title = "Search Results"
         setFileInputsVisible(false)
 
-        documentGroups = groups
-        foldedGroups = []
-        rebuildDocumentRows()
-
-        let matchCount = groups.reduce(0) { $0 + $1.matches.count }
-        if matchCount == 0 {
-            statusLabel.stringValue = "No matches for \(searchDescription)"
+        let batch = DocumentSearchBatch(description: searchDescription, groups: groups)
+        if searchBatches.last?.description == searchDescription, !searchBatches.isEmpty {
+            searchBatches[searchBatches.count - 1] = batch
         } else {
-            statusLabel.stringValue = "\(matchCount) matches in \(groups.count) files for \(searchDescription)"
+            searchBatches.append(batch)
+        }
+        lastSearchDescription = searchDescription
+        rebuildBatchLayouts()
+        foldedGroups = []
+        foldedBatches = []
+        rebuildDocumentRows()
+        updateSummaryStatus()
+    }
+
+    private func rebuildBatchLayouts() {
+        var layouts: [BatchLayout] = []
+        var nextGroup = 0
+        for batch in searchBatches {
+            let range = nextGroup..<(nextGroup + batch.groups.count)
+            layouts.append(BatchLayout(description: batch.description, groupRange: range))
+            nextGroup = range.upperBound
+        }
+        batchLayouts = layouts
+    }
+
+    private func updateSummaryStatus() {
+        let matchCount = documentResultCount
+        if matchCount == 0 {
+            statusLabel.stringValue = "No matches for \(lastSearchDescription)"
+        } else {
+            statusLabel.stringValue = "\(matchCount) matches in \(documentGroups.count) files for \(lastSearchDescription)"
         }
     }
 
@@ -258,16 +334,24 @@ final class FindInFilesWindowController: NSWindowController {
 
     // MARK: - Group folding
 
-    /// Builds the visible row list from `documentGroups` and the fold set.
+    /// Builds the visible row list from `searchBatches` and the fold sets.
     /// Rebuilding (rather than filtering at read time) keeps navigation, the
     /// table view and openRow on one shared row model.
     private func rebuildDocumentRows() {
         documentRows = []
-        for (groupIndex, group) in documentGroups.enumerated() {
-            documentRows.append(.header(group: groupIndex))
-            guard !foldedGroups.contains(groupIndex) else { continue }
-            for matchIndex in group.matches.indices {
-                documentRows.append(.match(group: groupIndex, index: matchIndex))
+        let showsBatchHeaders = searchBatches.count > 1
+        for (batchIndex, batch) in searchBatches.enumerated() {
+            if showsBatchHeaders {
+                documentRows.append(.batchHeader(batch: batchIndex))
+            }
+            guard !foldedBatches.contains(batchIndex) else { continue }
+            guard batchLayouts.indices.contains(batchIndex) else { continue }
+            for groupIndex in batchLayouts[batchIndex].groupRange {
+                documentRows.append(.header(group: groupIndex))
+                guard !foldedGroups.contains(groupIndex) else { continue }
+                for matchIndex in documentGroups[groupIndex].matches.indices {
+                    documentRows.append(.match(group: groupIndex, index: matchIndex))
+                }
             }
         }
         rebuildResultRows()
@@ -292,6 +376,20 @@ final class FindInFilesWindowController: NSWindowController {
         foldedGroups.contains(groupIndex)
     }
 
+    /// Collapses/expands one accumulated search batch. Folding a batch hides
+    /// its file headers and all of its hits from the table and F4 navigation.
+    func toggleBatchFold(at batchIndex: Int) {
+        guard mode == .documents, searchBatches.indices.contains(batchIndex) else { return }
+        if foldedBatches.contains(batchIndex) {
+            foldedBatches.remove(batchIndex)
+        } else {
+            foldedBatches.insert(batchIndex)
+        }
+        rebuildDocumentRows()
+    }
+
+    func isBatchFolded(_ batchIndex: Int) -> Bool { foldedBatches.contains(batchIndex) }
+
     /// Header text for one group. Folded groups report "N matches"; expanded
     /// groups keep the pre-existing "N match(es)" summary. Used by the table
     /// and by app tests.
@@ -304,22 +402,146 @@ final class FindInFilesWindowController: NSWindowController {
         return "▾ \(group.title)  —  \(group.matches.count) match(es)"
     }
 
-    /// Single-click handler. Only group headers act; a match row's click is
-    /// left to the normal selection machinery. The second click of a
-    /// double-click arrives as `openSelected` (doubleAction), not here.
+    /// Header text for an accumulated search batch, including its hit count.
+    func batchHeaderText(for batchIndex: Int) -> String? {
+        guard searchBatches.indices.contains(batchIndex),
+              batchLayouts.indices.contains(batchIndex) else { return nil }
+        let description = searchBatches[batchIndex].description
+        let range = batchLayouts[batchIndex].groupRange
+        let count = documentGroups[range].reduce(0) { $0 + $1.matches.count }
+        let marker = foldedBatches.contains(batchIndex) ? "▸" : "▾"
+        return "\(marker) Search \(description)  —  \(count) matches in \(range.count) files"
+    }
+
+    /// Single-click handler. Only headers act; a match row's click is left to
+    /// the normal selection machinery. The second click of a double-click
+    /// arrives as `openSelected` (doubleAction), not here.
     @objc private func handleResultsRowClick() {
         guard mode == .documents else { return }
         let row = resultsTable.clickedRow
-        guard documentRows.indices.contains(row),
-              case .header(let groupIndex) = documentRows[row] else { return }
-        toggleGroupFold(at: groupIndex)
+        guard documentRows.indices.contains(row) else { return }
+        switch documentRows[row] {
+        case .header(let groupIndex):
+            toggleGroupFold(at: groupIndex)
+        case .batchHeader(let batchIndex):
+            toggleBatchFold(at: batchIndex)
+        case .match:
+            break
+        }
     }
+
+    // MARK: - Delete pruning and context menu
+
+    /// Removes the selected hit (Delete key or the context menu's Remove Hit).
+    /// Header rows are not selectable, so the common case is always a hit.
+    func deleteSelectedResult() {
+        let row = resultsTable.selectedRow
+        guard row >= 0 else { return }
+        switch mode {
+        case .files:
+            guard results.indices.contains(row) else { return }
+            results.remove(at: row)
+            rebuildResultRows()
+            resultsTable.reloadData()
+        case .documents:
+            guard documentRows.indices.contains(row),
+                  case .match(let groupIndex, let matchIndex) = documentRows[row] else { return }
+            removeHit(group: groupIndex, match: matchIndex)
+        }
+    }
+
+    /// Removes one match from its group, keeping an (empty) file header so
+    /// group indices — and therefore fold state and navigation — stay stable.
+    func removeHit(group groupIndex: Int, match matchIndex: Int) {
+        guard documentGroups.indices.contains(groupIndex) else { return }
+        guard documentGroups[groupIndex].matches.indices.contains(matchIndex) else { return }
+        guard let batchIndex = batchLayouts.firstIndex(where: {
+            $0.groupRange.contains(groupIndex)
+        }) else { return }
+        let localIndex = groupIndex - batchLayouts[batchIndex].groupRange.lowerBound
+        var groups = searchBatches[batchIndex].groups
+        guard groups.indices.contains(localIndex) else { return }
+        let old = groups[localIndex]
+        let trimmed = DocumentSearchGroup(
+            document: old.document,
+            matches: old.matches.enumerated()
+                .filter { $0.offset != matchIndex }
+                .map { $0.element })
+        groups[localIndex] = trimmed
+        searchBatches[batchIndex] = DocumentSearchBatch(
+            description: searchBatches[batchIndex].description, groups: groups)
+        rebuildDocumentRows()
+        updateSummaryStatus()
+    }
+
+    private func makeContextMenu() -> NSMenu {
+        let menu = NSMenu(title: "Search Result")
+        menu.addItem(NSMenuItem(title: "Copy Path",
+                                action: #selector(copySelectedPath(_:)),
+                                keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Copy Line",
+                                action: #selector(copySelectedLine(_:)),
+                                keyEquivalent: ""))
+        menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: "Remove Hit",
+                                action: #selector(removeSelectedHit(_:)),
+                                keyEquivalent: ""))
+        for item in menu.items { item.target = self }
+        return menu
+    }
+
+    /// Titles of the result-row context menu items. Used by app tests.
+    var contextMenuTitles: [String] { resultsTable.menu?.items.map(\.title) ?? [] }
+
+    /// Path the Copy Path menu item would place on the pasteboard for `row`.
+    func copyablePath(forRow row: Int) -> String? {
+        switch mode {
+        case .files:
+            guard results.indices.contains(row) else { return nil }
+            return results[row].0.path
+        case .documents:
+            guard documentRows.indices.contains(row),
+                  case .match(let groupIndex, _) = documentRows[row] else { return nil }
+            return documentGroups[groupIndex].document.filePath?.path
+        }
+    }
+
+    /// Line the Copy Line menu item would place on the pasteboard for `row`.
+    func copyableLine(forRow row: Int) -> String? {
+        switch mode {
+        case .files:
+            guard results.indices.contains(row) else { return nil }
+            let (_, matches) = results[row]
+            return matches.first?.text ?? ""
+        case .documents:
+            guard documentRows.indices.contains(row),
+                  case .match(let groupIndex, let matchIndex) = documentRows[row] else { return nil }
+            let match = documentGroups[groupIndex].matches[matchIndex]
+            return "\(match.line): \(match.context)"
+        }
+    }
+
+    @objc func copySelectedPath(_ sender: Any?) {
+        let row = resultsTable.clickedRow >= 0 ? resultsTable.clickedRow : resultsTable.selectedRow
+        guard let path = copyablePath(forRow: row) else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(path, forType: .string)
+    }
+
+    @objc func copySelectedLine(_ sender: Any?) {
+        let row = resultsTable.clickedRow >= 0 ? resultsTable.clickedRow : resultsTable.selectedRow
+        guard let line = copyableLine(forRow: row) else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(line, forType: .string)
+    }
+
+    @objc func removeSelectedHit(_ sender: Any?) { deleteSelectedResult() }
 
     // MARK: - Result navigation
 
     /// Rebuilds the flat navigation order for the current mode and clears the
     /// cursor. Files mode lists each file once (its first hit is the target);
-    /// documents mode lists each match row and skips group headers.
+    /// documents mode lists each match row and skips all header rows.
     private func rebuildResultRows() {
         switch mode {
         case .files:
@@ -476,12 +698,22 @@ final class FindInFilesWindowController: NSWindowController {
         }
     }
 
+    /// Double-click on a row. `clickedRow` is set for the mouse gesture; fall
+    /// back to the selection for programmatic/test callers.
     @objc private func openSelected() {
-        openRow(resultsTable.clickedRow)
+        let row = resultsTable.clickedRow >= 0 ? resultsTable.clickedRow : resultsTable.selectedRow
+        openRow(row)
+    }
+
+    /// Enter on the selected row: the Mac equivalent of N++'s results-window
+    /// F7 focus + Enter jump. Kept separate from the double-click handler so
+    /// tests and the key handler share one entry point.
+    func openSelectedRow() {
+        openRow(resultsTable.selectedRow)
     }
 
     /// Jumps to the result on `row`, using the mode's existing path. Shared by
-    /// double-click and keyboard result navigation.
+    /// double-click, Enter and keyboard result navigation.
     private func openRow(_ row: Int) {
         switch mode {
         case .files:
@@ -511,8 +743,10 @@ extension FindInFilesWindowController: NSTableViewDataSource, NSTableViewDelegat
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
         guard mode == .documents else { return true }
         guard row >= 0, row < documentRows.count else { return false }
-        if case .header = documentRows[row] { return false }
-        return true
+        switch documentRows[row] {
+        case .header, .batchHeader: return false
+        case .match: return true
+        }
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -551,6 +785,10 @@ extension FindInFilesWindowController: NSTableViewDataSource, NSTableViewDelegat
         label.font = NSFont.systemFont(ofSize: 11)
 
         switch documentRows[row] {
+        case .batchHeader(let batchIndex):
+            label.font = NSFont.boldSystemFont(ofSize: 11)
+            label.stringValue = batchHeaderText(for: batchIndex) ?? ""
+            label.maximumNumberOfLines = 1
         case .header(let groupIndex):
             let group = documentGroups[groupIndex]
             label.font = NSFont.boldSystemFont(ofSize: 11)

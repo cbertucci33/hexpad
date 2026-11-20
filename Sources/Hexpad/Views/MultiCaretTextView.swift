@@ -53,7 +53,7 @@ final class MultiCaretTextView: NSTextView {
 
     // MARK: - Symbol rendering
     //
-    // View > Show Symbol toggles. All three are drawn in `draw(_:)` from the
+    // View > Show Symbol toggles. All five are drawn in `draw(_:)` from the
     // laid-out glyphs inside the dirty rect, so they scroll, wrap, and zoom with
     // the text without an overlay view or a timer. The symbol colour is derived
     // from `textColor` (the theme foreground) at draw time.
@@ -64,25 +64,126 @@ final class MultiCaretTextView: NSTextView {
     private(set) var showsEOL = false
     /// Draw dotted vertical guides at the tab stops of each indented line.
     private(set) var showsIndentGuide = false
+    /// Draw a visible control picture for every C0 control character other than
+    /// Tab/CR/LF (those three already have dedicated glyphs).
+    private(set) var showsControlCharacters = false
+    /// Draw a ⏎ marker at the end of each soft-wrapped line fragment.
+    private(set) var showsWrapSymbol = false
     /// Tab-stop width used for indent guides. Mirrors `Preferences.tabSize`.
     private(set) var tabSize = 4
 
+    /// UserDefaults keys for the two Show Symbol extras introduced in wave 4A.
+    /// They are view-only toggles (not part of the persisted `Preferences`
+    /// struct), so the text view reads them itself at startup and the menu
+    /// action writes them before pushing the new flags to every pane.
+    static let controlCharactersDefaultsKey = "HexpadShowControlCharacters"
+    static let wrapSymbolDefaultsKey = "HexpadShowWrapSymbol"
+
+    private static var storedControlCharacters: Bool {
+        UserDefaults.standard.bool(forKey: controlCharactersDefaultsKey)
+    }
+    private static var storedWrapSymbol: Bool {
+        UserDefaults.standard.bool(forKey: wrapSymbolDefaultsKey)
+    }
+
+    /// Applied once, on the first preference push at startup, so saved extras
+    /// survive a relaunch without an initializer override on a plain
+    /// `MultiCaretTextView()` instance.
+    private var didApplyStoredExtras = false
+    private func applyStoredExtrasIfNeeded() {
+        guard !didApplyStoredExtras else { return }
+        didApplyStoredExtras = true
+        showsControlCharacters = Self.storedControlCharacters
+        showsWrapSymbol = Self.storedWrapSymbol
+    }
+
     /// Applies the Show Symbol preferences, coalescing the repaint into one
-    /// invalidation when anything actually changed.
+    /// invalidation when anything actually changed. This four-argument entry
+    /// point is the one the existing preference plumbing calls; it preserves
+    /// the current extra-symbol state so a tab-size or theme change cannot
+    /// silently undo a control-character / wrap-symbol toggle.
     func setSymbolVisibility(showWhitespace: Bool,
                              showEOL: Bool,
                              showIndentGuide: Bool,
                              tabSize: Int) {
+        applyStoredExtrasIfNeeded()
+        setSymbolVisibility(showWhitespace: showWhitespace,
+                            showEOL: showEOL,
+                            showIndentGuide: showIndentGuide,
+                            tabSize: tabSize,
+                            showControlCharacters: showsControlCharacters,
+                            showWrapSymbol: showsWrapSymbol)
+    }
+
+    /// Full form used by tests and by callers that own all five flags.
+    func setSymbolVisibility(showWhitespace: Bool,
+                             showEOL: Bool,
+                             showIndentGuide: Bool,
+                             tabSize: Int,
+                             showControlCharacters: Bool? = nil,
+                             showWrapSymbol: Bool? = nil) {
+        applyStoredExtrasIfNeeded()
+        // Explicit extra-symbol arguments win over the stored defaults, so a
+        // caller that just set the flags (menu action, tests) is not clobbered
+        // by applyStoredExtrasIfNeeded inside this call.
+        let control = showControlCharacters ?? showsControlCharacters
+        let wrap = showWrapSymbol ?? showsWrapSymbol
         let clampedTab = max(1, tabSize)
         guard self.showsWhitespace != showWhitespace
                 || self.showsEOL != showEOL
                 || self.showsIndentGuide != showIndentGuide
+                || self.showsControlCharacters != control
+                || self.showsWrapSymbol != wrap
                 || self.tabSize != clampedTab else { return }
         self.showsWhitespace = showWhitespace
         self.showsEOL = showEOL
         self.showsIndentGuide = showIndentGuide
+        self.showsControlCharacters = control
+        self.showsWrapSymbol = wrap
         self.tabSize = clampedTab
         needsDisplay = true
+    }
+
+    /// Re-reads the two view-only Show Symbol toggles after the menu action
+    /// updates their persisted values.
+    func refreshExtraSymbolVisibility() {
+        setExtraSymbolVisibility(showControlCharacters: Self.storedControlCharacters,
+                                 showWrapSymbol: Self.storedWrapSymbol)
+    }
+
+    /// Flips the wave 4A render flags without touching the other three.
+    /// Marks the stored defaults as consumed: an explicit set supersedes them,
+    /// so a later preference push (applyStoredExtrasIfNeeded) cannot clobber
+    /// what the user just chose.
+    func setExtraSymbolVisibility(showControlCharacters: Bool, showWrapSymbol: Bool) {
+        didApplyStoredExtras = true
+        guard showsControlCharacters != showControlCharacters
+                || showsWrapSymbol != showWrapSymbol else { return }
+        showsControlCharacters = showControlCharacters
+        showsWrapSymbol = showWrapSymbol
+        needsDisplay = true
+    }
+
+    /// Unicode control pictures (U+2400…) are the visible glyphs N++ uses for
+    /// C0 controls. Tab, LF and CR are excluded: they already have dedicated
+    /// whitespace/EOL glyphs. Pure so it can be pinned without AppKit drawing.
+    static func controlPicture(for unit: UInt16) -> String? {
+        guard unit < 0x20, unit != 0x09, unit != 0x0A, unit != 0x0D else { return nil }
+        guard let scalar = UnicodeScalar(0x2400 + Int(unit)) else { return nil }
+        return String(Character(scalar))
+    }
+
+    /// A line fragment is soft-wrapped when the logical line continues past its
+    /// character range with no CR/LF in between. Pure geometry helper used by
+    /// the wrap-symbol renderer and by tests.
+    static func isSoftWrappedFragment(charRange: NSRange, text: NSString) -> Bool {
+        guard charRange.length > 0, charRange.upperBound < text.length else { return false }
+        // A fragment that itself ends at a hard break is hard-wrapped, even
+        // though more text follows it on the next line.
+        let last = text.character(at: charRange.upperBound - 1)
+        if last == 0x0A || last == 0x0D { return false }
+        let next = text.character(at: charRange.upperBound)
+        return next != 0x0A && next != 0x0D
     }
 
     // MARK: - Token styles
@@ -364,7 +465,8 @@ final class MultiCaretTextView: NSTextView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         drawAdditionalCarets()
-        guard showsWhitespace || showsEOL || showsIndentGuide else { return }
+        guard showsWhitespace || showsEOL || showsIndentGuide
+                || showsControlCharacters || showsWrapSymbol else { return }
         drawSymbols(in: dirtyRect)
     }
 
@@ -468,8 +570,9 @@ final class MultiCaretTextView: NSTextView {
     // the dirty rect. There is no overlay view to keep in scroll sync and no
     // per-keystroke document scan: the work is O(visible glyphs).
 
-    /// Paints space dots, tab arrows, end-of-line labels, and indent guides for
-    /// the glyphs intersecting `dirtyRect` (view coordinates).
+    /// Paints space dots, tab arrows, control pictures, end-of-line labels,
+    /// wrap markers and indent guides for the glyphs intersecting `dirtyRect`
+    /// (view coordinates).
     private func drawSymbols(in dirtyRect: NSRect) {
         guard let layoutManager, let textContainer, let storage = textStorage else { return }
         let text = storage.string as NSString
@@ -542,6 +645,27 @@ final class MultiCaretTextView: NSTextView {
                 }
             }
 
+            // C0 controls other than Tab/CR/LF get a Unicode control picture
+            // (␀ … ␟), Notepad++'s "Show Non-Printing Characters" equivalent.
+            if self.showsControlCharacters, content.length > 0 {
+                for index in content.location..<content.upperBound {
+                    guard let picture = Self.controlPicture(for: text.character(at: index)) else {
+                        continue
+                    }
+                    let glyph = layoutManager.glyphIndexForCharacter(at: index)
+                    guard glyph < layoutManager.numberOfGlyphs else { continue }
+                    let startX = origin.x + layoutManager.location(forGlyphAt: glyph).x
+                    let label = NSAttributedString(
+                        string: picture,
+                        attributes: [.font: eolFont, .foregroundColor: eolColor])
+                    let size = label.size()
+                    let box = NSRect(x: startX, y: lineMidY - size.height / 2 - 1,
+                                     width: size.width + 2, height: size.height + 2)
+                    guard box.intersects(dirtyRect) else { continue }
+                    label.draw(at: NSPoint(x: box.minX + 1, y: box.minY + 1))
+                }
+            }
+
             if self.showsIndentGuide, content.length > 0 {
                 var leadingLength = 0
                 while leadingLength < content.length {
@@ -593,6 +717,23 @@ final class MultiCaretTextView: NSTextView {
                 border.stroke()
                 label.draw(at: NSPoint(x: box.minX + 3,
                                        y: box.midY - labelSize.height / 2))
+            }
+
+            // A soft-wrapped fragment has no EOL label of its own; place the ⏎
+            // marker at the end of its used width when the logical line keeps
+            // going in the next fragment.
+            if self.showsWrapSymbol,
+               Self.isSoftWrappedFragment(charRange: lineCharRange, text: text) {
+                let marker = NSAttributedString(
+                    string: "⏎",
+                    attributes: [.font: eolFont, .foregroundColor: eolColor])
+                let size = marker.size()
+                let box = NSRect(x: origin.x + usedRect.maxX - size.width - 1,
+                                 y: lineMidY - size.height / 2 - 1,
+                                 width: size.width + 2, height: size.height + 2)
+                if box.intersects(dirtyRect) {
+                    marker.draw(at: NSPoint(x: box.minX + 1, y: box.minY + 1))
+                }
             }
         }
     }
