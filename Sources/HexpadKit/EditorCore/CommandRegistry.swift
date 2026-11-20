@@ -1565,7 +1565,8 @@ enum BookmarkCommandOps {
     static func cutLines(_ state: DocumentState) -> DocumentState {
         applying(BookmarkLineOps.cut(state.text,
                                      selection: state.selection,
-                                     bookmarks: state.bookmarkState))
+                                     bookmarks: state.bookmarkState),
+                 tokenStyleState: state.tokenStyleState)
     }
 
     static func cutLinesWithClipboard(_ state: DocumentState,
@@ -1573,7 +1574,8 @@ enum BookmarkCommandOps {
         let result = BookmarkLineOps.cut(state.text,
                                         selection: state.selection,
                                         bookmarks: state.bookmarkState)
-        return (applying(result), result.clipboardText)
+        return (applying(result, tokenStyleState: state.tokenStyleState),
+                result.clipboardText)
     }
 
     /// Copies every bookmarked line and leaves the buffer alone.
@@ -1593,21 +1595,23 @@ enum BookmarkCommandOps {
                                                    selection: state.selection,
                                                    bookmarks: state.bookmarkState,
                                                    clipboard: clipboard)
-        return (applying(result), nil)
+        return (applying(result, tokenStyleState: state.tokenStyleState), nil)
     }
 
     /// Removes every bookmarked line without changing the clipboard.
     static func removeLines(_ state: DocumentState) -> DocumentState {
         applying(BookmarkLineOps.remove(state.text,
                                         selection: state.selection,
-                                        bookmarks: state.bookmarkState))
+                                        bookmarks: state.bookmarkState),
+                 tokenStyleState: state.tokenStyleState)
     }
 
     /// Inverts the bookmark set line by line.
     static func inverse(_ state: DocumentState) -> DocumentState {
         applying(BookmarkLineOps.inverse(state.text,
                                          selection: state.selection,
-                                         bookmarks: state.bookmarkState))
+                                         bookmarks: state.bookmarkState),
+                 tokenStyleState: state.tokenStyleState)
     }
 
     /// Removes every line without a bookmark, keeping the bookmarked lines in
@@ -1653,11 +1657,14 @@ enum BookmarkCommandOps {
         return NSRange(location: location, length: 0)
     }
 
-    /// Wraps a line-operation result as a document state.
-    private static func applying(_ result: BookmarkLineOps.Result) -> DocumentState {
+    /// Wraps a line-operation result as a document state, carrying the caller's
+    /// token styles forward so line edits never wipe them.
+    private static func applying(_ result: BookmarkLineOps.Result,
+                                 tokenStyleState: TokenStyleState) -> DocumentState {
         DocumentState(text: result.text,
                       selection: result.selection,
-                      bookmarkState: result.bookmarks)
+                      bookmarkState: result.bookmarks,
+                      tokenStyleState: tokenStyleState)
     }
 
     // MARK: - Helpers

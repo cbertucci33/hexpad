@@ -322,6 +322,35 @@ final class BookmarkCommandTests: XCTestCase {
         XCTAssertEqual(registry.execute("bookmark-clear-all", on: input), input)
     }
 
+    // MARK: - Token style preservation
+
+    func testBookmarkLineOperationsPreserveTokenStyles() {
+        // Cut, remove, inverse and paste rebuild the document state from a
+        // BookmarkLineOps.Result, which has no style field; each op must carry
+        // the existing tokenStyleState forward so line edits never wipe styles.
+        let styles = TokenStyleState(styles: [
+            1: [NSRange(location: 0, length: 1)],
+            2: [NSRange(location: 2, length: 1)],
+            3: [NSRange(location: 4, length: 1)],
+            4: [NSRange(location: 6, length: 1)],
+            5: [NSRange(location: 8, length: 1)]
+        ])
+        let input = DocumentState(text: "a\nb\nc\nd\ne",
+                                  selection: NSRange(location: 2, length: 0),
+                                  bookmarkState: BookmarkState(bookmarks: [Bookmark(line: 2),
+                                                                           Bookmark(line: 4)]),
+                                  tokenStyleState: styles)
+
+        XCTAssertEqual(registry.execute("bookmark-cut-lines", on: input)?.tokenStyleState, styles)
+        XCTAssertEqual(registry.execute("bookmark-remove-lines", on: input)?.tokenStyleState, styles)
+        XCTAssertEqual(registry.execute("bookmark-inverse", on: input)?.tokenStyleState, styles)
+
+        let paste = registry.execute("bookmark-paste-replace-lines",
+                                     on: input,
+                                     clipboard: "x\ny")
+        XCTAssertEqual(paste?.state.tokenStyleState, styles)
+    }
+
     // MARK: - Backward compatibility
 
     func testLegacyTextSelectionPathStillRunsLineCommands() {
