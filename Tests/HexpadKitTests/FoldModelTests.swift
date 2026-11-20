@@ -225,6 +225,56 @@ final class FoldModelTests: XCTestCase {
         XCTAssertTrue(model.foldableRanges(atDepth: 0).isEmpty)
     }
 
+    func testDeeplyNestedFoldsComputeDepthInOnePass() {
+        // A thousand nested braces: the depth pass must produce 1...N in model
+        // order. The old O(folds²) pairwise containment count did ~1M
+        // comparisons here; correctness is the point, but a non-linear
+        // implementation would also make this visibly slow.
+        let depth = 1_000
+        let text = String(repeating: "{\n", count: depth)
+            + String(repeating: "}\n", count: depth)
+        let model = FoldModel(text: text, definition: definition(brackets: allBrackets))
+
+        XCTAssertEqual(model.foldableRanges.count, depth)
+        XCTAssertEqual(model.foldableRanges.map { model.depth(of: $0) },
+                       Array(1...depth))
+    }
+
+    func testFoldStartLinesAreComputedInOnePass() {
+        let text = "a {\n    b {\n        c\n    }\n}\nd {\n}\n"
+        let model = FoldModel(text: text, definition: definition(brackets: allBrackets))
+
+        XCTAssertEqual(model.foldableRanges.count, 3)
+        // Fold starts land on lines 1 (outer), 2 (inner), 6 (sibling).
+        XCTAssertEqual(model.foldableRanges.map { model.startingLine(of: $0) },
+                       [1, 2, 6])
+        // The precomputed mapping must agree with the direct line math it
+        // replaces, for every fold.
+        for fold in model.foldableRanges {
+            XCTAssertEqual(model.startingLine(of: fold),
+                           GutterGeometry.logicalLine(of: fold.location, in: text))
+        }
+    }
+
+    func testFoldDepthsHandleBraceRegionPartialOverlap() {
+        // A brace fold and a region fold can partially overlap: the brace opens
+        // before the region and closes inside it. Neither strictly contains the
+        // other, so both stay depth 1 (matching the old pairwise semantics).
+        let text = "{\n// region start\nx\n}\n// endregion\n"
+        let configuration = FoldConfiguration(regionMarkers: [
+            FoldRegionMarker(start: "// region", end: "// endregion")
+        ])
+        let model = FoldModel(text: text,
+                              definition: definition(
+                                  comments: LexerDefinition.CommentSyntax(linePrefix: "//"),
+                                  brackets: allBrackets),
+                              configuration: configuration)
+
+        XCTAssertEqual(model.foldableRanges.count, 2)
+        XCTAssertEqual(model.foldableRanges.map(\.kind), [.braces, .region])
+        XCTAssertEqual(model.foldableRanges.map { model.depth(of: $0) }, [1, 1])
+    }
+
     func testFoldCurrentLevelTargetsTheInnermostRangeContainingTheCaretLine() {
         let text = nestedText
         var model = FoldModel(text: text, definition: definition(brackets: allBrackets))

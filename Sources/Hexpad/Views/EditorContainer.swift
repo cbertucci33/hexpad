@@ -119,13 +119,15 @@ class EditorContainer: NSView {
     /// `NSLayoutManager.delegate` does not own its delegate.
     private let foldHider = FoldGlyphHider()
 
-    /// Set when a text edit changed the document under the current model and
-    /// the foldable ranges need recomputing before markers are next drawn.
-    private var foldModelIsStale = false
-    /// False until the first rebuild for the current binding; a rebuild that
-    /// legitimately produces nil (plain text) leaves this true so the lazy
-    /// refresh above does not re-trigger on every access.
-    private var foldModelBuilt = false
+    /// `DocumentModel.textRevision` the fold model was last built for, or `nil`
+    /// when no model has been built for the current binding yet. Comparing
+    /// against the document's monotonic revision (rather than a boolean stale
+    /// flag) is what lets the lazy refresh rebuild exactly once per text change
+    /// and never on a scroll/redraw that only re-reads an already-current
+    /// model. A build that legitimately produces `nil` (plain text) still
+    /// records the revision, so the nil path does not re-trigger on every
+    /// access.
+    private var foldModelBuiltRevision: Int?
 
     /// Number of times the fold model has been rebuilt for the bound document.
     /// Diagnostic/test hook: an edit must mark the model stale without paying
@@ -1341,8 +1343,7 @@ class EditorContainer: NSView {
     private func bindFolds(for document: DocumentModel?) {
         guard let document else {
             foldModel = nil
-            foldModelIsStale = false
-            foldModelBuilt = true
+            foldModelBuiltRevision = nil
             applyFoldVisibility()
             return
         }
@@ -1357,13 +1358,12 @@ class EditorContainer: NSView {
 
     private func rebuildFoldModel(for document: DocumentModel) {
         foldModelRebuildCount += 1
+        foldModelBuiltRevision = document.textRevision
         guard let language = Language(rawValue: document.language),
               let definition = LexerDefinitions.definition(for: language) else {
             // Plain text (and any language without a definition) has nothing
             // structural to fold.
             foldModel = nil
-            foldModelIsStale = false
-            foldModelBuilt = true
             applyFoldVisibility()
             return
         }
@@ -1372,23 +1372,27 @@ class EditorContainer: NSView {
         foldModel = FoldModel(text: document.text,
                               definition: definition,
                               foldState: state)
-        foldModelIsStale = false
-        foldModelBuilt = true
         applyFoldVisibility()
     }
 
-    /// Recomputes foldable ranges after an edit, but only when the gutter or a
-    /// fold gesture actually needs them. Edits made while a fold is collapsed
+    /// Recomputes foldable ranges after an edit, but only when the document's
+    /// text actually changed since the last build and the gutter or a fold
+    /// gesture actually needs them. Edits made while a fold is collapsed
     /// rebuild eagerly so the hidden ranges stay valid.
     private func refreshFoldModelIfStale() {
-        // A bound document with no cached model is effectively stale too —
-        // UNLESS the model was already built and is legitimately nil (plain
-        // text): rebuildFoldModel clears the stale flag after building, so
-        // foldModelBuilt distinguishes "never built" (lazy) from "built, empty"
-        // (terminal) and keeps the nil path from recursing through
-        // applyFoldVisibility -> foldModel getter -> here.
-        guard foldModelIsStale || (cachedFoldModel == nil && !foldModelBuilt),
-              let document = boundDocument else { return }
+        guard let document = boundDocument else { return }
+        // The model is current when it was built for the document's present
+        // text revision. A nil `foldModelBuiltRevision` means nothing has been
+        // built for this binding, so the first access rebuilds even when the
+        // revision is unchanged (e.g. plain text at revision 0, which
+        // legitimately builds to nil). This is also the single guard that keeps
+        // the nil path from recursing through applyFoldVisibility -> foldModel
+        // getter -> here: once built, the recorded revision equals the
+        // document's, so the getter returns the cached model without rebuilding.
+        if let builtRevision = foldModelBuiltRevision,
+           builtRevision == document.textRevision {
+            return
+        }
         rebuildFoldModel(for: document)
     }
 
@@ -1731,18 +1735,16 @@ class EditorContainer: NSView {
         }
 
         guard let model = cachedFoldModel else {
-            // Plain-text binding (nil model, built=true): the edit may have
-            // introduced foldable structure, so the model must rebuild on next
-            // access. Without this, text that BECOMES foldable is invisible to
-            // fold commands until an unrelated rebuild happens.
-            foldModelIsStale = true
+            // Plain-text binding (nil model): the edit may have introduced
+            // foldable structure. The revision bump alone makes
+            // `refreshFoldModelIfStale` rebuild on next access; there is no
+            // fold state to remap here.
             return
         }
 
         guard !model.foldState.isEmpty else {
             // No fold is collapsed, so visibility cannot change. Defer the
             // O(document) fold discovery until markers are next drawn.
-            foldModelIsStale = true
             return
         }
 
@@ -1754,7 +1756,6 @@ class EditorContainer: NSView {
         // composing correctly before the next refresh.
         let state = foldStates[document.id] ?? document.foldState
         adoptFoldState(state.remapped(for: edit), for: document)
-        foldModelIsStale = true
     }
 
     /// Hands the model's hidden ranges to the glyph hider and relayouts when

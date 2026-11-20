@@ -215,6 +215,15 @@ public struct FoldModel {
     /// ``FoldRange`` is just a span and its kind does not record nesting.
     public let foldDepths: [FoldRange: Int]
 
+    /// 1-based logical line each foldable range starts on.
+    ///
+    /// Derived at build time in a single pass over the text (the ranges are
+    /// sorted by location, so one scan maps every start to its line). Marker
+    /// derivation reads this through ``startingLine(of:)`` instead of calling
+    /// `GutterGeometry.logicalLine` per fold, which was O(document) per marker
+    /// on every gutter draw.
+    private let foldStartLines: [FoldRange: Int]
+
     /// Collapsed ranges, persisted independently of `foldableRanges`.
     public private(set) var foldState: FoldState
 
@@ -231,6 +240,8 @@ public struct FoldModel {
             configuration: configuration
         )
         self.foldDepths = FoldModel.computeFoldDepths(for: self.foldableRanges)
+        self.foldStartLines = FoldModel.computeFoldStartLines(for: self.foldableRanges,
+                                                              in: text)
         self.foldState = foldState
     }
 
@@ -262,6 +273,14 @@ public struct FoldModel {
     /// another fold, and so on.
     public func depth(of fold: FoldRange) -> Int? {
         foldDepths[fold]
+    }
+
+    /// 1-based logical line `fold` starts on.
+    ///
+    /// Read from the build-time mapping (O(1)); falls back to a direct line
+    /// scan for a range not present in the model.
+    public func startingLine(of fold: FoldRange) -> Int {
+        foldStartLines[fold] ?? lineNumber(of: fold.location)
     }
 
     /// Every foldable range at `depth`, in model order.
@@ -518,23 +537,89 @@ public struct FoldModel {
 
     /// Depth of each range = 1 + the number of ranges that strictly contain it.
     ///
-    /// Ranges nest or are disjoint (fold construction is stack based), so no
-    /// partial overlaps complicate the count. Equal spans are the same fold.
+    /// A fold `G` strictly contains `F` when `G.location <= F.location` and
+    /// `G.upperBound >= F.upperBound` with `G != F` (equal spans are deduped, so
+    /// a same-location equal-length pair never arises). `foldableRanges` arrives
+    /// sorted by location — outer before nested at a shared offset — so every
+    /// container of a fold precedes it in the array.
+    ///
+    /// Counting, for each fold, how many *preceding* folds end at or after its
+    /// own end is a 2D dominance query. A Fenwick tree over the
+    /// coordinate-compressed upper bounds answers it in O(log folds) per fold:
+    /// O(folds log folds) total instead of the old O(folds²) pairwise scan that
+    /// stalled large files on every keystroke.
     private static func computeFoldDepths(for ranges: [FoldRange]) -> [FoldRange: Int] {
         var depths: [FoldRange: Int] = [:]
         depths.reserveCapacity(ranges.count)
-        for fold in ranges {
-            var depth = 1
-            for other in ranges where other != fold {
-                if other.location <= fold.location,
-                   other.upperBound >= fold.upperBound,
-                   other.length > fold.length {
-                    depth += 1
-                }
+        guard !ranges.isEmpty else { return depths }
+
+        // Coordinate-compress upper bounds to contiguous 0-based ranks.
+        let distinctBounds = Array(Set(ranges.map(\.upperBound))).sorted()
+        let rank: [Int: Int] = Dictionary(uniqueKeysWithValues:
+            distinctBounds.enumerated().map { ($1, $0) })
+
+        // Fenwick tree keyed by rank (1-based internally). `insert` adds one
+        // fold at a bound; `countStrictlyBelow` returns how many inserted folds
+        // end at a bound smaller than `bound`.
+        var tree = [Int](repeating: 0, count: distinctBounds.count + 1)
+        func insert(_ bound: Int) {
+            var i = rank[bound]! + 1
+            while i < tree.count {
+                tree[i] += 1
+                i += i & (-i)
             }
-            depths[fold] = depth
+        }
+        func countStrictlyBelow(_ bound: Int) -> Int {
+            var sum = 0
+            var i = rank[bound]!
+            while i > 0 {
+                sum += tree[i]
+                i -= i & (-i)
+            }
+            return sum
+        }
+
+        var inserted = 0
+        for fold in ranges {
+            // Every fold already inserted starts at or before this fold, so it
+            // contains this fold exactly when it also ends at or after it.
+            // (Closed siblings and partial overlaps end earlier and drop out.)
+            depths[fold] = 1 + (inserted - countStrictlyBelow(fold.upperBound))
+            insert(fold.upperBound)
+            inserted += 1
         }
         return depths
+    }
+
+    /// Starting 1-based logical line of every foldable range, computed in a
+    /// single pass over the text.
+    ///
+    /// `ranges` is sorted by location, so one scan maps each start to its line
+    /// without the O(document) `logicalLine` call the marker layer used to make
+    /// per fold on every gutter draw.
+    private static func computeFoldStartLines(for ranges: [FoldRange],
+                                              in text: String) -> [FoldRange: Int] {
+        var lines: [FoldRange: Int] = [:]
+        lines.reserveCapacity(ranges.count)
+        guard !ranges.isEmpty else { return lines }
+
+        var foldIndex = 0
+        var line = 1
+        var offset = 0
+        for unit in text.utf16 {
+            while foldIndex < ranges.count, ranges[foldIndex].location == offset {
+                lines[ranges[foldIndex]] = line
+                foldIndex += 1
+            }
+            offset += 1
+            if unit == 10 { line += 1 } // "\n"
+        }
+        // A fold starting exactly at the text length sits on the final line.
+        while foldIndex < ranges.count {
+            lines[ranges[foldIndex]] = line
+            foldIndex += 1
+        }
+        return lines
     }
 
     private static func computeFoldableRanges(in text: String,

@@ -169,6 +169,24 @@ final class EditorWiringCoverageTests: XCTestCase {
         XCTAssertEqual(editor.foldMarkers[1], .expanded)
     }
 
+    func testFoldMarginMarkersMapFoldStartLinesWithoutPerFoldLineScan() {
+        let text = "a {\n    b {\n        c\n    }\n}\nd {\n}\n"
+        let model = FoldModel(text: text, definition: LexerDefinition(
+            language: "Fixture",
+            rules: [],
+            brackets: [LexerDefinition.BracketPair(open: "{", close: "}")]
+        ))
+        let markers = FoldMargin.markers(for: model)
+
+        // Fold starts land on lines 1 (outer), 2 (inner), 6 (sibling). The
+        // derived markers must agree with `FoldModel.startingLine(of:)`, which
+        // replaces the old O(document)-per-fold logicalLine scan.
+        XCTAssertEqual(Set(markers.keys), [1, 2, 6])
+        XCTAssertEqual(markers[1], .expanded)
+        XCTAssertEqual(markers[2], .expanded)
+        XCTAssertEqual(markers[6], .expanded)
+    }
+
     func testHandleFoldEditMarksStaleForPlainTextEdit() {
         let doc = DocumentModel(text: "x")
         doc.setLanguage("Swift")
