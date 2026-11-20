@@ -109,7 +109,11 @@ final class SummaryDialogGapTests: XCTestCase {
 
         let history = controller.history(for: doc)
         let saved = try XCTUnwrap(history.menuEntries.first { $0.title.hasPrefix("Saved on") })
-        controller.revertToHistoryEntry(saved)
+        let item = NSMenuItem(title: saved.title,
+                              action: #selector(MainWindowController.revertToHistoryEntry(_:)),
+                              keyEquivalent: "")
+        item.representedObject = saved
+        controller.revertToHistoryEntry(item)
 
         XCTAssertEqual(doc.text, "original", "revert restores the exact snapshot")
         XCTAssertFalse(doc.unsavedChanges, "revert clears dirty")
@@ -127,7 +131,9 @@ final class SummaryDialogGapTests: XCTestCase {
         guard let saved = history.menuEntries.first(where: { $0.title.hasPrefix("Saved on") }) else {
             return XCTFail("save point missing")
         }
-        let item = NSMenuItem(title: saved.title, action: #selector(MainWindowController.revertToHistoryEntry(_:)))
+        let item = NSMenuItem(title: saved.title,
+                              action: #selector(MainWindowController.revertToHistoryEntry(_:)),
+                              keyEquivalent: "")
         item.representedObject = saved
         XCTAssertFalse(controller.validateMenuItem(item), "read-only docs refuse revert")
     }
@@ -140,6 +146,6 @@ final class SummaryDialogGapTests: XCTestCase {
         let menu = NSMenu()
         HexpadAppDelegate.populateChangeHistoryMenu(menu, controller: controller)
         XCTAssertTrue(menu.items.contains { $0.title == "No History" && !$0.isEnabled },
-                      "empty history shows a disabled row\n\(menu.items.map(\\.title))")
+                      "empty history shows a disabled row\n\(menu.items.map({ $0.title }))")
     }
 }

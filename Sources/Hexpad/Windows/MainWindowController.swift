@@ -869,6 +869,7 @@ class MainWindowController: NSViewController {
                                               height: tabBarHeight)
             pane.tabBar.frame.size.height = tabBarHeight
             pane.tabBar.fitWidthToClip()
+            pane.tabBar.updateOverflowState()
         }
 
         let editorTop = height - topInset
@@ -1285,7 +1286,6 @@ class MainWindowController: NSViewController {
         panel.title = "Open Folder as Workspace"
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
@@ -1305,6 +1305,31 @@ class MainWindowController: NSViewController {
         }
         workspace.showWindow(nil)
         workspace.window?.makeKeyAndOrderFront(nil)
+    }
+
+    // MARK: - Workspace panel toggle (Wave 6)
+
+    /// View > Folder as Workspace. Toggles the existing workspace panel:
+    /// hides it when visible, otherwise opens the picker and shows it (the
+    /// openFolderAsWorkspace path). No panel yet + cancel = no-op.
+    @objc func toggleWorkspacePanel(_ sender: Any?) {
+        if let panel = workspacePanelController, panel.window?.isVisible == true {
+            panel.close()
+            return
+        }
+        openFolderAsWorkspace()
+    }
+
+    /// The toggle is enabled whenever the app can show the panel (always);
+    /// the checkmark reflects live panel visibility.
+    func isWorkspacePanelVisible() -> Bool {
+        workspacePanelController?.window?.isVisible == true
+    }
+
+    /// Test seam (WorkspaceToggleTests): inject a panel without the modal
+    /// picker.
+    func setWorkspacePanelControllerForTest(_ panel: WorkspacePanelController) {
+        workspacePanelController = panel
     }
 
     // MARK: - Reload from Disk
@@ -4520,6 +4545,11 @@ extension MainWindowController: NSMenuItemValidation {
         if menuItem.action == #selector(MainWindowController.toggleFunctionList(_:)) {
             menuItem.state = isFunctionListVisible ? .on : .off
             return canShowFunctionList()
+        }
+        if menuItem.action == #selector(MainWindowController.toggleWorkspacePanel(_:)) {
+            // Checkmarked while the workspace panel is open, like Document Map.
+            menuItem.state = isWorkspacePanelVisible() ? .on : .off
+            return true
         }
         if menuItem.action == #selector(MainWindowController.showRunCommandDialog(_:)) {
             return canRunCommand()

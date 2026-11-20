@@ -183,6 +183,15 @@ extension HexpadAppDelegate {
         viewMenu.addItem(showSymbolItem)
 
         viewMenu.addItem(functionListItem)
+        // Wave 6: Folder as Workspace's toggle. The panel itself shipped earlier
+        // (openFolderAsWorkspace), but the View menu had no on/off item. Check-
+        // marked like Document Map; checkmark + enablement come from validation
+        // reading the live panel visibility.
+        let workspaceItem = NSMenuItem(title: "Folder as Workspace",
+                                       action: #selector(MainWindowController.toggleWorkspacePanel(_:)),
+                                       keyEquivalent: "")
+        workspaceItem.target = nil
+        viewMenu.addItem(workspaceItem)
         viewMenu.addItem(.separator())
         viewMenu.addItem(foldAllItem)
         viewMenu.addItem(unfoldAllItem)

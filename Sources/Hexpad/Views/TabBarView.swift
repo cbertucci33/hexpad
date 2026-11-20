@@ -59,6 +59,19 @@ class TabBarView: NSView {
     /// opening a modal menu during a unit test.
     private(set) var lastContextMenu: NSMenu?
 
+    // MARK: - Overflow arrows (Wave 6, V19k-4 remainder)
+    //
+    // N++ shows ◀ ▶ arrows when the tab strip overflows. The Mac equivalent:
+    // the bar lives in an NSScrollView with autohiding scrollers, so two-finger
+    // scroll and Cmd+wheel already navigate overflow — these chevrons are the
+    // visible affordance for mice/trackpad-click users. They appear only while
+    // the strip overflows its clip and scroll the clip view by one tab-width
+    // per click.
+    private let leftOverflowButton = NSButton(title: "◀", target: nil, action: nil)
+    private let rightOverflowButton = NSButton(title: "▶", target: nil, action: nil)
+    /// Test seam: whether the strip currently overflows (arrows should show).
+    private(set) var isOverflowing = false
+
     /// Settings > Tab Bar: drag reordering disabled while locked.
     var lockTabBar = false
     /// Settings > Tab Bar: a double-click on a tab posts the close request.
@@ -85,9 +98,57 @@ class TabBarView: NSView {
         super.init(frame: .zero)
         wantsLayer = true
         refreshChromeColors()
+        setupOverflowButtons()
         
         NotificationCenter.default.addObserver(self, selector: #selector(selectedIndexDidChange), name: NSNotification.Name("TabStoreSelectedIndexDidChange"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(preferencesDidChange(_:)), name: .preferencesDidChange, object: nil)
+    }
+
+    /// Builds the two overflow chevrons (hidden by default; shown by
+    /// updateOverflowState when the strip overflows).
+    private func setupOverflowButtons() {
+        for (button, action) in [(leftOverflowButton, #selector(scrollLeftClicked)),
+                                 (rightOverflowButton, #selector(scrollRightClicked))] {
+            button.isBordered = false
+            button.font = NSFont.systemFont(ofSize: 11)
+            button.target = self
+            button.action = action
+            button.isHidden = true
+            button.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(button)
+        }
+        NSLayoutConstraint.activate([
+            leftOverflowButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
+            leftOverflowButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            rightOverflowButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
+            rightOverflowButton.centerYAnchor.constraint(equalTo: centerYAnchor)
+        ])
+    }
+
+    /// Recomputes overflow after every rebuild/resize: the strip overflows
+    /// when the tabs' total width exceeds the clip view's width.
+    func updateOverflowState() {
+        let clipWidth = enclosingScrollView?.contentSize.width ?? bounds.width
+        let totalTabsWidth = CGFloat(tabStore.count) * (140 + 2) - 2
+        isOverflowing = tabStore.count > 0 && totalTabsWidth > clipWidth
+        leftOverflowButton.isHidden = !isOverflowing
+        rightOverflowButton.isHidden = !isOverflowing
+    }
+
+    @objc func scrollLeftClicked() {
+        scrollOverflow(by: -142) // one tab (140) + spacing (2)
+    }
+
+    @objc func scrollRightClicked() {
+        scrollOverflow(by: 142)
+    }
+
+    private func scrollOverflow(by delta: CGFloat) {
+        guard let scrollView = enclosingScrollView else { return }
+        var origin = scrollView.contentView.bounds.origin
+        origin.x += delta
+        origin.x = max(0, min(origin.x, max(0, frame.width - scrollView.contentSize.width)))
+        scrollView.contentView.setBoundsOrigin(origin)
     }
     
     required init?(coder: NSCoder) {
@@ -156,6 +217,7 @@ class TabBarView: NSView {
         }
         
         fitWidthToClip()
+        updateOverflowState()
     }
 
     /// Double-clicking the empty part of the bar creates a new tab (Notepad++

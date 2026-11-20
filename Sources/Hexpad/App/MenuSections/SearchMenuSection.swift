@@ -90,6 +90,14 @@ extension HexpadAppDelegate {
                                       keyEquivalent: "")
         goToLineItem.target = self
         searchMenu.addItem(goToLineItem)
+        // Wave 6: Search > Find Characters in Range… (N++ parity, docs item
+        // 27). Delegate-targeted like Go to...; the app delegate owns the
+        // reusable dialog and resolves the focused editor. Unbound.
+        let charactersInRangeItem = NSMenuItem(title: "Find Characters in Range…",
+                                               action: #selector(findCharactersInRange(_:)),
+                                               keyEquivalent: "")
+        charactersInRangeItem.target = self
+        searchMenu.addItem(charactersInRangeItem)
         searchMenu.addItem(.separator())
 
         // N++ F4 / Shift+F4 walk the results window. Nil-targeted so the

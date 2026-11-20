@@ -722,6 +722,31 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     /// Test-visible so app tests can drive the dialog's OK path through the
     /// same instance the menu action creates.
     var goToLineController: GoToLineWindowController?
+    var findCharactersInRangeController: FindCharactersInRangeWindowController?
+
+    /// Search > Find Characters in Range… (N++ parity). Selects every char
+    /// whose code point falls in the typed range, via the editor's standard
+    /// multi-caret state.
+    @objc func findCharactersInRange(_ sender: Any?) {
+        guard let controller = activeController,
+              controller.tabStore.selectedDocument != nil,
+              let editor = controller.editorTextView else { return }
+
+        let dialog = findCharactersInRangeController ?? {
+            let made = FindCharactersInRangeWindowController()
+            made.onApply = { [weak controller] ranges in
+                guard let controller, !ranges.isEmpty else { return }
+                let carets = ranges.map { NSRange(location: $0.location, length: $0.length) }
+                controller.editorContainer?.setMultiCaretState(MultiCaretState(carets: carets),
+                                                                scrollPrimary: true)
+            }
+            findCharactersInRangeController = made
+            return made
+        }()
+        dialog.showWindow(nil)
+        dialog.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
 
     @objc func findInFiles() {
         if findInFilesController == nil {
