@@ -121,6 +121,18 @@ final class TabOverflowArrowTests: XCTestCase {
         XCTAssertTrue(bar.isOverflowing, "4 tabs overflow a 400pt clip")
     }
 
+    func testChevronsAreClipChromeNotDocumentContent() {
+        let bar = makeOverflowingBar(count: 4)
+        let scroll = bar.enclosingScrollView!
+        XCTAssertEqual(bar.overflowChevrons.count, 2)
+        XCTAssertTrue(bar.overflowChevrons.allSatisfy { $0.superview !== bar },
+                      "chevrons must not be subviews of the scrolling document view")
+        XCTAssertTrue(bar.overflowChevrons.allSatisfy { $0.superview === scroll },
+                      "chevrons are pinned to the scroll view's clip chrome")
+        XCTAssertTrue(bar.overflowChevrons.allSatisfy { !$0.isHidden },
+                      "overflowing strip shows both chevrons at the clip edges")
+    }
+
     func testScrollRightMovesClipOrigin() {
         let bar = makeOverflowingBar(count: 4)
         let scroll = bar.enclosingScrollView!

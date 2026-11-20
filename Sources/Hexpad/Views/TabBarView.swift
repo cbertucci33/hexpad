@@ -67,10 +67,24 @@ class TabBarView: NSView {
     // visible affordance for mice/trackpad-click users. They appear only while
     // the strip overflows its clip and scroll the clip view by one tab-width
     // per click.
+    //
+    // The chevrons are clip-level chrome, not subviews of the bar. The bar is
+    // the scroll view's document view and grows to the full tab-strip width, so
+    // children pinned to its leading/trailing anchors scroll offscreen with the
+    // content exactly when they are needed. They are instead pinned to the
+    // enclosing scroll view's edges, which stay fixed while the document view
+    // scrolls underneath.
     private let leftOverflowButton = NSButton(title: "◀", target: nil, action: nil)
     private let rightOverflowButton = NSButton(title: "▶", target: nil, action: nil)
     /// Test seam: whether the strip currently overflows (arrows should show).
     private(set) var isOverflowing = false
+    /// Test seam: the chevrons, which live in the enclosing scroll view's clip
+    /// chrome rather than in the scrolling document view.
+    var overflowChevrons: [NSButton] { [leftOverflowButton, rightOverflowButton] }
+    /// The scroll view the chevrons are currently installed in. Lets
+    /// `installOverflowChrome()` move them if the bar ever changes scroll views.
+    private weak var overflowChromeHost: NSScrollView?
+    private var overflowChromeConstraints: [NSLayoutConstraint] = []
 
     /// Settings > Tab Bar: drag reordering disabled while locked.
     var lockTabBar = false
@@ -105,7 +119,9 @@ class TabBarView: NSView {
     }
 
     /// Builds the two overflow chevrons (hidden by default; shown by
-    /// updateOverflowState when the strip overflows).
+    /// updateOverflowState when the strip overflows). They are styled here and
+    /// hosted by `installOverflowChrome()`, which pins them to the enclosing
+    /// scroll view rather than to the scrolling bar.
     private func setupOverflowButtons() {
         for (button, action) in [(leftOverflowButton, #selector(scrollLeftClicked)),
                                  (rightOverflowButton, #selector(scrollRightClicked))] {
@@ -115,19 +131,37 @@ class TabBarView: NSView {
             button.action = action
             button.isHidden = true
             button.translatesAutoresizingMaskIntoConstraints = false
-            addSubview(button)
         }
-        NSLayoutConstraint.activate([
-            leftOverflowButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
-            leftOverflowButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            rightOverflowButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
-            rightOverflowButton.centerYAnchor.constraint(equalTo: centerYAnchor)
-        ])
+    }
+
+    /// Installs the chevrons as clip-level chrome in the enclosing scroll view.
+    /// Called from `updateOverflowState()` so a bar first reloaded before it is
+    /// added to a scroll view still gets its arrows. The scroll view's anchors
+    /// are fixed while the document view scrolls, so the chevrons stay visible
+    /// at the clip edges during overflow.
+    private func installOverflowChrome() {
+        guard let scrollView = enclosingScrollView,
+              overflowChromeHost !== scrollView else { return }
+        overflowChromeConstraints.forEach { $0.isActive = false }
+        overflowChromeConstraints = []
+        overflowChromeHost = scrollView
+        for button in [leftOverflowButton, rightOverflowButton] {
+            button.removeFromSuperview()
+            scrollView.addSubview(button)
+        }
+        overflowChromeConstraints = [
+            leftOverflowButton.leadingAnchor.constraint(equalTo: scrollView.leadingAnchor, constant: 2),
+            leftOverflowButton.centerYAnchor.constraint(equalTo: scrollView.centerYAnchor),
+            rightOverflowButton.trailingAnchor.constraint(equalTo: scrollView.trailingAnchor, constant: -2),
+            rightOverflowButton.centerYAnchor.constraint(equalTo: scrollView.centerYAnchor)
+        ]
+        NSLayoutConstraint.activate(overflowChromeConstraints)
     }
 
     /// Recomputes overflow after every rebuild/resize: the strip overflows
     /// when the tabs' total width exceeds the clip view's width.
     func updateOverflowState() {
+        installOverflowChrome()
         let clipWidth = enclosingScrollView?.contentSize.width ?? bounds.width
         let totalTabsWidth = CGFloat(tabStore.count) * (140 + 2) - 2
         isOverflowing = tabStore.count > 0 && totalTabsWidth > clipWidth
