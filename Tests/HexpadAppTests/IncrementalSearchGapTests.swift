@@ -91,8 +91,9 @@ final class IncrementalSearchGapTests: XCTestCase {
         bar.performSearch()
         XCTAssertEqual(bar.matches.count, 3, "case-insensitive by default")
 
-        bar.matchCaseButton.state = .on
-        bar.matchCaseButton.performClick(nil)
+        bar.matchCaseButton.state = .off
+        bar.matchCaseButton.performClick(nil) // toggles to .on
+        bar.performSearch()
         XCTAssertEqual(bar.matches.count, 1, "match case filters to exact casing")
     }
 
@@ -105,8 +106,8 @@ final class IncrementalSearchGapTests: XCTestCase {
         bar.performSearch()
         XCTAssertNotNil(bar.highlightAllButton)
         XCTAssertNotNil(bar.countButton)
-        bar.countButton.state = .off
-        bar.countButton.performClick(nil)
+        bar.countButton.state = .on
+        bar.countButton.performClick(nil) // toggles to .off
         XCTAssertEqual(bar.matchCountLabel.stringValue, "")
     }
 
