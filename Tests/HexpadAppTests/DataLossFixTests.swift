@@ -126,4 +126,37 @@ final class DataLossFixTests: XCTestCase {
         XCTAssertFalse(controller.saveDocument(doc))
         print("RETURNED")
     }
+
+    // MARK: - Quit Save All aborts on failure
+
+    func testSaveAllDocumentsReturnsFalseOnFailedSave() throws {
+        let controller = makeController()
+        let blocker = directory.appendingPathComponent("blocker")
+        try "x".write(to: blocker, atomically: true, encoding: .utf8)
+        let doc = DocumentModel(text: "dirty\\n",
+                                filePath: directory.appendingPathComponent("blocker/child.txt"))
+        doc.setModified(true)
+        select([doc], in: controller)
+        XCTAssertTrue(doc.unsavedChanges)
+        XCTAssertFalse(controller.saveAllDocuments(),
+                       "a failed Save All write must report failure")
+    }
+
+    func testSaveAllDocumentsReturnsTrueWhenNothingDirty() {
+        let controller = makeController()
+        let doc = DocumentModel(text: "clean\\n")
+        select([doc], in: controller)
+        XCTAssertTrue(controller.saveAllDocuments())
+    }
+
+    func testQuitResolutionSaveAllFailureAborts() {
+        XCTAssertEqual(HexpadAppDelegate.quitResolution(dirtyCount: 2,
+                                                       response: .alertFirstButtonReturn,
+                                                       saveSucceeded: false),
+                       .terminateCancel)
+        XCTAssertEqual(HexpadAppDelegate.quitResolution(dirtyCount: 2,
+                                                       response: .alertFirstButtonReturn,
+                                                       saveAllSucceeded: false),
+                       .terminateCancel)
+    }
 }

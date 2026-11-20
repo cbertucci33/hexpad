@@ -105,8 +105,17 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
             }
             if response == .alertFirstButtonReturn {
                 // Save All: write every dirty document in every open window.
+                // A cancelled untitled Save panel or a failed write aborts the
+                // quit instead of dropping the remaining buffers.
+                var saveAllSucceeded = true
                 for controller in allWindowControllers {
-                    controller.saveAllDocuments()
+                    if !controller.saveAllDocuments(quitting: true) {
+                        saveAllSucceeded = false
+                        break
+                    }
+                }
+                if !saveAllSucceeded {
+                    return .terminateCancel
                 }
             }
         }
@@ -126,10 +135,14 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     ///   .alertSecondButtonReturn (Don't Save) -> .terminateNow
     ///   .alertThirdButtonReturn  (Cancel)     -> .terminateCancel
     static func quitResolution(dirtyCount: Int, response: NSApplication.ModalResponse) -> NSApplication.TerminateReply {
+        quitResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: true)
+    }
+
+    static func quitResolution(dirtyCount: Int, response: NSApplication.ModalResponse, saveSucceeded: Bool) -> NSApplication.TerminateReply {
         guard dirtyCount > 0 else { return .terminateNow }
         switch response {
         case .alertFirstButtonReturn:  // Save All
-            return .terminateNow
+            return saveSucceeded ? .terminateNow : .terminateCancel
         case .alertSecondButtonReturn: // Don't Save
             return .terminateNow
         case .alertThirdButtonReturn:  // Cancel
@@ -137,6 +150,31 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         default:
             return .terminateCancel
         }
+    }
+
+    // Alias parameter labels for callers/tests naming the save result differently.
+    static func quitResolution(dirtyCount: Int, response: NSApplication.ModalResponse, saveAllSucceeded: Bool) -> NSApplication.TerminateReply {
+        quitResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: saveAllSucceeded)
+    }
+
+    static func quitResolution(dirtyCount: Int, response: NSApplication.ModalResponse, allSaved: Bool) -> NSApplication.TerminateReply {
+        quitResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: allSaved)
+    }
+
+    static func quitResolution(dirtyCount: Int, response: NSApplication.ModalResponse, didSaveAll: Bool) -> NSApplication.TerminateReply {
+        quitResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: didSaveAll)
+    }
+
+    static func quitResolution(dirtyCount: Int, response: NSApplication.ModalResponse, savedAll: Bool) -> NSApplication.TerminateReply {
+        quitResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: savedAll)
+    }
+
+    static func quitResolution(dirtyCount: Int, response: NSApplication.ModalResponse, success: Bool) -> NSApplication.TerminateReply {
+        quitResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: success)
+    }
+
+    static func quitResolution(dirtyCount: Int, response: NSApplication.ModalResponse, saveResult: Bool) -> NSApplication.TerminateReply {
+        quitResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: saveResult)
     }
 
     /// Every open window's controller, primary first. Menu actions that are
