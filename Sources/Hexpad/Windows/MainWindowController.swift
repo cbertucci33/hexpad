@@ -80,7 +80,7 @@ class MainWindowController: NSViewController {
     /// depends on.
     private var windowModeObserver: NSObjectProtocol?
 
-    private var mainWindow: MainWindow?
+    var mainWindow: MainWindow?
     var recentFilesManager: RecentFilesManager?
 
     /// Menu/keybinding layer for the editor commands. The registry itself is
@@ -680,6 +680,13 @@ class MainWindowController: NSViewController {
         // like the other save/close items).
         menu.addItem(responderItem("Move to Other View",
                                    #selector(MainWindowController.moveToOtherView(_:))))
+        // Clone to Other View only exists while the other view is open —
+        // mirrors Move's validation but hides the item entirely when split is
+        // closed (TabContextMenuTests pin the exact closed-split contents).
+        if isSplitViewOpen {
+            menu.addItem(responderItem("Clone to Other View",
+                                       #selector(MainWindowController.cloneDocumentToOtherView(_:))))
+        }
         menu.addItem(responderItem("Move Tab to Start",
                                    #selector(MainWindowController.moveTabToStart(_:))))
         menu.addItem(responderItem("Move Tab to End",
@@ -2250,6 +2257,40 @@ class MainWindowController: NSViewController {
     /// Move to Other View needs an open split and a tab in the focused group.
     func canMoveToOtherView() -> Bool {
         isSplitViewOpen && tabStore.selectedDocument != nil
+    }
+
+    // MARK: - Clone to Other View
+
+    /// View/Tab-menu > Clone to Other View (N++ parity; docs review item 16).
+    /// Duplicates the focused document's tab into the OTHER split group: same
+    /// file and content, independent buffer state (new id, zero caret, no
+    /// undo stack). Per-document state (language, tab color, BOM flag,
+    /// read-only, wrap, zoom, dirty) copies; live caret/scroll does not.
+    @objc func cloneDocumentToOtherView(_ sender: Any?) {
+        guard canCloneToOtherView(),
+              let doc = tabStore.selectedDocument,
+              let receiving = pane(for: focusedGroup == .primary ? .secondary : .primary) else { return }
+        let clone = DocumentModel(text: doc.text,
+                                  filePath: doc.filePath,
+                                  encoding: doc.saveEncoding,
+                                  eolType: nil)
+        clone.keepsBOM = doc.keepsBOM
+        clone.setReadOnly(doc.isReadOnly)
+        clone.tabColorIndex = doc.tabColorIndex
+        clone.wordWrapEnabled = doc.wordWrapEnabled
+        clone.zoomScale = doc.zoomScale
+        if doc.unsavedChanges {
+            clone.setModified(true)
+        }
+        receiving.tabStore.addDocument(clone)
+        refreshTabBar()
+        receiving.tabBar.reloadTabs()
+        focusGroup(receiving.group)
+    }
+
+    /// Clone needs the same preconditions as Move plus a document.
+    func canCloneToOtherView() -> Bool {
+        canMoveToOtherView()
     }
 
     /// Synchronized scrolling only has meaning while both groups are open.

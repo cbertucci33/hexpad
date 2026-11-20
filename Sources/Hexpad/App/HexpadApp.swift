@@ -20,7 +20,28 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     /// Windows opened with File > New Window. Retained here so their editors and
     /// watchers stay alive; removed when the window closes.
     private var extraWindowControllers: [MainWindowController] = []
+
+    /// Test seam (ShortcutMapper/NewInstance tests): the extra windows opened
+    /// via File > New Window, primary excluded.
+    var additionalWindowControllersForTest: [MainWindowController] {
+        extraWindowControllers
+    }
+
+    /// Test seam: closes every additional window (headless tests have no
+    /// window-server lifecycle to lean on).
+    func closeAllAdditionalWindowsForTest() {
+        for controller in extraWindowControllers {
+            controller.mainWindow?.close()
+        }
+        extraWindowControllers.removeAll()
+    }
+
+    /// Test seam: count of live windows the delegate owns (primary + extras).
+    var numberOfWindows: Int {
+        (windowController != nil ? 1 : 0) + extraWindowControllers.count
+    }
     private var preferencesWindowController: PreferencesWindowController?
+    private var shortcutMapperWindowController: ShortcutMapperWindowController?
     private var characterPanelController: CharacterPanelWindowController?
     private let recentFilesManager = RecentFilesManager()
     var openRecentMenu: NSMenu?
@@ -572,6 +593,22 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         preferencesWindowController?.targetController = activeController
         preferencesWindowController?.showWindow(nil)
         preferencesWindowController?.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    // MARK: - Shortcut Mapper
+
+    /// Settings > Shortcut Mapper… (N++ Settings > Shortcut Mapper, read-only
+    /// basics in v1). Reuses one window for the app's lifetime, like
+    /// Preferences. The table walks the real menu tree so displayed chords
+    /// always reflect the live menus (KeybindingStore overrides included).
+    @objc func showShortcutMapper() {
+        if shortcutMapperWindowController == nil {
+            shortcutMapperWindowController = ShortcutMapperWindowController()
+        }
+        shortcutMapperWindowController?.reloadData(from: NSApp.mainMenu)
+        shortcutMapperWindowController?.showWindow(nil)
+        shortcutMapperWindowController?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 

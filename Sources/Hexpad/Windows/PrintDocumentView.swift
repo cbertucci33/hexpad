@@ -227,7 +227,9 @@ final class PrintDocumentView: NSView {
         drawFooter(pageIndex: pageIndex, pageOriginY: pageOriginY)
     }
 
-    private func drawHeader(pageOriginY: CGFloat) {
+    /// Test seam (PrintHeaderFooterTests): the composed header string —
+    /// filename, or "filename — path" when the path fits the page width.
+    var headerText: String {
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 9),
             .foregroundColor: NSColor.darkGray
@@ -240,9 +242,16 @@ final class PrintDocumentView: NSView {
                 header = candidate
             }
         }
-        let y = pageOriginY + (Self.margin - 12)
-        NSAttributedString(string: header, attributes: attributes)
-            .draw(at: NSPoint(x: Self.margin, y: y))
+        return header
+    }
+
+    private func drawHeader(pageOriginY: CGFloat) {
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 9),
+            .foregroundColor: NSColor.darkGray
+        ]
+        NSAttributedString(string: headerText, attributes: attributes)
+            .draw(at: NSPoint(x: Self.margin, y: pageOriginY + (Self.margin - 12)))
     }
 
     private func drawPageLines(pageIndex: Int, pageOriginY: CGFloat) {
@@ -276,12 +285,20 @@ final class PrintDocumentView: NSView {
         NSGraphicsContext.restoreGraphicsState()
     }
 
+    /// Test seam (PrintHeaderFooterTests): the composed footer string.
+    func footerText(pageIndex: Int) -> String {
+        "Page \(pageIndex + 1) of \(pageCount)"
+    }
+
+    /// Test seam: the paginated page count (valid after knowsPageRange).
+    var pageCountForTest: Int { pageCount }
+
     private func drawFooter(pageIndex: Int, pageOriginY: CGFloat) {
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 9),
             .foregroundColor: NSColor.darkGray
         ]
-        let footer = "Page \(pageIndex + 1) of \(pageCount)"
+        let footer = footerText(pageIndex: pageIndex)
         let size = (footer as NSString).size(withAttributes: attributes)
         let y = pageOriginY + Self.pageSize.height - Self.margin + 4
         NSAttributedString(string: footer, attributes: attributes)

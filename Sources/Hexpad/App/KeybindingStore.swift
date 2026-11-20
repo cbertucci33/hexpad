@@ -173,6 +173,18 @@ enum KeybindingStore {
         return (key, mask)
     }
 
+    /// Menu-friendly rendering for a raw `(keyEquivalent, modifierMask)` pair.
+    ///
+    /// The Shortcut Mapper walks the live menus, where a chord exists only as
+    /// those two values; an empty key renders as "None".
+    static func displayString(keyEquivalent: String,
+                              modifierMask: NSEvent.ModifierFlags) -> String {
+        guard !keyEquivalent.isEmpty else { return "None" }
+        return displayString(for: EditorCommandBinding(identifier: "",
+                                                        keyEquivalent: keyEquivalent,
+                                                        modifierMask: modifierMask))
+    }
+
     /// Menu-friendly rendering: ⌃⌥⇧⌘ order, arrow glyphs for AppKit's
     /// private-use function-key scalars, uppercase for everything else.
     static func displayString(for binding: EditorCommandBinding?) -> String {
