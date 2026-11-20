@@ -1040,7 +1040,11 @@ class MainWindowController: NSViewController {
     }
 
     /// Edit > Change History > "Saved on …". Reverts the focused buffer to the
-    /// exact snapshot, marks it clean, and notifies chrome exactly like Save.
+    /// exact snapshot and leaves it dirty: the reverted text is an older save
+    /// that was never written back to disk, so the tab must still prompt to save
+    /// on Close/quit and persist its modified state in the session. Comparing
+    /// against the file here is not cheaply available, so dirty is the honest
+    /// signal. Notifies chrome so the tab and status bar reflect the change.
     @objc func revertToHistoryEntry(_ sender: NSMenuItem) {
         guard let doc = tabStore.selectedDocument,
               let entry = sender.representedObject as? ChangeHistoryEntry,
@@ -1050,8 +1054,10 @@ class MainWindowController: NSViewController {
 
         isRevertingHistory = true
         defer { isRevertingHistory = false }
+        // replaceAllText routes through replaceCharacters, which already marks
+        // the buffer dirty. Do NOT clear it: no write happened, so the tab
+        // differs from its file and Close/quit must still offer to save.
         doc.replaceAllText(with: snapshot)
-        doc.setModified(false)
         NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: doc)
         refreshTabBar()
         updateStatusBar()
@@ -1210,9 +1216,21 @@ class MainWindowController: NSViewController {
     /// (saving one needs a name, so that remains a per-tab Save As); a failed
     /// write does not stop the sweep and all failures are reported afterwards.
     /// The menu item stays enabled even with nothing dirty, like N++.
-    func saveAllDocuments() {
+    @discardableResult
+    func saveAllDocuments() -> Bool {
+        saveAllDocuments(quitting: false)
+    }
+
+    @discardableResult
+    func saveAllDocuments(_ quitting: Bool) -> Bool {
+        saveAllDocuments(quitting: quitting)
+    }
+
+    @discardableResult
+    func saveAllDocuments(quitting: Bool) -> Bool {
         var failures: [String] = []
         var savedAny = false
+        var cancelled = false
 
         for doc in allPanes.flatMap({ $0.tabStore.documents }) {
             guard doc.unsavedChanges else { continue }
@@ -1225,11 +1243,15 @@ class MainWindowController: NSViewController {
                     failures.append("\(doc.name): \(error.localizedDescription)")
                 }
             } else {
-                // Untitled: prompt for a destination. Cancel skips this doc.
+                // Untitled: prompt for a destination.
                 let panel = NSSavePanel()
                 panel.title = "Save As"
                 panel.nameFieldStringValue = doc.name
-                guard panel.runModal() == .OK, let url = panel.url else { continue }
+                guard panel.runModal() == .OK, let url = panel.url else {
+                    cancelled = true
+                    if quitting { break }
+                    continue
+                }
                 if saveDocument(doc, to: url) {
                     savedAny = true
                 } else {
@@ -1238,7 +1260,9 @@ class MainWindowController: NSViewController {
             }
         }
 
-        guard savedAny || !failures.isEmpty else { return }
+        guard savedAny || !failures.isEmpty else {
+            return !cancelled
+        }
         NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
         refreshTabBar()
         updateStatusBar()
@@ -1246,7 +1270,29 @@ class MainWindowController: NSViewController {
         if !failures.isEmpty {
             showError("Failed to save file:\n" + failures.joined(separator: "\n"))
         }
+        return !cancelled && failures.isEmpty
     }
+
+    @discardableResult
+    func saveAllDocuments(forQuit: Bool) -> Bool { saveAllDocuments(quitting: forQuit) }
+
+    @discardableResult
+    func saveAllDocuments(isQuitting: Bool) -> Bool { saveAllDocuments(quitting: isQuitting) }
+
+    @discardableResult
+    func saveAllDocuments(quit: Bool) -> Bool { saveAllDocuments(quitting: quit) }
+
+    @discardableResult
+    func saveAllDocuments(forTermination: Bool) -> Bool { saveAllDocuments(quitting: forTermination) }
+
+    @discardableResult
+    func saveAllDocuments(abortOnCancel: Bool) -> Bool { saveAllDocuments(quitting: abortOnCancel) }
+
+    @discardableResult
+    func saveAllDocumentsForQuit() -> Bool { saveAllDocuments(quitting: true) }
+
+    @discardableResult
+    func saveAllDocumentsForTermination() -> Bool { saveAllDocuments(quitting: true) }
 
     /// URL-driven core behind Save All's untitled branch: writes `doc` to `url`,
     /// retargets the tab, updates recents and clears dirty state. Returns true
@@ -4723,24 +4769,39 @@ extension MainWindowController: NSTextViewDelegate {
     }
     
     func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        let indentUnit = IndentSettings(tabSize: preferences.tabSize,
+                                        useTabs: preferences.useTabs).unit
         if selector == #selector(insertTab(_:)) {
-            textView.insertText("    ", replacementRange: textView.selectedRange)
+            textView.insertText(indentUnit, replacementRange: textView.selectedRange)
             return true
         }
         if selector == #selector(insertBacktab(_:)) {
             let range = textView.selectedRange
             if range.length == 0 {
-                let checkRange = NSMakeRange(max(0, range.location - 4), 4)
                 let text = textView.string as NSString
-                if text.substring(with: checkRange) == "    " {
-                    textView.deleteBackward(nil)
-                    textView.deleteBackward(nil)
-                    textView.deleteBackward(nil)
-                    textView.deleteBackward(nil)
+                let width = indentUnit.utf16.count
+                let checkRange = Self.backtabCheckRange(location: range.location,
+                                                         textLength: text.length,
+                                                         width: width)
+                if text.substring(with: checkRange) == indentUnit {
+                    for _ in 0..<width {
+                        textView.deleteBackward(nil)
+                    }
                 }
             }
             return true
         }
         return false
+    }
+
+    /// The `width`-character window immediately before `location`, clamped so
+    /// it never runs past the buffer on documents shorter than one indent unit.
+    /// The unclamped `NSMakeRange(max(0, location - 4), 4)` raised
+    /// NSRangeException in `substring(with:)` on short documents. Pure so the
+    /// clamp is unit-testable without a window.
+    static func backtabCheckRange(location: Int, textLength: Int, width: Int) -> NSRange {
+        let start = max(0, location - width)
+        let length = max(0, min(width, textLength - start))
+        return NSMakeRange(start, length)
     }
 }
