@@ -27,6 +27,11 @@ final class FindInFilesWindowController: NSWindowController {
 
     private let chooseButton = NSButton(title: "Choose Folder...", target: nil, action: nil)
     private let folderLabel = NSTextField(labelWithString: "No folder chosen")
+    /// N++-style file-type filter (`*.swift;*.md`) and directory exclusion
+    /// filter (`node_modules;.build`). Both are parsed by
+    /// `SearchEngine.parseFilterGlobs` and applied during file discovery.
+    private let filtersField = NSTextField()
+    private let excludeField = NSTextField()
     private let patternField = NSSearchField()
     private let replaceField = NSSearchField()
     private let regexCheckbox = NSButton(checkboxWithTitle: "Regex", target: nil, action: nil)
@@ -79,11 +84,11 @@ final class FindInFilesWindowController: NSWindowController {
     var onOpenDocumentMatch: ((DocumentModel, NSRange) -> Void)?
 
     convenience init() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 420),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 452),
                               styleMask: [.titled, .closable, .resizable],
                               backing: .buffered, defer: false)
         window.title = "Find in Files"
-        window.minSize = NSSize(width: 420, height: 260)
+        window.minSize = NSSize(width: 420, height: 300)
         self.init(window: window)
         buildUI()
     }
@@ -95,37 +100,49 @@ final class FindInFilesWindowController: NSWindowController {
         chooseButton.target = self
         chooseButton.action = #selector(chooseFolder)
         chooseButton.bezelStyle = .rounded
-        chooseButton.frame = NSRect(x: 12, y: 386, width: 130, height: 24)
+        chooseButton.frame = NSRect(x: 12, y: 418, width: 130, height: 24)
         content.addSubview(chooseButton)
 
         folderLabel.font = NSFont.systemFont(ofSize: 11)
         folderLabel.textColor = .secondaryLabelColor
-        folderLabel.frame = NSRect(x: 150, y: 390, width: 458, height: 16)
+        folderLabel.frame = NSRect(x: 150, y: 422, width: 458, height: 16)
         folderLabel.autoresizingMask = [.width]
         content.addSubview(folderLabel)
 
+        filtersField.placeholderString = "Filters: *.swift;*.md"
+        filtersField.toolTip = "File types to search, separated by semicolons"
+        filtersField.frame = NSRect(x: 12, y: 386, width: 288, height: 24)
+        filtersField.autoresizingMask = [.width]
+        content.addSubview(filtersField)
+
+        excludeField.placeholderString = "Exclude: node_modules;.build"
+        excludeField.toolTip = "Folders to skip, separated by semicolons"
+        excludeField.frame = NSRect(x: 312, y: 386, width: 296, height: 24)
+        excludeField.autoresizingMask = [.minXMargin, .width]
+        content.addSubview(excludeField)
+
         patternField.placeholderString = "Search pattern"
-        patternField.frame = NSRect(x: 12, y: 352, width: 380, height: 24)
+        patternField.frame = NSRect(x: 12, y: 354, width: 380, height: 24)
         patternField.target = self
         patternField.action = #selector(runSearch)
         patternField.autoresizingMask = [.width]
         content.addSubview(patternField)
 
-        regexCheckbox.frame = NSRect(x: 400, y: 354, width: 70, height: 20)
+        regexCheckbox.frame = NSRect(x: 400, y: 356, width: 70, height: 20)
         content.addSubview(regexCheckbox)
-        caseCheckbox.frame = NSRect(x: 474, y: 354, width: 110, height: 20)
+        caseCheckbox.frame = NSRect(x: 474, y: 356, width: 110, height: 20)
         caseCheckbox.autoresizingMask = [.minXMargin]
         content.addSubview(caseCheckbox)
 
         searchButton.target = self
         searchButton.action = #selector(runSearch)
         searchButton.keyEquivalent = "\r"
-        searchButton.frame = NSRect(x: 590, y: 352, width: 20, height: 24)
+        searchButton.frame = NSRect(x: 590, y: 354, width: 20, height: 24)
         searchButton.autoresizingMask = [.minXMargin]
         content.addSubview(searchButton)
 
         replaceField.placeholderString = "Replace with"
-        replaceField.frame = NSRect(x: 12, y: 320, width: 380, height: 24)
+        replaceField.frame = NSRect(x: 12, y: 322, width: 380, height: 24)
         replaceField.autoresizingMask = [.width]
         content.addSubview(replaceField)
 
@@ -133,7 +150,7 @@ final class FindInFilesWindowController: NSWindowController {
         replaceAllButton.action = #selector(replaceAllInFiles)
         replaceAllButton.bezelStyle = .rounded
         replaceAllButton.font = NSFont.systemFont(ofSize: 12)
-        replaceAllButton.frame = NSRect(x: 400, y: 318, width: 170, height: 24)
+        replaceAllButton.frame = NSRect(x: 400, y: 320, width: 170, height: 24)
         replaceAllButton.autoresizingMask = [.minXMargin]
         content.addSubview(replaceAllButton)
 
@@ -166,7 +183,7 @@ final class FindInFilesWindowController: NSWindowController {
     /// Inputs that only make sense for directory search. Document-result mode
     /// hides them and grows the table into the freed space.
     private var fileInputControls: [NSView] {
-        [chooseButton, folderLabel, patternField, replaceField,
+        [chooseButton, folderLabel, filtersField, excludeField, patternField, replaceField,
          regexCheckbox, caseCheckbox, searchButton, replaceAllButton]
     }
 
@@ -176,9 +193,9 @@ final class FindInFilesWindowController: NSWindowController {
         }
         guard let content = window?.contentView else { return }
         let bottomInset: CGFloat = 34
-        // File mode leaves the search/replace control band above the table;
+        // File mode leaves the four-row control band above the table;
         // document mode only needs the close/scroll/status band.
-        let topInset: CGFloat = visible ? 114 : 10
+        let topInset: CGFloat = visible ? 146 : 10
         let height = max(80, content.bounds.height - bottomInset - topInset)
         resultsScrollView.frame = NSRect(x: 12, y: bottomInset,
                                          width: max(120, content.bounds.width - 24),
@@ -227,6 +244,17 @@ final class FindInFilesWindowController: NSWindowController {
 
     /// Status line text. Used by app tests.
     var statusText: String { statusLabel.stringValue }
+
+    /// Include globs parsed from the file-type filter field. Used by app tests.
+    var includeGlobs: [String] { SearchEngine.parseFilterGlobs(filtersField.stringValue) }
+    /// Exclude globs parsed from the directory-exclusion field. Used by app tests.
+    var excludeGlobs: [String] { SearchEngine.parseFilterGlobs(excludeField.stringValue) }
+
+    /// Test seam: installs the two filter fields without touching AppKit.
+    func setFiltersForTesting(include: String, exclude: String) {
+        filtersField.stringValue = include
+        excludeField.stringValue = exclude
+    }
 
     // MARK: - Group folding
 
@@ -375,7 +403,12 @@ final class FindInFilesWindowController: NSWindowController {
         replaceCounts = [:]
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let hits = SearchEngine.searchInFiles(directory: directory, pattern: pattern, options: options)
+            let includeGlobs = self?.includeGlobs ?? []
+            let excludeGlobs = self?.excludeGlobs ?? []
+            let hits = SearchEngine.searchInFiles(directory: directory, pattern: pattern,
+                                                  options: options,
+                                                  includeGlobs: includeGlobs,
+                                                  excludeGlobs: excludeGlobs)
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.results = hits
@@ -413,8 +446,12 @@ final class FindInFilesWindowController: NSWindowController {
         statusLabel.stringValue = "Replacing…"
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let includeGlobs = self?.includeGlobs ?? []
+            let excludeGlobs = self?.excludeGlobs ?? []
             let replaced = SearchEngine.replaceInFiles(directory: directory, pattern: pattern,
-                                                       replacement: replacement, options: options)
+                                                       replacement: replacement, options: options,
+                                                       includeGlobs: includeGlobs,
+                                                       excludeGlobs: excludeGlobs)
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.searchButton.isEnabled = true

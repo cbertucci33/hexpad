@@ -227,19 +227,19 @@ public final class SearchEngine {
     /// Files over `maxBytes` are skipped and non-UTF-8 files are decoded via a
     /// lossy fallback, so a stray binary or a 200MB log cannot stall or crash
     /// the whole search.
+    ///
+    /// `includeGlobs` / `excludeGlobs` are N++-style filters applied during file
+    /// discovery (see ``findFiles(in:includeGlobs:excludeGlobs:maxBytes:skipsHiddenFiles:)``);
+    /// empty filter lists keep the unfiltered behaviour.
     public static func searchInFiles(directory: URL, pattern: String, options: SearchOptions,
-                                     maxBytes: Int = 4 * 1024 * 1024) -> [(URL, [SearchMatch])] {
+                                     maxBytes: Int = 4 * 1024 * 1024,
+                                     includeGlobs: [String] = [],
+                                     excludeGlobs: [String] = []) -> [(URL, [SearchMatch])] {
         var results: [(URL, [SearchMatch])] = []
         guard !pattern.isEmpty else { return results }
-        guard let enumerator = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey], options: [.skipsHiddenFiles, .skipsPackageDescendants]) else {
-            return results
-        }
-        
-        for case let fileURL as URL in enumerator {
-            let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-            guard values?.isRegularFile == true else { continue }
-            if let size = values?.fileSize, size > maxBytes { continue }
-            
+
+        for fileURL in findFiles(in: directory, includeGlobs: includeGlobs,
+                                 excludeGlobs: excludeGlobs, maxBytes: maxBytes) {
             do {
                 let data = try Data(contentsOf: fileURL)
                 var text = String(data: data, encoding: .utf8)
@@ -256,48 +256,142 @@ public final class SearchEngine {
                 continue
             }
         }
-        
+
         return results
     }
-    
+
     /// Replace all matches in every searchable file under `directory` and
     /// report how many replacements each touched file received.
     ///
     /// Only UTF-8 files are rewritten: `searchInFiles` can lossily decode other
     /// encodings for reading, but writing that decoded text back would corrupt
     /// the original bytes. Files over `maxBytes` are skipped for the same reason
-    /// the search skips them.
+    /// the search skips them. The discovery filters behave exactly as they do
+    /// for ``searchInFiles``.
     public static func replaceInFiles(directory: URL, pattern: String, replacement: String,
                                       options: SearchOptions,
-                                      maxBytes: Int = 4 * 1024 * 1024) -> [(URL, Int)] {
+                                      maxBytes: Int = 4 * 1024 * 1024,
+                                      includeGlobs: [String] = [],
+                                      excludeGlobs: [String] = []) -> [(URL, Int)] {
         var results: [(URL, Int)] = []
         guard !pattern.isEmpty else { return results }
-        guard let enumerator = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey], options: [.skipsHiddenFiles, .skipsPackageDescendants]) else {
-            return results
-        }
-        
-        for case let fileURL as URL in enumerator {
-            let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-            guard values?.isRegularFile == true else { continue }
-            if let size = values?.fileSize, size > maxBytes { continue }
-            
+
+        for fileURL in findFiles(in: directory, includeGlobs: includeGlobs,
+                                 excludeGlobs: excludeGlobs, maxBytes: maxBytes) {
             do {
                 let data = try Data(contentsOf: fileURL)
                 guard let body = String(data: data, encoding: .utf8) else { continue }
                 let matches = search(body, pattern: pattern, options: options)
                 guard !matches.isEmpty else { continue }
-                
+
                 let newText = replace(body, pattern: pattern, replacement: replacement, options: options)
                 guard newText != body else { continue }
-                
+
                 try newText.write(to: fileURL, atomically: true, encoding: .utf8)
                 results.append((fileURL, matches.count))
             } catch {
                 continue
             }
         }
-        
+
         return results
+    }
+
+    // MARK: - Find in Files discovery filters
+
+    /// Parses an N++-style filter string into individual globs.
+    ///
+    /// N++ separates filters with semicolons (`*.cpp;*.h`); the box also accepts
+    /// whitespace-separated globs (`*.swift *.md`) because that is how the
+    /// filters are usually typed. Entries are trimmed and empty ones dropped, so
+    /// both spellings produce the same two globs.
+    public static func parseFilterGlobs(_ filter: String) -> [String] {
+        filter
+            .split(whereSeparator: { $0 == ";" || $0 == " " || $0 == "\t" || $0 == "\n" || $0 == "\r" })
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    /// True when `name` matches any glob in `patterns`.
+    ///
+    /// `*` matches any run of characters (including none), `?` matches exactly
+    /// one, and every other character is literal. Matching is case-insensitive
+    /// like N++'s filter box. An empty pattern list matches everything, which
+    /// is the "no filters = all files" rule.
+    public static func matchesGlob(_ name: String, patterns: [String]) -> Bool {
+        guard !patterns.isEmpty else { return true }
+        return patterns.contains { globMatches($0, name: name) }
+    }
+
+    private static func globMatches(_ pattern: String, name: String) -> Bool {
+        guard let regex = compileGlob(pattern) else { return false }
+        let range = NSRange(location: 0, length: (name as NSString).length)
+        return regex.firstMatch(in: name, options: [], range: range) != nil
+    }
+
+    /// Compiles one glob to an anchored, case-insensitive regex. Returns nil
+    /// only when the pattern cannot compile, which cannot happen for the
+    /// escaped forms built here but keeps the matcher total.
+    private static func compileGlob(_ pattern: String) -> NSRegularExpression? {
+        var regex = "^"
+        for character in pattern {
+            switch character {
+            case "*": regex += ".*"
+            case "?": regex += "."
+            default: regex += NSRegularExpression.escapedPattern(for: String(character))
+            }
+        }
+        regex += "$"
+        return try? NSRegularExpression(pattern: regex, options: [.caseInsensitive])
+    }
+
+    /// Discovers the regular files under `directory` that pass the include and
+    /// exclude filters, in FileManager enumeration order.
+    ///
+    /// - includeGlobs: file-name globs (`*.swift;*.md`). Empty means every file.
+    /// - excludeGlobs: globs matched against every path component below the
+    ///   root (directory names and the file name). Exclusion wins: a file in an
+    ///   excluded directory is dropped even when it matches an include glob.
+    /// - maxBytes: files larger than this are skipped, matching the search and
+    ///   replace ceilings.
+    /// - skipsHiddenFiles: preserves the pre-existing Find in Files behaviour
+    ///   (dotfiles are not walked). Pass false to search them; exclude globs
+    ///   still apply either way.
+    public static func findFiles(in directory: URL,
+                                 includeGlobs: [String] = [],
+                                 excludeGlobs: [String] = [],
+                                 maxBytes: Int? = nil,
+                                 skipsHiddenFiles: Bool = true) -> [URL] {
+        var options: FileManager.DirectoryEnumerationOptions = [.skipsPackageDescendants]
+        if skipsHiddenFiles { options.insert(.skipsHiddenFiles) }
+        guard let enumerator = FileManager.default.enumerator(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+            options: options
+        ) else { return [] }
+
+        let rootComponents = directory.standardizedFileURL.pathComponents
+        var files: [URL] = []
+        for case let fileURL as URL in enumerator {
+            let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard values?.isRegularFile == true else { continue }
+            if let maxBytes, let size = values?.fileSize, size > maxBytes { continue }
+
+            let components = fileURL.standardizedFileURL.pathComponents
+            guard components.count > rootComponents.count else { continue }
+            let relative = Array(components[rootComponents.count...])
+            guard !relative.isEmpty else { continue }
+
+            // Exclude wins: any path component (a directory name or the file
+            // itself) matching an exclude glob drops the file.
+            if excludeGlobs.contains(where: { glob in
+                relative.contains { globMatches(glob, name: $0) }
+            }) { continue }
+
+            if !matchesGlob(relative.last ?? "", patterns: includeGlobs) { continue }
+            files.append(fileURL)
+        }
+        return files
     }
 }
 

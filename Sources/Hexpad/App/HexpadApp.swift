@@ -682,6 +682,9 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Find in Files
 
     private var findInFilesController: FindInFilesWindowController?
+    /// Test-visible so app tests can drive the dialog's OK path through the
+    /// same instance the menu action creates.
+    var goToLineController: GoToLineWindowController?
 
     @objc func findInFiles() {
         if findInFilesController == nil {
@@ -693,6 +696,39 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         }
         findInFilesController?.showWindow(nil)
         findInFilesController?.window?.makeKeyAndOrderFront(nil)
+    }
+
+    // MARK: - Go to Line
+
+    /// Search > Go to.... Opens (or reuses) the small line-number dialog for
+    /// the focused document, seeded with the caret's current line and column.
+    /// The dialog only collects the number; `revealLine` performs the jump.
+    @objc func goToLine(_ sender: Any?) {
+        guard let controller = activeController,
+              let document = controller.tabStore.selectedDocument,
+              let editor = controller.editorTextView else { return }
+
+        let dialog = goToLineController ?? {
+            let made = GoToLineWindowController()
+            made.onGoToLine = { [weak self] line in self?.revealLine(line) }
+            goToLineController = made
+            return made
+        }()
+        dialog.show(for: document, at: editor.selectedRange.location)
+    }
+
+    /// Moves the focused editor's caret to the start of 1-based `line` and
+    /// scrolls it into view. Shared by the Go to Line dialog's OK path and
+    /// exposed for app tests. Mirrors `openFileAt(url:revealing:)`'s selection
+    /// seam so the caret/status-bar sync chain sees the same change.
+    func revealLine(_ line: Int) {
+        guard let controller = activeController,
+              let document = controller.tabStore.selectedDocument,
+              let editor = controller.editorTextView else { return }
+        let range = GoToLineWindowController.lineStartRange(forLine: line, in: document.text)
+        editor.setSelectedRange(range)
+        editor.scrollRangeToVisible(range)
+        controller.view.window?.makeFirstResponder(editor)
     }
     
     @objc func setLanguage(_ sender: NSMenuItem) {
@@ -842,6 +878,10 @@ extension HexpadAppDelegate: NSMenuItemValidation {
     /// Every other delegate item remains enabled, as it was before this
     /// conformance.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(HexpadAppDelegate.goToLine(_:)) {
+            // Needs a focused buffer to jump in; the action also no-ops safely.
+            return activeController?.tabStore.selectedDocument != nil
+        }
         if menuItem.action == #selector(HexpadAppDelegate.toggleReadOnly)
             || menuItem.action == #selector(HexpadAppDelegate.toggleReadOnlyForAll) {
             // Checkmark follows the focused document; both items need a tab.

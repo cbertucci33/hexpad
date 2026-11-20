@@ -137,7 +137,7 @@ class MainWindowController: NSViewController {
     // Subviews. The focused group's views are reached through these computed
     // names, so the existing command paths follow focus without a second copy
     // of each action.
-    private var editorContainer: EditorContainer? { activePane.editor }
+    var editorContainer: EditorContainer? { activePane.editor }
     /// Exposed for app tests (chrome-mode layout assertions); nothing outside
     /// this controller may mutate it.
     private(set) var statusBar: StatusBar?
@@ -3001,6 +3001,34 @@ class MainWindowController: NSViewController {
     /// reloads silently, a dirty buffer keeps its edits and flags the tab.
     private var watchTimer: Timer?
     private var seenModDates: [UUID: Date] = [:]
+    /// Documents the user turned Monitoring off for. The watcher has always
+    /// followed every open file, so Monitoring is opt-OUT: the default stays
+    /// on (preserving the shipped auto-reload behaviour) and this set records
+    /// only the exceptions. N++'s per-document Monitoring toggle, expressed as
+    /// a checkmarked View menu item.
+    private var monitoringDisabledIDs: Set<UUID> = []
+
+    /// Whether external changes currently reload `doc`. Default on.
+    func isMonitoring(_ doc: DocumentModel) -> Bool {
+        !monitoringDisabledIDs.contains(doc.id)
+    }
+
+    /// Explicitly enables/disables Monitoring for one document.
+    func setMonitoring(_ monitoring: Bool, for doc: DocumentModel) {
+        if monitoring {
+            monitoringDisabledIDs.remove(doc.id)
+        } else {
+            monitoringDisabledIDs.insert(doc.id)
+        }
+    }
+
+    /// View > Monitoring. Flips only the focused document; a clean buffer keeps
+    /// reloading from disk while monitored, a dirty one keeps its edits either
+    /// way (the watcher never discards unsaved work).
+    @objc func toggleMonitoring(_ sender: Any?) {
+        guard let doc = tabStore.selectedDocument else { return }
+        setMonitoring(!isMonitoring(doc), for: doc)
+    }
 
     private func startFileWatching() {
         stopFileWatching()
@@ -3038,6 +3066,9 @@ class MainWindowController: NSViewController {
     func checkExternalChanges() {
         for doc in allPanes.flatMap({ $0.tabStore.documents }) {
             guard let path = doc.filePath?.path else { continue }
+            // View > Monitoring off: leave the buffer (and its dirty flag)
+            // completely alone, exactly as if the file had not changed.
+            guard isMonitoring(doc) else { continue }
             let attrs = try? FileManager.default.attributesOfItem(atPath: path)
             guard let modDate = attrs?[.modificationDate] as? Date else { continue }
 
@@ -4459,6 +4490,12 @@ extension MainWindowController: NSMenuItemValidation {
         if menuItem.action == #selector(MainWindowController.toggleZoomSynchronize(_:)) {
             menuItem.state = synchronizeZoom ? .on : .off
             return canSynchronizeScrolling()
+        }
+        if menuItem.action == #selector(MainWindowController.toggleMonitoring(_:)) {
+            // Checkmark follows the focused document; only file-backed buffers
+            // can be monitored (an untitled buffer has nothing to reload).
+            menuItem.state = (tabStore.selectedDocument.map(isMonitoring) ?? false) ? .on : .off
+            return tabStore.selectedDocument?.filePath != nil
         }
         if menuItem.action == #selector(MainWindowController.showSummary(_:)) {
             return tabStore.selectedDocument != nil

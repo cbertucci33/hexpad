@@ -185,6 +185,15 @@ extension HexpadAppDelegate {
                                          keyEquivalent: "")
         unhideLinesItem.target = nil
         viewMenu.addItem(unhideLinesItem)
+        // View > Monitoring: N++'s per-document tail -f toggle. Checkmarked;
+        // nil-targeted so MainWindowController owns both the action and the
+        // checkmark, and disabled for untitled buffers (nothing to reload).
+        // Menu-only: no Windows-only or F-key chord is invented for it.
+        let monitoringItem = NSMenuItem(title: "Monitoring",
+                                        action: #selector(MainWindowController.toggleMonitoring(_:)),
+                                        keyEquivalent: "")
+        monitoringItem.target = nil
+        viewMenu.addItem(monitoringItem)
         viewMenu.addItem(.separator())
         viewMenu.addItem(zoomInItem)
         viewMenu.addItem(zoomOutItem)

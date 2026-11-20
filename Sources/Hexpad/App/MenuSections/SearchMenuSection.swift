@@ -80,6 +80,16 @@ extension HexpadAppDelegate {
         findInFilesItem.keyEquivalentModifierMask = [.command, .shift]
         findInFilesItem.target = self
         searchMenu.addItem(findInFilesItem)
+
+        // Search > Go to... (N++ Ctrl+G). Cmd+G is already Find Next in this
+        // app's menus and KEYBINDINGS.md forbids inventing Windows chords, so
+        // the item stays unbound. Delegate-targeted like Find in Files: the
+        // app delegate owns the reusable panel and resolves the focused editor.
+        let goToLineItem = NSMenuItem(title: "Go to...",
+                                      action: #selector(goToLine(_:)),
+                                      keyEquivalent: "")
+        goToLineItem.target = self
+        searchMenu.addItem(goToLineItem)
         searchMenu.addItem(.separator())
 
         // N++ F4 / Shift+F4 walk the results window. Nil-targeted so the
