@@ -109,4 +109,20 @@ final class GutterGeometryTests: XCTestCase {
                                               viewHeight: 400, flipped: true, topY: nextTop)
         XCTAssertEqual(yEmoji - yNext, nextTop, "spacing follows laid-out height exactly")
     }
+
+    func testRowOriginFlippedSubtractsScrollOffset() {
+        // Scrolled 200pt down, the first visible document line sits at
+        // topY == 200; it must land at the viewport top, not 200pt below it.
+        let viewH: CGFloat = 500, rowH: CGFloat = 12
+        let top = GutterGeometry.rowOriginY(textViewHeight: 1000, lineHeight: 18, rowHeight: rowH,
+                                            viewHeight: viewH, flipped: true, topY: 200,
+                                            scrollOffsetY: 200)
+        XCTAssertEqual(top, viewH - rowH, "a scrolled row aligns with the viewport top")
+
+        // A line one row lower lands one row lower in the gutter, still positive.
+        let next = GutterGeometry.rowOriginY(textViewHeight: 1000, lineHeight: 18, rowHeight: rowH,
+                                             viewHeight: viewH, flipped: true, topY: 218,
+                                             scrollOffsetY: 200)
+        XCTAssertEqual(top - next, 18, "rows below the viewport top keep their spacing")
+    }
 }

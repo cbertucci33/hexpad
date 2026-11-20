@@ -42,24 +42,31 @@ public enum GutterGeometry {
     }
 
     /// Converts a line's top Y in the (possibly flipped) text view into the
-    /// gutter view's coordinate space. The gutter's height equals the clip
-    /// view's height, so aligning tops aligns rows exactly.
+    /// gutter view's coordinate space. The gutter is a sibling of the scroll
+    /// view whose height equals the clip view's height, so a document-space
+    /// `topY` must first be shifted by the vertical scroll offset before it is
+    /// aligned against the viewport.
     ///
     /// - Parameters:
-    ///   - topY: line's rect origin Y in the text view's coordinate space.
+    ///   - topY: line's rect origin Y in the text view's document space.
     ///   - lineHeight: actual laid-out line height for that row.
     ///   - rowHeight: drawn glyph height of the number itself.
     ///   - viewHeight: gutter view height.
     ///   - flipped: whether the text view uses flipped coordinates (NSTextView does).
+    ///   - scrollOffsetY: the document-space Y now at the viewport top (the clip
+    ///     view's vertical scroll offset). Defaults to 0 for an unscrolled view.
     public static func rowOriginY(textViewHeight: CGFloat, lineHeight: CGFloat, rowHeight: CGFloat,
-                                  viewHeight: CGFloat, flipped: Bool, topY: CGFloat) -> CGFloat {
+                                  viewHeight: CGFloat, flipped: Bool, topY: CGFloat,
+                                  scrollOffsetY: CGFloat = 0) -> CGFloat {
         if flipped {
             // Text view: y=0 is the first line's top. Our non-flipped view:
-            // y=viewHeight is the top. Place the number's baseline row at the
-            // same visual band as the line (top-aligned within its height).
+            // y=viewHeight is the top. Once scrolled the visible top of the
+            // document sits at `scrollOffsetY`, so the row's viewport-relative
+            // top is `topY - scrollOffsetY`; place the number's baseline row at
+            // the same visual band as the line (top-aligned within its height).
             _ = textViewHeight // height equality is asserted by layout; kept for clarity
-            return viewHeight - topY - rowHeight
+            return viewHeight - (topY - scrollOffsetY) - rowHeight
         }
-        return topY
+        return topY - scrollOffsetY
     }
 }

@@ -38,7 +38,10 @@ enum FoldMargin {
 
         var markers: [Int: FoldMarkerState] = [:]
         for fold in model.foldableRanges {
-            let line = GutterGeometry.logicalLine(of: fold.location, in: model.text)
+            // `startingLine(of:)` reads a build-time mapping computed in one
+            // pass over the text, so deriving markers is O(folds) instead of
+            // the old O(document) `GutterGeometry.logicalLine` scan per fold.
+            let line = model.startingLine(of: fold)
             guard markers[line] == nil else { continue }
             markers[line] = model.isCollapsed(fold) ? .collapsed : .expanded
         }
@@ -383,6 +386,14 @@ final class LineNumberGutter: NSView {
         observers.forEach { NotificationCenter.default.removeObserver($0) }
     }
 
+    /// Vertical scroll offset of the text view's clip view. The gutter is a
+    /// sibling of the scroll view — not a subview of its content — so a
+    /// document-space Y must be shifted by this amount to land on the same
+    /// visual band as the text beside it once the user has scrolled.
+    private var scrollOffsetY: CGFloat {
+        textView?.enclosingScrollView?.contentView.bounds.origin.y ?? 0
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         // App runs on TextKit 1 (NSTextView default): layoutManager is live.
@@ -474,7 +485,8 @@ final class LineNumberGutter: NSView {
                                           rowHeight: size.height,
                                           viewHeight: bounds.height,
                                           flipped: textView.isFlipped,
-                                          topY: topY)
+                                          topY: topY,
+                                          scrollOffsetY: scrollOffsetY)
         let x = bounds.width - size.width - 6
         string.draw(at: NSPoint(x: x, y: y), withAttributes: attributes)
 
@@ -492,7 +504,7 @@ final class LineNumberGutter: NSView {
     private func drawMarker(_ marker: FoldMarkerState, atTopY topY: CGFloat,
                             height: CGFloat, textView: NSTextView) {
         let side = max(5, min(9, numberFont(for: textView).pointSize))
-        let rowTop = bounds.height - topY - height
+        let rowTop = bounds.height - (topY - scrollOffsetY) - height
         let midY = rowTop + height / 2
         let centerX = Self.markerColumnWidth / 2
 
@@ -525,7 +537,7 @@ final class LineNumberGutter: NSView {
     /// triangle above.
     private func drawBookmark(atTopY topY: CGFloat, height: CGFloat, textView: NSTextView) {
         let diameter = max(5, min(9, numberFont(for: textView).pointSize))
-        let rowTop = bounds.height - topY - height
+        let rowTop = bounds.height - (topY - scrollOffsetY) - height
         let midY = rowTop + height / 2
         let centerX = Self.markerColumnWidth + Self.bookmarkColumnWidth / 2
         let rect = NSRect(x: centerX - diameter / 2,
@@ -542,7 +554,7 @@ final class LineNumberGutter: NSView {
     private func drawHiddenRangeMarker(atTopY topY: CGFloat, height: CGFloat,
                                        textView: NSTextView) {
         let diameter = max(1.5, min(2.5, numberFont(for: textView).pointSize * 0.18))
-        let rowTop = bounds.height - topY - height
+        let rowTop = bounds.height - (topY - scrollOffsetY) - height
         let midY = rowTop + height / 2
         let spacing = diameter + 1.5
         let lastX = Self.markerColumnWidth - diameter - 1
@@ -559,7 +571,8 @@ final class LineNumberGutter: NSView {
 
     /// Maps a mouse event into the character index it landed on, resolving it
     /// through the text layout. Our bounds are the same height as the clip view
-    /// and we sit beside it; map the Y straight into text-view coordinates.
+    /// and we sit beside it, so the Y is shifted by the scroll offset to reach
+    /// the document-space coordinate the layout manager works in.
     private func characterIndex(for event: NSEvent) -> Int? {
         characterIndex(atViewPoint: convert(event.locationInWindow, from: nil))
     }
@@ -567,7 +580,7 @@ final class LineNumberGutter: NSView {
     private func characterIndex(atViewPoint point: NSPoint) -> Int? {
         guard let textView, let layoutManager = textView.layoutManager,
               let container = textView.textContainer else { return nil }
-        let textY = bounds.height - point.y // we are non-flipped, text view is flipped
+        let textY = scrollOffsetY + (bounds.height - point.y) // we are non-flipped, text view is flipped
         var fraction: CGFloat = 0
         return layoutManager.characterIndex(for: NSPoint(x: 0, y: textY),
                                             in: container,
