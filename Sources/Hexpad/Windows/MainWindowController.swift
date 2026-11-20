@@ -1216,6 +1216,11 @@ class MainWindowController: NSViewController {
     /// (saving one needs a name, so that remains a per-tab Save As); a failed
     /// write does not stop the sweep and all failures are reported afterwards.
     /// The menu item stays enabled even with nothing dirty, like N++.
+    ///
+    /// Dialog-free: this is the signature headless tests drive. Interactive
+    /// callers (File > Save All, the quit prompt) use
+    /// ``saveAllDocuments(quitting:failures:)`` and surface the messages
+    /// themselves.
     @discardableResult
     func saveAllDocuments() -> Bool {
         saveAllDocuments(quitting: false)
@@ -1228,7 +1233,17 @@ class MainWindowController: NSViewController {
 
     @discardableResult
     func saveAllDocuments(quitting: Bool) -> Bool {
-        var failures: [String] = []
+        var ignoredFailures: [String] = []
+        return saveAllDocuments(quitting: quitting, failures: &ignoredFailures)
+    }
+
+    /// Dialog-free core behind Save All: performs the sweep, appends one
+    /// message per failed write to `failures`, and returns whether every write
+    /// landed. No modal here — a headless test would block forever — so the
+    /// interactive callers show the alert after this returns.
+    @discardableResult
+    func saveAllDocuments(quitting: Bool, failures: inout [String]) -> Bool {
+        var saveFailures: [String] = []
         var savedAny = false
         var cancelled = false
 
@@ -1240,7 +1255,7 @@ class MainWindowController: NSViewController {
                     recordSavePoint(for: doc)
                     savedAny = true
                 } catch {
-                    failures.append("\(doc.name): \(error.localizedDescription)")
+                    saveFailures.append("\(doc.name): \(error.localizedDescription)")
                 }
             } else {
                 // Untitled: prompt for a destination.
@@ -1255,22 +1270,21 @@ class MainWindowController: NSViewController {
                 if saveDocument(doc, to: url) {
                     savedAny = true
                 } else {
-                    failures.append("\(doc.name): save failed")
+                    saveFailures.append("\(doc.name): save failed")
                 }
             }
         }
 
-        guard savedAny || !failures.isEmpty else {
+        failures.append(contentsOf: saveFailures)
+
+        guard savedAny || !saveFailures.isEmpty else {
             return !cancelled
         }
         NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
         refreshTabBar()
         updateStatusBar()
 
-        if !failures.isEmpty {
-            showError("Failed to save file:\n" + failures.joined(separator: "\n"))
-        }
-        return !cancelled && failures.isEmpty
+        return !cancelled && saveFailures.isEmpty
     }
 
     @discardableResult
@@ -2401,24 +2415,15 @@ class MainWindowController: NSViewController {
     /// View/Tab-menu > Clone to Other View (N++ parity; docs review item 16).
     /// Duplicates the focused document's tab into the OTHER split group: same
     /// file and content, independent buffer state (new id, zero caret, no
-    /// undo stack). Per-document state (language, tab color, BOM flag,
-    /// read-only, wrap, zoom, dirty) copies; live caret/scroll does not.
+    /// undo stack). Per-document state (language, line endings, BOM flag,
+    /// pending save conversion, tab color, read-only, wrap, zoom, dirty)
+    /// copies; live caret/scroll does not. `DocumentModel(cloneOf:)` owns the
+    /// field list so cloning and its tests cannot drift apart.
     @objc func cloneDocumentToOtherView(_ sender: Any?) {
         guard canCloneToOtherView(),
               let doc = tabStore.selectedDocument,
               let receiving = pane(for: focusedGroup == .primary ? .secondary : .primary) else { return }
-        let clone = DocumentModel(text: doc.text,
-                                  filePath: doc.filePath,
-                                  encoding: doc.saveEncoding,
-                                  eolType: nil)
-        clone.keepsBOM = doc.keepsBOM
-        clone.setReadOnly(doc.isReadOnly)
-        clone.tabColorIndex = doc.tabColorIndex
-        clone.wordWrapEnabled = doc.wordWrapEnabled
-        clone.zoomScale = doc.zoomScale
-        if doc.unsavedChanges {
-            clone.setModified(true)
-        }
+        let clone = DocumentModel(cloneOf: doc)
         receiving.tabStore.addDocument(clone)
         refreshTabBar()
         receiving.tabBar.reloadTabs()

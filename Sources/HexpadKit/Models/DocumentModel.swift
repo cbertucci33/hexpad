@@ -210,6 +210,30 @@ public final class DocumentModel: Identifiable, ObservableObject {
         startDirtyObservation()
     }
 
+    /// Independent copy for View > Clone to Other View. Shares the file path and
+    /// carries over the per-document state that decides how the tab looks and how
+    /// its next save is serialized (language, line endings, BOM, pending
+    /// conversion, read-only, tab colour, wrap, zoom, dirty). A fresh id, undo
+    /// stack, caret and scroll are deliberate: a clone is a separate buffer, not
+    /// a live mirror of the source editor. Keeping this list in one place means a
+    /// newly added document field has one obvious spot to be carried over.
+    public convenience init(cloneOf other: DocumentModel) {
+        self.init(text: other.text,
+                  filePath: other.filePath,
+                  encoding: other.saveEncoding,
+                  eolType: other.eolType)
+        self._language = other._language
+        self._saveConversionPending = other._saveConversionPending
+        self.keepsBOM = other.keepsBOM
+        self.isReadOnly = other.isReadOnly
+        self.tabColorIndex = other.tabColorIndex
+        self.wordWrapEnabled = other.wordWrapEnabled
+        self.zoomScale = other.zoomScale
+        if other.unsavedChanges {
+            self._isDirty = true
+        }
+    }
+
     deinit {
         dirtyObservers.forEach { NotificationCenter.default.removeObserver($0) }
     }
