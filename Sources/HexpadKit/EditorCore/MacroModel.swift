@@ -27,11 +27,16 @@ public struct MacroStep: Equatable, Hashable, Codable {
 /// out to be inapplicable (an unknown command, or one that would not change
 /// the document) is recorded as skipped while the remaining steps still run.
 ///
+/// Only commands that run through the app's `performCommand` path are
+/// recorded; direct buffer edits and other programmatic document changes are
+/// not captured.
+///
 /// The model is a pure value type over document state. It never touches
-/// `NSTextView` and does not mutate app state; callers apply the returned text
-/// and selection as a single edit. `name` and `steps` are `Codable`, so a
-/// later layer can persist macros like keybinding overrides. The transient
-/// `isRecording` flag is deliberately not encoded.
+/// `NSTextView` and does not mutate app state; callers apply the returned
+/// state (text, selection, bookmarks and token styles) as a single edit.
+/// `name` and `steps` are `Codable`, so a later layer can persist macros like
+/// keybinding overrides. The transient `isRecording` flag is deliberately not
+/// encoded.
 public struct MacroModel: Equatable, Codable {
 
     /// Human-readable macro name, used as the persistence key.
@@ -102,46 +107,90 @@ public struct MacroModel: Equatable, Codable {
 
     // MARK: - Replay
 
-    /// Replays every step in order against `text` and `selection`.
+    /// Replays every step in order against a full document state.
     ///
     /// Each step runs through `registry` on the state produced by the previous
-    /// step. Unknown commands and commands that leave the document unchanged
-    /// are skipped, and replay continues with the next step.
+    /// step. Commands whose effect lives outside the text — bookmark navigation,
+    /// the bookmarked-line operations and the token styles — run through their
+    /// document-aware `documentExecute` action, so replay changes the same
+    /// bookmarks and styles the live command path changes instead of skipping
+    /// the step. Unknown commands and commands that leave the document
+    /// unchanged are skipped, and replay continues with the next step.
     ///
+    /// - Parameters:
+    ///   - text: The starting document text.
+    ///   - selection: The starting UTF-16 selection.
+    ///   - bookmarkState: The starting bookmarks; replayed bookmark steps
+    ///     mutate this state.
+    ///   - tokenStyleState: The starting token styles; replayed style steps
+    ///     mutate this state.
     /// - Returns: The final document state plus one result per recorded step.
     public func replay(using registry: CommandRegistry = .default,
                        text: String,
-                       selection: NSRange) -> MacroReplayResult {
-        var currentText = text
-        var currentSelection = selection
+                       selection: NSRange,
+                       bookmarkState: BookmarkState = BookmarkState(),
+                       tokenStyleState: TokenStyleState = TokenStyleState()) -> MacroReplayResult {
+        var current = DocumentState(text: text,
+                                    selection: selection,
+                                    bookmarkState: bookmarkState,
+                                    tokenStyleState: tokenStyleState)
         var results: [MacroStepResult] = []
         results.reserveCapacity(steps.count)
 
         for (index, step) in steps.enumerated() {
-            guard let result = registry.execute(step.identifier,
-                                                parameter: step.parameter,
-                                                text: currentText,
-                                                selection: currentSelection) else {
+            guard let command = registry.command(for: step.identifier) else {
                 results.append(MacroStepResult(index: index,
                                                step: step,
                                                outcome: .skipped(.unknownCommand)))
                 continue
             }
 
-            guard result.text != currentText else {
+            // Bookmark and style commands carry their effect in the document
+            // state, so replay has to use the same state-aware action the live
+            // command path uses rather than their identity text fallback.
+            let usesDocumentState = command.documentExecute != nil
+                || command.clipboardExecute != nil
+            let next: DocumentState?
+            if usesDocumentState {
+                next = registry.execute(step.identifier, on: current)
+            } else if let parameter = step.parameter,
+                      let makeAction = command.parameterizedExecute {
+                let result = makeAction(parameter)(current.text, current.selection)
+                next = DocumentState(text: result.text,
+                                     selection: result.selection,
+                                     bookmarkState: current.bookmarkState,
+                                     tokenStyleState: current.tokenStyleState)
+            } else {
+                next = registry.execute(step.identifier, on: current)
+            }
+
+            guard let next else {
+                results.append(MacroStepResult(index: index,
+                                               step: step,
+                                               outcome: .skipped(.unknownCommand)))
+                continue
+            }
+
+            // Text steps keep the historical "no text change" rule. Document
+            // steps also count bookmark, style and caret changes, because
+            // navigating to the next bookmark is a real step in a bookmark
+            // macro even though the text stays put.
+            let changed = usesDocumentState ? next != current : next.text != current.text
+            guard changed else {
                 results.append(MacroStepResult(index: index,
                                                step: step,
                                                outcome: .skipped(.noChange)))
                 continue
             }
 
-            currentText = result.text
-            currentSelection = result.selection
+            current = next
             results.append(MacroStepResult(index: index, step: step, outcome: .applied))
         }
 
-        return MacroReplayResult(text: currentText,
-                                 selection: currentSelection,
+        return MacroReplayResult(text: current.text,
+                                 selection: current.selection,
+                                 bookmarkState: current.bookmarkState,
+                                 tokenStyleState: current.tokenStyleState,
                                  stepResults: results)
     }
 
@@ -241,12 +290,24 @@ public struct MacroReplayResult: Equatable {
     /// The selection after the last applied step.
     public let selection: NSRange
 
+    /// The bookmarks after the last applied step.
+    public let bookmarkState: BookmarkState
+
+    /// The token styles after the last applied step.
+    public let tokenStyleState: TokenStyleState
+
     /// One result per recorded step, in replay order.
     public let stepResults: [MacroStepResult]
 
-    public init(text: String, selection: NSRange, stepResults: [MacroStepResult]) {
+    public init(text: String,
+                selection: NSRange,
+                bookmarkState: BookmarkState = BookmarkState(),
+                tokenStyleState: TokenStyleState = TokenStyleState(),
+                stepResults: [MacroStepResult]) {
         self.text = text
         self.selection = selection
+        self.bookmarkState = bookmarkState
+        self.tokenStyleState = tokenStyleState
         self.stepResults = stepResults
     }
 
