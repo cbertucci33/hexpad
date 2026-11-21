@@ -23,14 +23,6 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
     var matchCountLabel: NSTextField!
     var wrapLabel: NSTextField!
 
-    /// Aliases so callers/tests can use either the button or checkbox spelling.
-    var matchCaseCheckbox: NSButton { matchCaseButton }
-    var highlightAllCheckbox: NSButton { highlightAllButton }
-    var countCheckbox: NSButton { countButton }
-    var counterLabel: NSTextField { matchCountLabel }
-    var wrapMessageLabel: NSTextField { wrapLabel }
-    var wrapMessage: NSTextField { wrapLabel }
-
     /// The focused pane's editor, injected by MainWindowController. The bar
     /// acts on the text view directly and never binds a document.
     weak var editorRef: EditorContainer? {

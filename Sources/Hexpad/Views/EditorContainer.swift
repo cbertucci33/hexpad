@@ -110,10 +110,24 @@ class EditorContainer: NSView {
             refreshFoldModelIfStale()
             return cachedFoldModel
         }
-        set { cachedFoldModel = newValue }
+        set {
+            cachedFoldModel = newValue
+            // Derive once when the model changes, not once per gutter draw.
+            cachedFoldMarkers = FoldMargin.markers(for: newValue)
+        }
     }
 
     private var cachedFoldModel: FoldModel?
+
+    /// Marker dictionary derived from ``cachedFoldModel``. The gutter asks for
+    /// markers on every draw (including each keystroke), so re-deriving them
+    /// there would repeat the fold-range pass for no new information. It is
+    /// rebuilt only when the fold model itself changes.
+    private var cachedFoldMarkers: [Int: FoldMarkerState] = [:]
+
+    /// Set while a deferred fold rebuild is waiting for the next run-loop turn.
+    /// Keeps a burst of marker reads (redraws) from scheduling more than one.
+    private var foldRebuildScheduled = false
 
     /// Layout-only hider for collapsed fold content. It is retained here because
     /// `NSLayoutManager.delegate` does not own its delegate.
@@ -134,12 +148,14 @@ class EditorContainer: NSView {
     /// for a rebuild until markers or visibility actually need it.
     private(set) var foldModelRebuildCount = 0
 
-    /// Markers the fold gutter should draw for the selected document. Pulling
-    /// a marker refreshes a stale model first, so the gutter never draws one
-    /// edit behind.
+    /// Markers the fold gutter should draw for the selected document. Reading
+    /// this property is the explicit (test/gesture) trigger: it refreshes a
+    /// stale model first so callers see the post-edit structure immediately.
+    /// The gutter's draw path uses ``markersForGutter()`` instead, which
+    /// coalesces that rebuild to the next run-loop turn.
     var foldMarkers: [Int: FoldMarkerState] {
         refreshFoldModelIfStale()
-        return FoldMargin.markers(for: foldModel)
+        return cachedFoldMarkers
     }
 
     /// Document ranges currently hidden by collapsed folds. Reading visibility
@@ -1403,9 +1419,9 @@ class EditorContainer: NSView {
         // built for this binding, so the first access rebuilds even when the
         // revision is unchanged (e.g. plain text at revision 0, which
         // legitimately builds to nil). This is also the single guard that keeps
-        // the nil path from recursing through applyFoldVisibility -> foldModel
-        // getter -> here: once built, the recorded revision equals the
-        // document's, so the getter returns the cached model without rebuilding.
+        // the nil path from recursing through applyFoldVisibility -> cached
+        // model: once built, the recorded revision equals the document's, so
+        // the getter returns the cached model without rebuilding.
         if let builtRevision = foldModelBuiltRevision,
            builtRevision == document.textRevision {
             return
@@ -1413,11 +1429,36 @@ class EditorContainer: NSView {
         rebuildFoldModel(for: document)
     }
 
-    /// Markers shared with the gutter. Pulled during drawing so an edit that
-    /// changed fold structure is reflected in the same frame.
+    /// Coalesces the gutter's stale-model rebuild to the next run-loop turn.
+    ///
+    /// The gutter redraws (and therefore pulls markers) for every keystroke.
+    /// Rebuilding the whole O(document) fold discovery inside that draw would
+    /// run once per keystroke; deferring it means a burst of draws in one turn
+    /// shares one rebuild, and the frame that triggered it keeps painting the
+    /// previous markers instead of blocking on discovery. Fold gestures call
+    /// ``refreshFoldModelIfStale()`` directly, so they stay immediate.
+    private func scheduleFoldModelRefreshIfNeeded() {
+        guard let document = boundDocument,
+              foldModelBuiltRevision != document.textRevision,
+              !foldRebuildScheduled else { return }
+        foldRebuildScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.foldRebuildScheduled = false
+            guard let document = self.boundDocument,
+                  self.foldModelBuiltRevision != document.textRevision else { return }
+            self.refreshFoldModelIfStale()
+            // The marker cache changed; repaint the margin that asked for it.
+            self.ruler.needsDisplay = true
+        }
+    }
+
+    /// Markers shared with the gutter. The draw path schedules a stale-model
+    /// rebuild for the next run-loop turn and returns the current cache, so
+    /// keystrokes never pay for fold discovery synchronously.
     private func markersForGutter() -> [Int: FoldMarkerState] {
-        refreshFoldModelIfStale()
-        return FoldMargin.markers(for: foldModel)
+        scheduleFoldModelRefreshIfNeeded()
+        return cachedFoldMarkers
     }
 
     /// Toggles the bookmark on `line` for the selected document.
@@ -1781,7 +1822,7 @@ class EditorContainer: NSView {
     /// Hands the model's hidden ranges to the glyph hider and relayouts when
     /// visibility actually changed.
     private func applyFoldVisibility() {
-        let hidden = foldModel?.visibility().hiddenRanges ?? []
+        let hidden = cachedFoldModel?.visibility().hiddenRanges ?? []
         guard foldHider.setHiddenRanges(hidden) else { return }
         invalidateFoldLayout()
     }

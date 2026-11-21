@@ -62,7 +62,7 @@ final class FindAllTests: XCTestCase {
 
         let results = try XCTUnwrap(controller.searchResultsController)
         XCTAssertEqual(results.documentGroups.count, 1)
-        XCTAssertTrue(results.documentGroups[0].document === doc)
+        XCTAssertTrue(try XCTUnwrap(results.documentGroups[0].document) === doc)
         XCTAssertEqual(results.documentResultCount, 2)
         XCTAssertEqual(results.documentGroups[0].matches.map(\.line), [1, 2])
         XCTAssertEqual(results.window?.title, "Search Results")
@@ -111,7 +111,7 @@ final class FindAllTests: XCTestCase {
         let results = try XCTUnwrap(controller.searchResultsController)
         XCTAssertEqual(results.documentGroups.count, 3)
         XCTAssertEqual(results.documentResultCount, 4)
-        XCTAssertEqual(Set(results.documentGroups.map { $0.document.id }),
+        XCTAssertEqual(Set(results.documentGroups.compactMap { $0.document?.id }),
                        Set([first.id, second.id, untitled.id]))
     }
 
@@ -128,7 +128,7 @@ final class FindAllTests: XCTestCase {
 
         let results = try XCTUnwrap(controller.searchResultsController)
         XCTAssertEqual(results.documentGroups.count, 1)
-        XCTAssertTrue(results.documentGroups[0].document === first)
+        XCTAssertTrue(try XCTUnwrap(results.documentGroups[0].document) === first)
     }
 
     func testFindAllAllOpenedWithNoHitsStillShowsResultsWindow() throws {

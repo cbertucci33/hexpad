@@ -128,6 +128,16 @@ public final class SessionStore {
         queue.sync { lastError }
     }
 
+    /// Mark the session dirty immediately, without supplying a snapshot.
+    /// Callers that debounce snapshot construction use this so
+    /// ``hasPendingChanges`` becomes true as soon as the edit happens; the
+    /// later ``scheduleSave(_:after:)`` supplies the finished snapshot.
+    public static func markPending() {
+        queue.async {
+            dirty = true
+        }
+    }
+
     /// Mark the session dirty and coalesce writes: rapid change events collapse
     /// into a single write once the debounce interval has elapsed. The latest
     /// snapshot wins, so the flush persists the newest state.

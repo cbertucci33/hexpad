@@ -27,10 +27,10 @@ struct DocumentSearchGroup {
         self.matches = matches
     }
 
-    /// Live document, if its tab is still open. Implicitly unwrapped so the
-    /// existing call sites/tests can keep reading `document.id` / comparing
-    /// identity; callers must check `isDocumentOpen` first.
-    var document: DocumentModel! { liveDocument }
+    /// Live document, if its tab is still open. Optional so a closed buffer is
+    /// an explicit absence at every call site; callers guard-let it (or check
+    /// ``isDocumentOpen`` first) instead of risking an IUO trap.
+    var document: DocumentModel? { liveDocument }
 
     /// Whether the tab behind this group is still open. A nil weak reference
     /// means the buffer was closed while the results were on screen.
@@ -383,13 +383,17 @@ final class FindInFilesWindowController: NSWindowController {
     }
 
     /// Identity key for a result group, used to preserve fold state across a
-    /// refresh: document id plus the matches signature. Groups whose key is
-    /// unchanged keep their collapsed state; vanished groups are dropped.
+    /// refresh. Document id plus a cheap matches signature: count and the first
+    /// and last range. The previous key concatenated every match's text, which
+    /// rebuilt an O(matches × text) string per group on every refresh; range
+    /// endpoints are enough to distinguish a changed result set without it.
     private func groupKey(_ group: DocumentSearchGroup) -> String {
-        let matchesSignature = group.matches.map {
-            "\($0.range.location):\($0.range.length):\($0.line):\($0.text)"
-        }.joined(separator: ",")
-        return "\(group.documentID)|\(matchesSignature)"
+        let first = group.matches.first?.range
+        let last = group.matches.last?.range
+        let signature = "\(group.matches.count)"
+            + "|\(first?.location ?? -1):\(first?.length ?? 0)"
+            + "|\(last?.location ?? -1):\(last?.length ?? 0)"
+        return "\(group.documentID)|\(signature)"
     }
 
     /// Number of rows F4 / Shift+F4 can visit. Used by app tests.
