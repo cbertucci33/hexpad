@@ -23,44 +23,82 @@ enum ShortcutMapperModel {
     /// only registry commands with their resolved bindings.
     static func entries(menu: NSMenu? = nil) -> [ShortcutMapperEntry] {
         var rows: [ShortcutMapperEntry] = []
-        var seenIdentifiers = Set<String>()
+        var indicesByIdentifier: [String: Int] = [:]
 
         if let menu {
-            collectCommands(from: menu, into: &rows, seenIdentifiers: &seenIdentifiers)
+            collectCommands(from: menu, into: &rows, indicesByIdentifier: &indicesByIdentifier)
         }
 
         for command in CommandRegistry.default.allMapperCommands {
-            guard !seenIdentifiers.contains(command.identifier) else { continue }
             let binding = KeybindingStore.resolvedBinding(for: command.identifier)
-            rows.append(ShortcutMapperEntry(title: command.title,
-                                            chord: KeybindingStore.displayString(for: binding),
-                                            identifier: command.identifier))
-            seenIdentifiers.insert(command.identifier)
+            let fallback = ShortcutMapperEntry(title: command.title,
+                                               chord: KeybindingStore.displayString(for: binding),
+                                               identifier: command.identifier)
+            guard let index = indicesByIdentifier[command.identifier] else {
+                indicesByIdentifier[command.identifier] = rows.count
+                rows.append(fallback)
+                continue
+            }
+            // The command's menu row may be the Keybindings submenu's "None"
+            // row; the registry still knows its chord, so upgrade it.
+            if rows[index].chord == unboundChord {
+                rows[index] = fallback
+            }
         }
         return rows
     }
+
+    /// Rendered chord for an item with no key equivalent.
+    private static let unboundChord = KeybindingStore.displayString(keyEquivalent: "",
+                                                                    modifierMask: [])
+
+    /// Registry identifiers that menu rows may be deduped by. Not every
+    /// `representedObject` string names a command: Window > Sort By reuses one
+    /// key (`name`, `path`, …) for its ascending and descending rows and tells
+    /// them apart with `tag`, so those rows must all survive.
+    private static let commandIdentifiers = Set(CommandRegistry.default.allMapperCommands
+        .map(\.identifier))
 
     /// Depth-first walk of every actionable menu item, in menu order. Parents
     /// (action nil) are containers, not commands, but their submenus still
     /// count. An item with no key equivalent is listed with "None" so the
     /// mapper shows unbound commands rather than hiding them.
+    ///
+    /// A command can be carried by more than one menu row (the Text menu and
+    /// the Keybindings submenu, for example), so command rows are deduped by
+    /// represented identifier. When both a chord-bearing row and a "None" row
+    /// exist, the chord-bearing one wins regardless of menu order.
     private static func collectCommands(from menu: NSMenu,
                                         into rows: inout [ShortcutMapperEntry],
-                                        seenIdentifiers: inout Set<String>) {
+                                        indicesByIdentifier: inout [String: Int]) {
         for item in menu.items where !item.isSeparatorItem {
             if item.action != nil, !item.title.isEmpty {
                 let identifier = item.representedObject as? String
-                rows.append(ShortcutMapperEntry(
+                // Only registry commands dedupe; other String payloads (sort
+                // keys, for instance) can be shared by distinct rows.
+                let commandIdentifier = identifier.flatMap {
+                    commandIdentifiers.contains($0) ? $0 : nil
+                }
+                let entry = ShortcutMapperEntry(
                     title: item.title,
                     chord: KeybindingStore.displayString(keyEquivalent: item.keyEquivalent,
                                                          modifierMask: item.keyEquivalentModifierMask),
-                    identifier: identifier))
-                if let identifier {
-                    seenIdentifiers.insert(identifier)
+                    identifier: identifier)
+                if let id = commandIdentifier, let index = indicesByIdentifier[id] {
+                    if rows[index].chord == unboundChord, entry.chord != unboundChord {
+                        rows[index] = entry
+                    }
+                } else {
+                    if let id = commandIdentifier {
+                        indicesByIdentifier[id] = rows.count
+                    }
+                    rows.append(entry)
                 }
             }
             if let submenu = item.submenu {
-                collectCommands(from: submenu, into: &rows, seenIdentifiers: &seenIdentifiers)
+                collectCommands(from: submenu,
+                                into: &rows,
+                                indicesByIdentifier: &indicesByIdentifier)
             }
         }
     }
