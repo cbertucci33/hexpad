@@ -221,6 +221,10 @@ class MainWindowController: NSViewController {
     private var docThemeNames: [UUID: String] = [:]
     private var pendingEditRange: NSRange?
 
+    /// Re-entrancy guard for Auto-close. Inserting the pair calls back into
+    /// `shouldChangeTextIn`, which must not auto-close the pair a second time.
+    private var isInsertingAutoClose = false
+
     /// Persisted user preferences. Loaded once at controller creation and kept
     /// current by the `.preferencesDidChange` observer, so every bind and
     /// re-highlight reads one value instead of the file.
@@ -5018,6 +5022,31 @@ extension MainWindowController: NSTextViewDelegate {
         let boundDoc = pane(containing: textView)?.boundDocument ?? tabStore.selectedDocument
         if boundDoc?.isReadOnly == true { return false }
 
+        // Auto-close: typing an opener at a collapsed caret inserts its pair as
+        // one edit and leaves the caret between them. Overwrite mode must still
+        // replace the character under the caret, and a marked (IME) composition
+        // owns its own text.
+        if !isInsertingAutoClose,
+           preferences.autoCloseBrackets,
+           let replacement = replacementString,
+           let closer = Self.autoCloseCloser(for: replacement),
+           affectedCharRange.location != NSNotFound,
+           affectedCharRange.length == 0,
+           textView.selectedRange.length == 0,
+           !textView.hasMarkedText(),
+           let editor = pane(containing: textView)?.editor,
+           editor.multiCaretState.count == 1,
+           !editor.isOverwriteMode {
+            isInsertingAutoClose = true
+            textView.insertText(replacement + closer,
+                                replacementRange: affectedCharRange)
+            isInsertingAutoClose = false
+            textView.setSelectedRange(
+                NSRange(location: affectedCharRange.location + replacement.utf16.count,
+                        length: 0))
+            return false
+        }
+
         // Remember the post-edit range so textDidChange can re-tokenize only
         // the touched line band instead of the whole document.
         pendingEditRange = NSRange(location: affectedCharRange.location,
@@ -5061,6 +5090,23 @@ extension MainWindowController: NSTextViewDelegate {
     }
     
     func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        if selector == #selector(insertNewline(_:))
+            || selector == #selector(insertNewlineIgnoringFieldEditor(_:)) {
+            guard preferences.autoIndent,
+                  let editor = pane(containing: textView)?.editor,
+                  editor.multiCaretState.count == 1 else { return false }
+            let settings = IndentSettings(tabSize: preferences.tabSize,
+                                          useTabs: preferences.useTabs)
+            let text: NSString = textView.textStorage?.mutableString
+                ?? (textView.string as NSString)
+            let insertion = Self.autoIndentInsertion(
+                text: text,
+                selection: textView.selectedRange,
+                settings: settings)
+            textView.insertText(insertion, replacementRange: textView.selectedRange)
+            return true
+        }
+
         let indentUnit = IndentSettings(tabSize: preferences.tabSize,
                                         useTabs: preferences.useTabs).unit
         if selector == #selector(insertTab(_:)) {
@@ -5095,5 +5141,44 @@ extension MainWindowController: NSTextViewDelegate {
         let start = max(0, location - width)
         let length = max(0, min(width, textLength - start))
         return NSMakeRange(start, length)
+    }
+
+    /// The closer Auto-close inserts for a typed opener, or `nil` for every
+    /// character that should be typed literally.
+    static func autoCloseCloser(for replacement: String) -> String? {
+        switch replacement {
+        case "(": return ")"
+        case "[": return "]"
+        case "{": return "}"
+        default: return nil
+        }
+    }
+
+    /// The text Return inserts when Auto-indent is on: a newline plus the
+    /// current line's leading whitespace, with one extra indent level when the
+    /// text before the caret ends in an opening bracket.
+    static func autoIndentInsertion(text: NSString,
+                                    selection: NSRange,
+                                    settings: IndentSettings) -> String {
+        let location = max(0, min(selection.location, text.length))
+        var lineStart = 0
+        var contentsEnd = 0
+        text.getLineStart(&lineStart, end: nil, contentsEnd: &contentsEnd,
+                          for: NSRange(location: location, length: 0))
+
+        var indentEnd = lineStart
+        while indentEnd < contentsEnd {
+            let character = text.character(at: indentEnd)
+            guard character == 0x0020 || character == 0x0009 else { break }
+            indentEnd += 1
+        }
+        let indent = text.substring(with: NSRange(location: lineStart,
+                                                  length: indentEnd - lineStart))
+
+        let beforeCaret = text.substring(with: NSRange(location: lineStart,
+                                                       length: max(0, location - lineStart)))
+        let opensBlock = beforeCaret.trimmingCharacters(in: .whitespaces).last
+            .map { "{[(".contains($0) } ?? false
+        return "\n" + indent + (opensBlock ? settings.unit : "")
     }
 }
