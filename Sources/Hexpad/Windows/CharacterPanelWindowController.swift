@@ -294,7 +294,12 @@ final class CharacterPanelWindowController: NSWindowController {
 
     func insertCharacter(_ character: Character, into textView: NSTextView?) {
         guard let textView else { return }
+        let before = textView.string
         textView.insertText(String(character), replacementRange: textView.selectedRange)
+        // The read-only veto lives in the text view's delegate and rejects
+        // insertText without telling the caller. Compare the buffer so a
+        // rejected insertion never reaches recents.
+        guard textView.string != before else { return }
         addRecent(character)
     }
 
@@ -380,6 +385,14 @@ final class CharacterPanelWindowController: NSWindowController {
     // MARK: - Focused editor
 
     static func focusedTextView() -> NSTextView? {
+        // Same resolution as the app delegate's `activeController`: the key
+        // window's document controller, else the primary window controller.
+        // Never scan NSApp.windows — in a multi-window session that picks the
+        // first document window, not the one the user is editing.
+        if let controller = (NSApp.delegate as? HexpadAppDelegate)?.activeController,
+           let textView = controller.editorTextView {
+            return textView
+        }
         if let keyWindow = NSApp.keyWindow,
            let controller = keyWindow.contentViewController as? MainWindowController {
             return controller.editorTextView
@@ -387,11 +400,6 @@ final class CharacterPanelWindowController: NSWindowController {
         if let mainWindow = NSApp.mainWindow,
            let controller = mainWindow.contentViewController as? MainWindowController {
             return controller.editorTextView
-        }
-        for window in NSApp.windows {
-            if let controller = window.contentViewController as? MainWindowController {
-                return controller.editorTextView
-            }
         }
         if let responder = NSApp.keyWindow?.firstResponder as? NSTextView {
             return responder
