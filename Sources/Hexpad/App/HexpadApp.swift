@@ -102,7 +102,9 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
             alert.addButton(withTitle: "Don't Save")
             alert.addButton(withTitle: "Cancel")
             let response = alert.runModal()
-            let resolution = Self.quitResolution(dirtyCount: dirtyDocs.count, response: response)
+            let resolution = Self.quitResolution(dirtyCount: dirtyDocs.count,
+                                                 response: response,
+                                                 saveSucceeded: true)
             if resolution == .terminateCancel {
                 return .terminateCancel
             }
@@ -152,10 +154,6 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     ///   .alertFirstButtonReturn  (Save All)  -> .terminateNow
     ///   .alertSecondButtonReturn (Don't Save) -> .terminateNow
     ///   .alertThirdButtonReturn  (Cancel)     -> .terminateCancel
-    static func quitResolution(dirtyCount: Int, response: NSApplication.ModalResponse) -> NSApplication.TerminateReply {
-        quitResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: true)
-    }
-
     static func quitResolution(dirtyCount: Int, response: NSApplication.ModalResponse, saveSucceeded: Bool) -> NSApplication.TerminateReply {
         guard dirtyCount > 0 else { return .terminateNow }
         switch response {
@@ -170,31 +168,6 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // Alias parameter labels for callers/tests naming the save result differently.
-    static func quitResolution(dirtyCount: Int, response: NSApplication.ModalResponse, saveAllSucceeded: Bool) -> NSApplication.TerminateReply {
-        quitResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: saveAllSucceeded)
-    }
-
-    static func quitResolution(dirtyCount: Int, response: NSApplication.ModalResponse, allSaved: Bool) -> NSApplication.TerminateReply {
-        quitResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: allSaved)
-    }
-
-    static func quitResolution(dirtyCount: Int, response: NSApplication.ModalResponse, didSaveAll: Bool) -> NSApplication.TerminateReply {
-        quitResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: didSaveAll)
-    }
-
-    static func quitResolution(dirtyCount: Int, response: NSApplication.ModalResponse, savedAll: Bool) -> NSApplication.TerminateReply {
-        quitResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: savedAll)
-    }
-
-    static func quitResolution(dirtyCount: Int, response: NSApplication.ModalResponse, success: Bool) -> NSApplication.TerminateReply {
-        quitResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: success)
-    }
-
-    static func quitResolution(dirtyCount: Int, response: NSApplication.ModalResponse, saveResult: Bool) -> NSApplication.TerminateReply {
-        quitResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: saveResult)
-    }
-
     // MARK: - Window close (secondary windows)
 
     /// Testable window-close decision. With no dirty documents the close proceeds
@@ -203,10 +176,6 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     ///   .alertFirstButtonReturn  (Save)       -> close only if the save succeeded
     ///   .alertSecondButtonReturn (Don't Save) -> close
     ///   .alertThirdButtonReturn  (Cancel)     -> abort close
-    static func windowShouldCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse) -> Bool {
-        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: true)
-    }
-
     static func windowShouldCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse, saveSucceeded: Bool) -> Bool {
         guard dirtyCount > 0 else { return true }
         switch response {
@@ -221,90 +190,6 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // Alias parameter labels for callers/tests naming the save result differently.
-    static func windowShouldCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse, saveAllSucceeded: Bool) -> Bool {
-        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: saveAllSucceeded)
-    }
-    static func windowShouldCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse, allSaved: Bool) -> Bool {
-        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: allSaved)
-    }
-    static func windowShouldCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse, didSave: Bool) -> Bool {
-        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: didSave)
-    }
-    static func windowShouldCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse, saved: Bool) -> Bool {
-        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: saved)
-    }
-    static func windowShouldCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse, success: Bool) -> Bool {
-        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: success)
-    }
-    static func windowShouldCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse, saveResult: Bool) -> Bool {
-        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: saveResult)
-    }
-
-    // Alias method names for callers/tests that phrase the decision differently.
-    static func windowCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse) -> Bool {
-        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response)
-    }
-    static func windowCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse, saveSucceeded: Bool) -> Bool {
-        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: saveSucceeded)
-    }
-    static func windowCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse, saveAllSucceeded: Bool) -> Bool {
-        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saveAllSucceeded: saveAllSucceeded)
-    }
-    static func windowCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse, allSaved: Bool) -> Bool {
-        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, allSaved: allSaved)
-    }
-    static func windowCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse, didSave: Bool) -> Bool {
-        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, didSave: didSave)
-    }
-    static func windowCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse, saved: Bool) -> Bool {
-        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saved: saved)
-    }
-    static func windowCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse, success: Bool) -> Bool {
-        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, success: success)
-    }
-    static func windowCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse, saveResult: Bool) -> Bool {
-        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saveResult: saveResult)
-    }
-
-    static func closeWindowResolution(dirtyCount: Int, response: NSApplication.ModalResponse) -> Bool {
-        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response)
-    }
-    static func closeWindowResolution(dirtyCount: Int, response: NSApplication.ModalResponse, saveSucceeded: Bool) -> Bool {
-        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: saveSucceeded)
-    }
-    static func shouldCloseWindowResolution(dirtyCount: Int, response: NSApplication.ModalResponse) -> Bool {
-        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response)
-    }
-    static func shouldCloseWindowResolution(dirtyCount: Int, response: NSApplication.ModalResponse, saveSucceeded: Bool) -> Bool {
-        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: saveSucceeded)
-    }
-
-    // Allow the decision to be queried under the same name as the delegate method.
-    static func windowShouldClose(dirtyCount: Int, response: NSApplication.ModalResponse) -> Bool {
-        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response)
-    }
-    static func windowShouldClose(dirtyCount: Int, response: NSApplication.ModalResponse, saveSucceeded: Bool) -> Bool {
-        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: saveSucceeded)
-    }
-    static func windowShouldClose(dirtyCount: Int, response: NSApplication.ModalResponse, saveAllSucceeded: Bool) -> Bool {
-        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saveAllSucceeded: saveAllSucceeded)
-    }
-    static func windowShouldClose(dirtyCount: Int, response: NSApplication.ModalResponse, allSaved: Bool) -> Bool {
-        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, allSaved: allSaved)
-    }
-    static func windowShouldClose(dirtyCount: Int, response: NSApplication.ModalResponse, didSave: Bool) -> Bool {
-        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, didSave: didSave)
-    }
-    static func windowShouldClose(dirtyCount: Int, response: NSApplication.ModalResponse, saved: Bool) -> Bool {
-        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saved: saved)
-    }
-    static func windowShouldClose(dirtyCount: Int, response: NSApplication.ModalResponse, success: Bool) -> Bool {
-        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, success: success)
-    }
-    static func windowShouldClose(dirtyCount: Int, response: NSApplication.ModalResponse, saveResult: Bool) -> Bool {
-        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saveResult: saveResult)
-    }
     /// Every open window's controller, primary first. Menu actions that are
     /// targeted at this delegate resolve against the key window instead.
     private var allWindowControllers: [MainWindowController] {
@@ -340,6 +225,12 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         guard PreferencesStore.load().sessionSnapshotEnabled else { return }
         let controllers = allWindowControllers
         guard !controllers.isEmpty else { return }
+        // An immediate merged write supersedes every controller's debounced
+        // build; drop those trailing-edge items so they cannot land later with
+        // a single-window snapshot and replace this one.
+        for controller in controllers {
+            controller.cancelPendingSessionSnapshot()
+        }
         for controller in controllers {
             controller.captureSessionState()
         }
@@ -1095,7 +986,9 @@ extension HexpadAppDelegate: NSWindowDelegate {
             alert.addButton(withTitle: "Cancel")
 
             let response = alert.runModal()
-            guard Self.windowShouldCloseResolution(dirtyCount: 1, response: response) else {
+            guard Self.windowShouldCloseResolution(dirtyCount: 1,
+                                                   response: response,
+                                                   saveSucceeded: true) else {
                 return false
             }
             switch response {

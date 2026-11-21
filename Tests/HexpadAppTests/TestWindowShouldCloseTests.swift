@@ -22,18 +22,14 @@ final class TestWindowShouldCloseTests: XCTestCase {
 
     func testWindowShouldCloseResolutionNoDirtyProceeds() {
         XCTAssertTrue(HexpadAppDelegate.windowShouldCloseResolution(dirtyCount: 0,
-                                                                   response: .alertThirdButtonReturn))
-        XCTAssertTrue(HexpadAppDelegate.windowCloseResolution(dirtyCount: 0,
-                                                             response: .alertThirdButtonReturn))
-        XCTAssertTrue(HexpadAppDelegate.closeWindowResolution(dirtyCount: 0,
-                                                             response: .alertThirdButtonReturn))
-        XCTAssertTrue(HexpadAppDelegate.shouldCloseWindowResolution(dirtyCount: 0,
-                                                                   response: .alertThirdButtonReturn))
+                                                                   response: .alertThirdButtonReturn,
+                                                                   saveSucceeded: false))
     }
 
     func testWindowShouldCloseResolutionSaveProceeds() {
         XCTAssertTrue(HexpadAppDelegate.windowShouldCloseResolution(dirtyCount: 2,
-                                                                   response: .alertFirstButtonReturn))
+                                                                   response: .alertFirstButtonReturn,
+                                                                   saveSucceeded: true))
     }
 
     func testWindowShouldCloseResolutionSaveFailureAborts() {
@@ -44,12 +40,14 @@ final class TestWindowShouldCloseTests: XCTestCase {
 
     func testWindowShouldCloseResolutionDontSaveProceeds() {
         XCTAssertTrue(HexpadAppDelegate.windowShouldCloseResolution(dirtyCount: 2,
-                                                                   response: .alertSecondButtonReturn))
+                                                                   response: .alertSecondButtonReturn,
+                                                                   saveSucceeded: false))
     }
 
     func testWindowShouldCloseResolutionCancelAborts() {
         XCTAssertFalse(HexpadAppDelegate.windowShouldCloseResolution(dirtyCount: 2,
-                                                                    response: .alertThirdButtonReturn))
+                                                                    response: .alertThirdButtonReturn,
+                                                                    saveSucceeded: true))
     }
 
     // MARK: - windowShouldClose itself (clean window)

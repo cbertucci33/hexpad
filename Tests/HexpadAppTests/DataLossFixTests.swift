@@ -41,25 +41,29 @@ final class DataLossFixTests: XCTestCase {
 
     func testQuitResolutionNoDirtyTerminates() {
         XCTAssertEqual(HexpadAppDelegate.quitResolution(dirtyCount: 0,
-                                                      response: .alertThirdButtonReturn),
+                                                      response: .alertThirdButtonReturn,
+                                                      saveSucceeded: true),
                        .terminateNow)
     }
 
     func testQuitResolutionSaveAllTerminates() {
         XCTAssertEqual(HexpadAppDelegate.quitResolution(dirtyCount: 2,
-                                                      response: .alertFirstButtonReturn),
+                                                      response: .alertFirstButtonReturn,
+                                                      saveSucceeded: true),
                        .terminateNow)
     }
 
     func testQuitResolutionDontSaveTerminates() {
         XCTAssertEqual(HexpadAppDelegate.quitResolution(dirtyCount: 2,
-                                                      response: .alertSecondButtonReturn),
+                                                      response: .alertSecondButtonReturn,
+                                                      saveSucceeded: true),
                        .terminateNow)
     }
 
     func testQuitResolutionCancelAborts() {
         XCTAssertEqual(HexpadAppDelegate.quitResolution(dirtyCount: 2,
-                                                      response: .alertThirdButtonReturn),
+                                                      response: .alertThirdButtonReturn,
+                                                      saveSucceeded: true),
                        .terminateCancel)
     }
 
@@ -150,10 +154,6 @@ final class DataLossFixTests: XCTestCase {
         XCTAssertEqual(HexpadAppDelegate.quitResolution(dirtyCount: 2,
                                                        response: .alertFirstButtonReturn,
                                                        saveSucceeded: false),
-                       .terminateCancel)
-        XCTAssertEqual(HexpadAppDelegate.quitResolution(dirtyCount: 2,
-                                                       response: .alertFirstButtonReturn,
-                                                       saveAllSucceeded: false),
                        .terminateCancel)
     }
 }

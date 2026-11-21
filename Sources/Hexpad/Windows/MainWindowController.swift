@@ -461,7 +461,10 @@ class MainWindowController: NSViewController {
                         if doc.isUntitled {
                             self.saveAsAndClose(doc)
                         } else {
-                            self.saveDocument(doc)
+                            // A failed write (or a cancelled/reload external-
+                            // change prompt) must leave the tab open, exactly
+                            // like the bulk-close sweep.
+                            guard self.saveDocument(doc) else { return }
                             self.closeDocument(doc)
                         }
                     case .alertSecondButtonReturn: // Don't Save
@@ -944,7 +947,17 @@ class MainWindowController: NSViewController {
             let existingDoc = existing.document
             var didReload = false
             if !existingDoc.unsavedChanges {
-                didReload = reloadDocument(existingDoc, from: url)
+                switch reloadDocument(existingDoc, from: url) {
+                case .reloaded:
+                    didReload = true
+                case .unchanged:
+                    break
+                case .failed(let reason):
+                    // The buffer was not replaced. Keep it as-is (and keep its
+                    // clean baseline honest) instead of pretending the disk
+                    // text was loaded.
+                    showError("Failed to reload \(existingDoc.name): \(reason)")
+                }
             }
             // Focus the owning group before selecting: all tab commands act on
             // the focused store, and the match may live in the other group.
@@ -968,7 +981,12 @@ class MainWindowController: NSViewController {
             // Strip a leading BOM before decoding: String(data:encoding:) with
             // an explicit UTF-16LE decoder keeps U+FEFF in the buffer, which
             // showed up as a stray character at position 0.
-            let text = EncodingDetective.decodeForEditing(data, as: encoding) ?? ""
+            guard let text = EncodingDetective.decodeForEditing(data, as: encoding) else {
+                // Opening a blank buffer backed by the real path would destroy
+                // the file on the next save: refuse the open instead.
+                showError("Failed to open file \(url.lastPathComponent): its bytes are not valid \(encoding).")
+                return
+            }
             // A recognized extension always wins; only unknown/plain-text
             // files are sniffed, so opening modern-language sources never
             // triggers a spurious Language Mismatch prompt.
@@ -1306,7 +1324,11 @@ class MainWindowController: NSViewController {
         case .cancel:
             return false
         case .reload:
-            reloadDocumentFromDisk(doc)
+            // Reload either swaps in the disk text or fails with a message.
+            // Either way this save is abandoned, so the buffer is never
+            // overwritten with text the user did not choose; on failure
+            // reloadDocumentFromDisk leaves the buffer dirty.
+            _ = reloadDocumentFromDisk(doc)
             return false
         }
     }
@@ -1325,18 +1347,8 @@ class MainWindowController: NSViewController {
     /// themselves.
     @discardableResult
     func saveAllDocuments() -> Bool {
-        saveAllDocuments(quitting: false)
-    }
-
-    @discardableResult
-    func saveAllDocuments(_ quitting: Bool) -> Bool {
-        saveAllDocuments(quitting: quitting)
-    }
-
-    @discardableResult
-    func saveAllDocuments(quitting: Bool) -> Bool {
         var ignoredFailures: [String] = []
-        return saveAllDocuments(quitting: quitting, failures: &ignoredFailures)
+        return saveAllDocuments(quitting: false, failures: &ignoredFailures)
     }
 
     /// Dialog-free core behind Save All: performs the sweep, appends one
@@ -1399,27 +1411,6 @@ class MainWindowController: NSViewController {
 
         return !cancelled && saveFailures.isEmpty
     }
-
-    @discardableResult
-    func saveAllDocuments(forQuit: Bool) -> Bool { saveAllDocuments(quitting: forQuit) }
-
-    @discardableResult
-    func saveAllDocuments(isQuitting: Bool) -> Bool { saveAllDocuments(quitting: isQuitting) }
-
-    @discardableResult
-    func saveAllDocuments(quit: Bool) -> Bool { saveAllDocuments(quitting: quit) }
-
-    @discardableResult
-    func saveAllDocuments(forTermination: Bool) -> Bool { saveAllDocuments(quitting: forTermination) }
-
-    @discardableResult
-    func saveAllDocuments(abortOnCancel: Bool) -> Bool { saveAllDocuments(quitting: abortOnCancel) }
-
-    @discardableResult
-    func saveAllDocumentsForQuit() -> Bool { saveAllDocuments(quitting: true) }
-
-    @discardableResult
-    func saveAllDocumentsForTermination() -> Bool { saveAllDocuments(quitting: true) }
 
     /// URL-driven core behind Save All's untitled branch: writes `doc` to `url`,
     /// retargets the tab, updates recents and clears dirty state. Returns true
@@ -1523,6 +1514,9 @@ class MainWindowController: NSViewController {
             guard alert.runModal() == .alertFirstButtonReturn else { return }
         }
 
+        // The shared body surfaces a read/decode failure and leaves the buffer
+        // (and its dirty flag) untouched, so a failed reload never discards the
+        // edits the user just agreed to drop.
         reloadDocumentFromDisk(doc)
     }
 
@@ -1707,7 +1701,10 @@ class MainWindowController: NSViewController {
                         if doc.isUntitled {
                             self.saveAsAndClose(doc)
                         } else {
-                            self.saveDocument(doc)
+                            // A failed write (or a cancelled/reload external-
+                            // change prompt) must leave the tab open, exactly
+                            // like the bulk-close sweep.
+                            guard self.saveDocument(doc) else { return }
                             self.closeDocument(doc)
                         }
                     case .alertSecondButtonReturn: // Don't Save
@@ -1758,8 +1755,9 @@ class MainWindowController: NSViewController {
     
     /// Saves `doc` through the ordinary path and reports whether the write
     /// succeeded. Move to Trash needs that answer: a failed save must abort the
-    /// trash rather than lose unsaved edits. The three Close call sites ignore
-    /// the result, so this stays a drop-in replacement for the old Void helper.
+    /// trash rather than lose unsaved edits. Every Close caller guards it too
+    /// (single-tab prompts, the bulk-close sweep and session load), so a failed
+    /// or cancelled save leaves the tab open instead of dropping the buffer.
     /// A file that changed on disk asks first through the same conflict prompt
     /// as Save; Cancel or Reload leaves the buffer unsaved and returns false.
     @discardableResult
@@ -2619,9 +2617,18 @@ class MainWindowController: NSViewController {
         let theme = theme(for: editor)
         editor.apply(theme: theme)
         // Temporary-attribute backgrounds are independent of the text-storage
-        // attribute rewrite below, but the theme (and the palette derived from
-        // it) can change with the document, so re-apply them on every pass.
-        editor.textView.applyTokenStyles(doc.editorState.tokenStyleState, theme: theme)
+        // attribute rewrite below, but they must be re-applied when the theme
+        // (and therefore the palette) can have changed, on a forced reset, or
+        // when this view is showing a different state. The storage observer
+        // (`handleTokenStyleEdit`) has already applied this edit's remapped
+        // state by the time typing reaches here; comparing avoids repeating
+        // that whole-buffer temporary-attribute rewrite once per keystroke.
+        let tokenStylesNeedApply = forceReset
+            || docThemeNames[doc.id] != theme.name
+            || editor.textView.tokenStyleState != doc.editorState.tokenStyleState
+        if tokenStylesNeedApply {
+            editor.textView.applyTokenStyles(doc.editorState.tokenStyleState, theme: theme)
+        }
 
         let docChanged = highlightedDoc !== doc
         if docChanged {
@@ -3341,39 +3348,72 @@ class MainWindowController: NSViewController {
         watchTimer = nil
     }
 
+    /// Outcome of comparing a file-backed document's buffer with its on-disk
+    /// text. `.failed` is deliberately distinct from `.unchanged`: when the
+    /// bytes cannot be read or decoded the buffer was NOT replaced, so callers
+    /// must not treat it as proof that disk matches memory.
+    private enum DiskReloadResult {
+        case reloaded
+        case unchanged
+        case failed(String)
+    }
+
     /// Reloads a clean file-backed document's buffer from disk through the
     /// shared storage, making the on-disk text the clean undoable baseline.
-    /// Returns true when a reload actually happened (on-disk text differed from
-    /// the in-memory buffer); the caller decides how to surface it.
-    private func reloadDocument(_ doc: DocumentModel, from url: URL) -> Bool {
-        guard let data = try? Data(contentsOf: url),
-              // Same decode as openFile: the document's own encoding, with a
-              // leading BOM stripped, so UTF-16/CP1252 files reload correctly.
-              let text = EncodingDetective.decodeForEditing(data, as: doc.encoding),
-              text != doc.text else { return false }
+    /// The result distinguishes "already matches the buffer" from "could not
+    /// read/decode the file": only `.reloaded` replaced the buffer and only
+    /// `.unchanged` proves it already equals disk. On `.failed` the buffer is
+    /// left exactly as it was, dirty state included.
+    private func reloadDocument(_ doc: DocumentModel, from url: URL) -> DiskReloadResult {
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            return .failed("could not read the file: \(error.localizedDescription)")
+        }
+        // Same decode as openFile: the document's own encoding, with a leading
+        // BOM stripped, so UTF-16/CP1252 files reload correctly.
+        guard let text = EncodingDetective.decodeForEditing(data, as: doc.encoding) else {
+            return .failed("its bytes are not valid \(doc.encoding).")
+        }
+        guard text != doc.text else { return .unchanged }
         doc.keepsBOM = EncodingDetective.detectBOM(of: data) != nil
         // Reload through the shared buffer: the visible editor updates
         // immediately and the reload stays undoable. reloadText also makes
         // the on-disk text the clean baseline in the same notification.
         doc.reloadText(text)
-        return true
+        return .reloaded
     }
 
     /// Shared body of File > Reload and the external-change prompt's Reload
     /// choice. The caller has already got the user's consent; this refreshes
     /// the buffer from disk, rebaselines the watcher, and repaints chrome.
     /// `reloadText` preserves bookmarks and folds by design.
-    private func reloadDocumentFromDisk(_ doc: DocumentModel) {
-        guard let url = doc.filePath else { return }
+    ///
+    /// Returns false only when the disk text could not be loaded. In that case
+    /// the buffer (and its dirty flag) is untouched, the error is surfaced, and
+    /// the watcher baseline is left alone so a later tick can retry.
+    @discardableResult
+    private func reloadDocumentFromDisk(_ doc: DocumentModel) -> Bool {
+        guard let url = doc.filePath else { return false }
         guard FileManager.default.fileExists(atPath: url.path) else {
             showError("The file no longer exists on disk.")
-            return
+            return false
         }
 
-        if !reloadDocument(doc, from: url) {
+        switch reloadDocument(doc, from: url) {
+        case .reloaded:
+            break
+        case .unchanged:
             // The on-disk text already matches the buffer. After a confirmed
             // discard that still means dropping the dirty baseline.
             doc.setModified(false)
+        case .failed(let reason):
+            // The buffer was NOT replaced. Keep it dirty: clearing dirty here
+            // would pretend the edits reached disk and a later save would
+            // silently destroy them.
+            showError("Failed to reload \(doc.name): \(reason)")
+            return false
         }
 
         // The explicit reload supersedes this tick's external-change signal.
@@ -3385,6 +3425,7 @@ class MainWindowController: NSViewController {
         refreshTabBar()
         updateEditor(forceRebind: true)
         updateStatusBar()
+        return true
     }
 
     /// Internal for app tests: exercises the same watcher path the timer runs.
@@ -3403,21 +3444,33 @@ class MainWindowController: NSViewController {
                 continue
             }
             guard modDate > previous else { continue }
-            seenModDates[doc.id] = modDate
 
             if doc.unsavedChanges {
                 // Dirty buffer: keep the user's edits. setModified(true) used
                 // to stand here, but it is a no-op once the document is
                 // already dirty. Record the conflict explicitly instead and
                 // refresh the chrome so the tab keeps showing its dirty state.
+                // Move the baseline forward too, so the conflict is not
+                // re-announced every tick.
+                seenModDates[doc.id] = modDate
                 doc.noteExternalChange()
                 NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
                 continue
             }
             guard FileManager.default.fileExists(atPath: path) else { continue }
-            guard reloadDocument(doc, from: URL(fileURLWithPath: path)) else { continue }
-            if allPanes.contains(where: { $0.tabStore.selectedDocument === doc }) {
-                updateEditor(forceRebind: true)
+            switch reloadDocument(doc, from: URL(fileURLWithPath: path)) {
+            case .reloaded:
+                seenModDates[doc.id] = modDate
+                if allPanes.contains(where: { $0.tabStore.selectedDocument === doc }) {
+                    updateEditor(forceRebind: true)
+                }
+            case .unchanged:
+                seenModDates[doc.id] = modDate
+            case .failed:
+                // Leave the baseline at the previous date so a transient read
+                // or decode failure is retried on the next tick. Never alert
+                // from the watcher.
+                continue
             }
         }
     }
@@ -4513,13 +4566,21 @@ class MainWindowController: NSViewController {
     }
     
     // MARK: - Session
-    
+
+    /// Set when an edit notice arrived and a debounced snapshot build is
+    /// pending. The work item reads it on the trailing edge.
+    private var pendingSessionSnapshot = false
+    private var pendingSessionSnapshotWorkItem: DispatchWorkItem?
+
     func saveSession() {
         // The editors and every document share their buffers, so untitled
         // (never-saved-to-disk) edits are already in the tab stores. Capture
         // each visible tab's caret/scroll/wrap/zoom first: tab switches
         // capture on unbind, but the tab on screen may have moved since.
         captureSessionState()
+        // An explicit save writes immediately and supersedes any scheduled
+        // build; a later trailing-edge snapshot must not overwrite it.
+        cancelPendingSessionSnapshot()
         try? SessionStore.save(sessionSnapshot())
     }
 
@@ -4532,12 +4593,41 @@ class MainWindowController: NSViewController {
         }
     }
 
-    /// Coalesced write used by the edit notifications.
+    /// Debounces both halves of the session save: the snapshot construction
+    /// (serializing every document, O(document) each) and the write. Edit
+    /// notices arrive per keystroke, so building a snapshot in the notice would
+    /// pay that cost on every keystroke even though `SessionStore` coalesces
+    /// the write. The trailing edge builds once and hands the finished
+    /// snapshot to the store, which then writes without a second interval.
     private func scheduleSessionSave() {
         // A second window writing its own tabs would replace the primary
         // window's session. The app delegate merges every window instead.
         guard !isAdditionalWindow else { return }
-        SessionStore.scheduleSave(sessionSnapshot())
+        // Surface the pending write immediately; the O(document) snapshot
+        // build waits for the trailing edge below.
+        SessionStore.markPending()
+        pendingSessionSnapshot = true
+        pendingSessionSnapshotWorkItem?.cancel()
+
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingSessionSnapshotWorkItem = nil
+            guard self.pendingSessionSnapshot else { return }
+            self.pendingSessionSnapshot = false
+            SessionStore.scheduleSave(self.sessionSnapshot(), after: 0)
+        }
+        pendingSessionSnapshotWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + SessionStore.debounceInterval,
+                                      execute: item)
+    }
+
+    /// Drops a pending debounced snapshot build. Explicit save paths build and
+    /// write their own snapshot, and a stale trailing-edge build would then
+    /// overwrite it.
+    func cancelPendingSessionSnapshot() {
+        pendingSessionSnapshot = false
+        pendingSessionSnapshotWorkItem?.cancel()
+        pendingSessionSnapshotWorkItem = nil
     }
 
     /// One snapshot for the existing session schema, which stores a single tab
