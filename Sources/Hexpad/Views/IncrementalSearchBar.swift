@@ -47,6 +47,12 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
     private(set) var matches: [SearchMatch] = []
     private(set) var currentMatchIndex = -1
     private var lastQuery = ""
+    /// Debounce for live full-buffer searches in large documents, matching
+    /// FindBar's policy so both search surfaces behave the same: documents
+    /// over 1MB wait for a 150ms pause, smaller ones search immediately.
+    private var pendingSearchWorkItem: DispatchWorkItem?
+    private static let debounceSearchLength = 1_000_000
+    private static let debounceInterval: TimeInterval = 0.15
     /// Set while handling a field-editor command; Return must not be mistaken
     /// for a focus loss and tear the bar down.
     private var isHandlingCommand = false
@@ -72,6 +78,7 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
     }
 
     deinit {
+        pendingSearchWorkItem?.cancel()
         stopObservingTabSelection()
         stopObservingViewport()
     }
@@ -180,6 +187,8 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
     // MARK: - Show / hide
 
     func show(initialQuery: String = "") {
+        pendingSearchWorkItem?.cancel()
+        pendingSearchWorkItem = nil
         isVisible = true
         isHidden = false
         isHiding = false
@@ -199,6 +208,8 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
 
     func hide() {
         guard !isHiding else { return }
+        pendingSearchWorkItem?.cancel()
+        pendingSearchWorkItem = nil
         isHiding = true
         isVisible = false
         isHidden = true
@@ -220,7 +231,35 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
 
     // MARK: - Searching
 
-    func performSearch(select: Bool = true) {
+    func performSearch(select: Bool = true, debounce: Bool = false) {
+        pendingSearchWorkItem?.cancel()
+        pendingSearchWorkItem = nil
+
+        let query = searchField.stringValue
+        // An empty query clears immediately: there is no full pass to spare and
+        // a pending debounce must not resurrect results after the field empties.
+        var length = 0
+        if let textView = editorRef?.textView {
+            length = (textView.string as NSString).length
+        }
+        if debounce, !query.isEmpty, length > Self.debounceSearchLength {
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.pendingSearchWorkItem = nil
+                self.performSearchNow(select: select)
+            }
+            pendingSearchWorkItem = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.debounceInterval,
+                                          execute: work)
+            return
+        }
+
+        performSearchNow(select: select)
+    }
+
+    /// Synchronous search used by the debounce's trailing edge and by every
+    /// non-typing caller (toggles, show, navigation).
+    private func performSearchNow(select: Bool) {
         clearHighlights()
         guard isVisible, let textView = editorRef?.textView else {
             matches = []
@@ -490,7 +529,7 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
     // MARK: - Field events
 
     func controlTextDidChange(_ obj: Notification) {
-        performSearch()
+        performSearch(debounce: true)
     }
 
     func controlTextDidEndEditing(_ obj: Notification) {
