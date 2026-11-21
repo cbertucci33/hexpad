@@ -24,12 +24,19 @@ class TabBarView: NSView {
     private let tabStore: TabStore
     private var tabButtons: [TabButton] = []
 
-    /// Creation moments of the bar's tabs, keyed by document identity. The
-    /// bar records each document's first sight here and every later rebuild
-    /// of the buttons reuses the stored date, so a tab's tooltip "created"
-    /// time does not drift with `reloadTabs()`. Entries for tabs that closed
-    /// are dropped on the next reload.
-    private var creationDates: [UUID: Date] = [:]
+    /// Creation moments of tabs, keyed by document identity. Shared by every
+    /// bar in the process: a bar records a document's first sight here and
+    /// every later rebuild reuses the stored date, so a tab's tooltip
+    /// "created" time does not drift with `reloadTabs()`. Sharing also means a
+    /// document dragged to the other split pane keeps the moment it was first
+    /// shown instead of being re-stamped by its new bar. Entries are
+    /// process-lifetime because a `DocumentModel` id is never reused.
+    private static var creationDates: [UUID: Date] = [:]
+
+    /// Test seam: the clock used to stamp a tab's first sight. Production uses
+    /// `Date.init`; tests pin a fixed instant so the minute-resolution tooltip
+    /// can be asserted exactly rather than against a freshly stamped date.
+    static var nowProvider: () -> Date = Date.init
 
     /// The other group's bar while the split view is open. Drags that leave
     /// this bar over its sibling move the tab between the two TabStores.
@@ -221,19 +228,17 @@ class TabBarView: NSView {
         tabButtons.forEach { $0.removeFromSuperview() }
         tabButtons.removeAll()
 
-        // Creation is tracked per document, not per button: drop entries for
-        // tabs that closed, then record each present document's first-sight
-        // moment so the rebuilt buttons show the same "created" time.
-        let presentIDs = Set(tabStore.documents.map { $0.id })
-        creationDates = creationDates.filter { presentIDs.contains($0.key) }
-
+        // Creation is tracked per document, not per button: record each present
+        // document's first-sight moment (in the process-wide map) so rebuilt
+        // buttons — in this bar or the sibling pane — show the same "created"
+        // time.
         let tabWidth: CGFloat = 140
         let spacing: CGFloat = 2
         let tabHeight = bounds.height
 
         for (index, doc) in tabStore.documents.enumerated() {
-            let created = creationDates[doc.id] ?? Date()
-            creationDates[doc.id] = created
+            let created = Self.creationDates[doc.id] ?? Self.nowProvider()
+            Self.creationDates[doc.id] = created
             let button = TabButton(doc: doc,
                                    index: index,
                                    tabWidth: tabWidth,

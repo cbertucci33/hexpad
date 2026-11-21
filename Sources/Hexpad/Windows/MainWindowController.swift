@@ -728,34 +728,10 @@ class MainWindowController: NSViewController {
         menu.addItem(readOnlyItem)
 
         menu.addItem(.separator())
-        // Sort By: the same ten commands as Window > Sort By — same
-        // representedObject/tag encoding — so the controller's
+        // Sort By: the same submenu builder as Window > Sort By — same ten
+        // commands and representedObject/tag encoding — so the controller's
         // sortDocumentsBy(_:) handles them identically.
-        let sortByItem = NSMenuItem(title: "Sort By", action: nil, keyEquivalent: "")
-        let sortByMenu = NSMenu(title: "Sort By")
-        let sortCommands: [(title: String, key: TabSortKey, ascending: Bool)] = [
-            ("Name (Ascending)", .name, true),
-            ("Name (Descending)", .name, false),
-            ("Path (Ascending)", .path, true),
-            ("Path (Descending)", .path, false),
-            ("Type (Ascending)", .type, true),
-            ("Type (Descending)", .type, false),
-            ("Length (Ascending)", .length, true),
-            ("Length (Descending)", .length, false),
-            ("Modified (Ascending)", .modified, true),
-            ("Modified (Descending)", .modified, false),
-        ]
-        for command in sortCommands {
-            let item = NSMenuItem(title: command.title,
-                                  action: #selector(MainWindowController.sortDocumentsBy(_:)),
-                                  keyEquivalent: "")
-            item.target = nil
-            item.representedObject = command.key.rawValue
-            item.tag = command.ascending ? 1 : 0
-            sortByMenu.addItem(item)
-        }
-        sortByItem.submenu = sortByMenu
-        menu.addItem(sortByItem)
+        menu.addItem(TabSortMenu.makeItem())
         return menu
     }
     

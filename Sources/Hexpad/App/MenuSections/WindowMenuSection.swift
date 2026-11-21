@@ -41,10 +41,19 @@ extension HexpadAppDelegate {
         }
 
         // W23a: sorting is a tab-order operation, so it sits with the other tab
-        // commands. One nil-targeted action covers all ten items: the key is in
-        // representedObject and the tag distinguishes ascending (1) from
-        // descending (0).
+        // commands. The submenu is shared with the tab context menu.
         windowMenu.addItem(.separator())
+        windowMenu.addItem(TabSortMenu.makeItem())
+        return windowMenu
+    }
+}
+
+/// Builds the one "Sort By" submenu presented by both Window > Sort By and the
+/// tab context menu. One nil-targeted action covers all ten items: the key is
+/// in representedObject and the tag distinguishes ascending (1) from
+/// descending (0).
+enum TabSortMenu {
+    static func makeItem() -> NSMenuItem {
         let sortByItem = NSMenuItem(title: "Sort By", action: nil, keyEquivalent: "")
         let sortByMenu = NSMenu(title: "Sort By")
         let sortCommands: [(title: String, key: TabSortKey, ascending: Bool)] = [
@@ -69,7 +78,6 @@ extension HexpadAppDelegate {
             sortByMenu.addItem(item)
         }
         sortByItem.submenu = sortByMenu
-        windowMenu.addItem(sortByItem)
-        return windowMenu
+        return sortByItem
     }
 }

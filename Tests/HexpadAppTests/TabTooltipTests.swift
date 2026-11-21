@@ -9,7 +9,25 @@ import HexpadKit
 /// setup: a `TabStore`, a `TabBarView` with a frame, then `reloadTabs()`.
 final class TabTooltipTests: XCTestCase {
 
-    private let unsavedPrefix = "Untitled — created "
+    /// A pinned instant far from the real clock, so a tooltip stamped with
+    /// `Date()` (or any clock other than the injected one) cannot
+    /// coincidentally render the same minute.
+    private static let baseDate = Date(timeIntervalSince1970: 1_234_567_890)
+
+    /// The bar's injected clock. Tests advance it to prove a stored creation
+    /// moment survives reloads and pane moves instead of being re-stamped.
+    private var now = TabTooltipTests.baseDate
+
+    override func setUp() {
+        super.setUp()
+        now = Self.baseDate
+        TabBarView.nowProvider = { [weak self] in self?.now ?? TabTooltipTests.baseDate }
+    }
+
+    override func tearDown() {
+        TabBarView.nowProvider = Date.init
+        super.tearDown()
+    }
 
     private func makeBar(for documents: [DocumentModel]) -> (TabBarView, TabStore) {
         let store = TabStore()
@@ -40,6 +58,13 @@ final class TabTooltipTests: XCTestCase {
         formatter.timeStyle = .short
         formatter.locale = .current
         return formatter
+    }
+
+    /// The exact tooltip an unsaved buffer with `name` shows when its first
+    /// sight was stamped at `date`. Built with the same formatter the button
+    /// uses, but against the pinned clock rather than the wall clock.
+    private func expectedTooltip(name: String = "Untitled", at date: Date) -> String {
+        "\(name) — created \(tooltipDateFormatter().string(from: date))"
     }
 
     // MARK: - Saved document
@@ -80,55 +105,74 @@ final class TabTooltipTests: XCTestCase {
         let (bar, _) = makeBar(for: [doc])
 
         let button = try XCTUnwrap(tabButtons(in: bar).first)
-        let tooltip = try XCTUnwrap(button.toolTip)
-        XCTAssertTrue(tooltip.hasPrefix(unsavedPrefix),
-                      "unsaved tooltip starts with the name and 'created': \(tooltip)")
+        let expected = expectedTooltip(at: now)
+        XCTAssertEqual(button.toolTip, expected,
+                       "the tooltip shows the pinned first-sight moment")
 
         // The creation moment is the document's first sight in the bar, so it
-        // survives the bar's rebuilds: reload a few times and the tooltip
-        // must show the same time again.
+        // survives the bar's rebuilds even as the clock moves on: reloading
+        // must not re-stamp the tab with the reload time.
+        now = now.addingTimeInterval(3_600)
         bar.reloadTabs()
         bar.reloadTabs()
         bar.reloadTabs()
-        XCTAssertEqual(tooltip, tabButtons(in: bar).first?.toolTip,
+        XCTAssertEqual(tabButtons(in: bar).first?.toolTip, expected,
                        "reloading the bar must not change the tab's creation time")
     }
 
     func testNewDocumentInBarGetsItsOwnCreationTime() throws {
         let doc = DocumentModel(text: "first draft")
         let (bar, store) = makeBar(for: [doc])
-        let firstTooltip = try XCTUnwrap(tabButtons(in: bar).first?.toolTip)
-        XCTAssertTrue(firstTooltip.hasPrefix(unsavedPrefix))
+        let firstExpected = expectedTooltip(at: now)
+        XCTAssertEqual(tabButtons(in: bar).first?.toolTip, firstExpected)
 
-        // A newly opened document gets its own first-sight moment: the new
-        // tab's time is not earlier than the old tab's.
+        // A document opened later gets the moment it was first seen, and the
+        // already-present tab keeps its earlier moment.
+        now = now.addingTimeInterval(3_600)
         let newDoc = DocumentModel(text: "second draft")
         store.addDocument(newDoc)
         bar.reloadTabs()
 
-        let newTooltip = try XCTUnwrap(
-            tabButtons(in: bar).first(where: { $0.doc === newDoc })?.toolTip)
-        XCTAssertTrue(newTooltip.hasPrefix(unsavedPrefix), newTooltip)
-        XCTAssertGreaterThanOrEqual(tooltipTime(newTooltip),
-                                    tooltipTime(firstTooltip),
-                                    "the new document gets its own, not-earlier creation time")
+        XCTAssertEqual(tabButtons(in: bar).first(where: { $0.doc === doc })?.toolTip,
+                       firstExpected,
+                       "the existing tab keeps its earlier creation time")
+        let newExpected = expectedTooltip(at: now)
+        XCTAssertEqual(tabButtons(in: bar).first(where: { $0.doc === newDoc })?.toolTip,
+                       newExpected,
+                       "the new tab is stamped with its own first-sight moment")
 
         // The new tab's time is stable across later rebuilds, too.
+        now = now.addingTimeInterval(3_600)
         bar.reloadTabs()
-        XCTAssertEqual(newTooltip,
-                       tabButtons(in: bar).first(where: { $0.doc === newDoc })?.toolTip,
+        XCTAssertEqual(tabButtons(in: bar).first(where: { $0.doc === newDoc })?.toolTip,
+                       newExpected,
                        "the new tab's creation time survives later rebuilds")
     }
 
-    /// Parses a tooltip's rendered creation time with the same format the
-    /// button displays, so moments can be compared.
-    private func tooltipTime(_ tooltip: String) -> Date {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        formatter.locale = .current
-        return formatter.date(from: String(tooltip.dropFirst(unsavedPrefix.count)))
-            ?? Date.distantPast
+    /// The creation-date map is shared between the split panes, so a tab moved
+    /// to the other pane shows the moment it was first seen in the source.
+    func testCrossPaneTransferKeepsCreationTime() throws {
+        let doc = DocumentModel(text: "moving draft")
+        let (sourceBar, sourceStore) = makeBar(for: [doc])
+        let (targetBar, targetStore) = makeBar(for: [])
+        sourceBar.siblingTabBar = targetBar
+        targetBar.siblingTabBar = sourceBar
+
+        let expected = expectedTooltip(at: now)
+        XCTAssertEqual(tabButtons(in: sourceBar).first?.toolTip, expected)
+
+        now = now.addingTimeInterval(3_600)
+        sourceBar.transferTab(at: 0, doc: doc, to: targetBar, at: 0)
+        XCTAssertTrue(sourceStore.documents.isEmpty)
+        XCTAssertTrue(targetStore.documents.first === doc)
+        XCTAssertEqual(tabButtons(in: targetBar).first?.toolTip, expected,
+                       "the moved tab keeps the creation time it had in the source pane")
+
+        // Round trip: moving back still reuses the shared first-sight moment.
+        now = now.addingTimeInterval(3_600)
+        targetBar.transferTab(at: 0, doc: doc, to: sourceBar, at: 0)
+        XCTAssertEqual(tabButtons(in: sourceBar).first?.toolTip, expected,
+                       "moving the tab back still keeps its original creation time")
     }
 
     func testRenamedUnsavedDocumentTooltipUsesItsName() throws {
@@ -137,8 +181,7 @@ final class TabTooltipTests: XCTestCase {
         let (bar, _) = makeBar(for: [doc])
         let button = try XCTUnwrap(tabButtons(in: bar).first)
 
-        let tooltip = button.toolTip ?? ""
-        XCTAssertTrue(tooltip.hasPrefix("Scratch — created "),
-                      "a renamed untitled buffer shows its own name: \(tooltip)")
+        XCTAssertEqual(button.toolTip, expectedTooltip(name: "Scratch", at: now),
+                       "a renamed untitled buffer shows its own name")
     }
 }
