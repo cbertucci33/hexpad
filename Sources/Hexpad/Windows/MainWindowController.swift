@@ -4549,35 +4549,126 @@ class MainWindowController: NSViewController {
         loadSession(from: url)
     }
 
+    /// The resolved answer to Load Session's dirty-tab save prompt. Passing the
+    /// already-resolved choice into `loadSessionFile(from:resolution:)` keeps
+    /// the NSAlert as the only untested seam, the same pattern as
+    /// `TrashPromptResolution`.
+    enum SessionLoadResolution {
+        case save
+        case discard
+        case cancel
+    }
+
     /// Replaces the focused group's workspace with the session's tabs, the same
     /// semantic as session restore at startup (not an additive import).
     func loadSession(from url: URL) {
         loadSessionFile(from: url)
     }
 
-    /// URL-driven core behind `loadSession(from:)`. Closes the current tabs and
-    /// inserts the restored ones, then restores the saved selection clamped to
-    /// the reconstructed tab count. A bad file is reported and leaves the
-    /// workspace untouched.
+    /// Interactive entry point. Decodes the file FIRST so a bad session still
+    /// reports its error without ever asking about unsaved tabs, then prompts
+    /// once and hands the resolved answer to the dialog-free core.
     func loadSessionFile(from url: URL) {
         do {
-            let snapshot = try SessionStore.loadSnapshot(from: url)
-            let restored = TabStore.fromSessionData(snapshot.tabs)
-            // Capture the outgoing tabs before replacing them: this load is a
-            // replace, so every discarded document must release its id-keyed
-            // caches (histories can hold twenty full-text snapshots each).
-            let outgoing = allPanes.flatMap { $0.tabStore.documents }
-            tabStore.documents = restored.documents
-            tabStore.selectedIndex = min(max(0, snapshot.selectedIndex),
-                                         max(0, restored.documents.count - 1))
-            refreshTabBar()
-            // Force a rebind: restored documents are new objects even when a
-            // session happens to carry the same ids as the outgoing tabs.
-            updateEditor(forceRebind: true)
-            outgoing.forEach { pruneIDKeyedCaches(for: $0) }
+            _ = try SessionStore.loadSnapshot(from: url)
         } catch {
             showError("Failed to load session: \(error.localizedDescription)")
+            return
         }
+
+        loadSessionFile(from: url, resolution: promptForSessionLoad())
+    }
+
+    /// Dialog-free core behind `loadSessionFile(from:)`. Headless tests drive
+    /// this with a URL and an already-resolved `.save` / `.discard` / `.cancel`
+    /// choice. Returns false when the load was abandoned: Cancel, a failed
+    /// save, or an unreadable file all leave the workspace untouched.
+    @discardableResult
+    func loadSessionFile(from url: URL, resolution: SessionLoadResolution) -> Bool {
+        do {
+            return applySessionSnapshot(try SessionStore.loadSnapshot(from: url),
+                                        resolution: resolution)
+        } catch {
+            showError("Failed to load session: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    /// One Save / Don't Save / Cancel prompt for every dirty tab the load will
+    /// replace, using the Close Tab alert's wording and button order. A clean
+    /// workspace needs no question and resolves to `.discard`.
+    private func promptForSessionLoad() -> SessionLoadResolution {
+        let dirty = tabStore.documents.filter { $0.unsavedChanges }
+        guard !dirty.isEmpty else { return .discard }
+
+        let alert = NSAlert()
+        if dirty.count == 1 {
+            alert.messageText = "Save changes to \(dirty[0].name)?"
+            alert.informativeText = "Loading a session will replace this document's buffer."
+        } else {
+            alert.messageText = "Save changes to \(dirty.count) documents?"
+            alert.informativeText = "Loading a session will replace these documents' buffers."
+        }
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Don't Save")
+        alert.addButton(withTitle: "Cancel")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: return .save
+        case .alertSecondButtonReturn: return .discard
+        default: return .cancel
+        }
+    }
+
+    /// Writes every dirty tab ahead of a load. File-backed documents save in
+    /// place; untitled ones get the usual Save As panel. Returns false when a
+    /// write fails or an untitled panel is cancelled, so the load aborts with
+    /// the workspace untouched.
+    private func saveDirtyDocumentsForSessionLoad() -> Bool {
+        for doc in tabStore.documents where doc.unsavedChanges {
+            if doc.filePath != nil {
+                guard saveDocument(doc) else { return false }
+            } else {
+                let panel = NSSavePanel()
+                panel.title = "Save As"
+                panel.nameFieldStringValue = doc.name
+                guard panel.runModal() == .OK, let url = panel.url else { return false }
+                guard saveDocument(doc, to: url) else { return false }
+            }
+        }
+        return true
+    }
+
+    /// Applies the replacement itself: closes the current tabs and inserts the
+    /// restored ones, then restores the saved selection clamped to the
+    /// reconstructed tab count. Cancel leaves the store untouched; Save runs
+    /// the dirty-save sweep first and aborts if any write did not land.
+    @discardableResult
+    func applySessionSnapshot(_ snapshot: SessionStore.Snapshot,
+                              resolution: SessionLoadResolution) -> Bool {
+        switch resolution {
+        case .cancel:
+            return false
+        case .save:
+            guard saveDirtyDocumentsForSessionLoad() else { return false }
+        case .discard:
+            break
+        }
+
+        let restored = TabStore.fromSessionData(snapshot.tabs)
+        // Capture the outgoing tabs before replacing them: this load is a
+        // replace, so every discarded document must release its id-keyed
+        // caches (histories can hold twenty full-text snapshots each).
+        let outgoing = allPanes.flatMap { $0.tabStore.documents }
+        tabStore.documents = restored.documents
+        tabStore.selectedIndex = min(max(0, snapshot.selectedIndex),
+                                     max(0, restored.documents.count - 1))
+        refreshTabBar()
+        // Force a rebind: restored documents are new objects even when a
+        // session happens to carry the same ids as the outgoing tabs.
+        updateEditor(forceRebind: true)
+        outgoing.forEach { pruneIDKeyedCaches(for: $0) }
+        return true
     }
     
     // MARK: - Error
