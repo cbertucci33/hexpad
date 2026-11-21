@@ -355,6 +355,14 @@ class FindBar: NSView, NSSearchFieldDelegate {
         if searchField.stringValue.isEmpty, let last = searchHistory.first {
             searchField.stringValue = last
         }
+        // Also seed from the editor's current selection if available, so that
+        // Cmd+F with a selection behaves consistently through show().
+        if searchField.stringValue.isEmpty, let editor = editorContainer,
+           editor.textView.selectedRange.length > 0 {
+            let selected = (editor.textView.string as NSString)
+                .substring(with: editor.textView.selectedRange)
+            searchField.stringValue = selected
+        }
         if !searchField.stringValue.isEmpty {
             performFind()
         }
@@ -999,7 +1007,7 @@ class FindBar: NSView, NSSearchFieldDelegate {
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         if commandSelector == #selector(NSResponder.insertNewline(_:)) {
             commitSearchHistory()
-            if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
+            if textView.window?.currentEvent?.modifierFlags.contains(.shift) == true {
                 findPrevious()
             } else {
                 findNext()

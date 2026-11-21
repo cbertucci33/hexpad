@@ -2871,14 +2871,7 @@ class MainWindowController: NSViewController {
             find.hide()
         } else {
             find.show()
-            // Pre-populate if text selected
-            if let editor = editorContainer, editor.textView.selectedRange.length > 0 {
-                let selected = (editor.textView.string as NSString).substring(with: editor.textView.selectedRange)
-                find.searchField.stringValue = selected
-                find.performFind()
-            }
-            // Focus the field: without this the editor kept first responder and
-            // typing after Cmd+F landed in the document instead of the query.
+            // show() now handles seeding from history/selection and performing one search.
             view.window?.makeFirstResponder(find.searchField)
         }
         updateLayout()
@@ -3038,14 +3031,6 @@ class MainWindowController: NSViewController {
         if !find.isVisible {
             find.show()
             updateLayout()
-        }
-        if find.searchField.stringValue.isEmpty,
-           let editor = editorContainer,
-           editor.textView.selectedRange.length > 0 {
-            let selected = (editor.textView.string as NSString)
-                .substring(with: editor.textView.selectedRange)
-            find.searchField.stringValue = selected
-            find.performFind()
         }
         view.window?.makeFirstResponder(find.searchField)
         return !find.searchField.stringValue.isEmpty
