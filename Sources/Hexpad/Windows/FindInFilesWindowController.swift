@@ -303,16 +303,46 @@ final class FindInFilesWindowController: NSWindowController {
         window?.title = "Search Results"
         setFileInputsVisible(false)
 
+        // Preserve fold state across the refresh. Capture identity keys before
+        // mutating the batch list so groups that survive (same document + same
+        // matches signature) keep their collapsed state; groups that vanished are
+        // dropped automatically.
+        let oldGroups = documentGroups
+        let oldFoldedKeys = Set(foldedGroups.compactMap { index -> String? in
+            guard oldGroups.indices.contains(index) else { return nil }
+            return groupKey(oldGroups[index])
+        })
+        let oldFoldedBatches = foldedBatches
+
         let batch = DocumentSearchBatch(description: searchDescription, groups: groups)
-        if searchBatches.last?.description == searchDescription, !searchBatches.isEmpty {
-            searchBatches[searchBatches.count - 1] = batch
+        // Refresh in place when this query already exists anywhere in the
+        // accumulated list (not just as the last batch), so an A->B->A sequence
+        // reuses the existing batch instead of appending a duplicate.
+        if let existingIndex = searchBatches.firstIndex(where: { $0.description == searchDescription }) {
+            searchBatches[existingIndex] = batch
         } else {
             searchBatches.append(batch)
         }
         lastSearchDescription = searchDescription
         rebuildBatchLayouts()
-        foldedGroups = []
-        foldedBatches = []
+
+        // Preserve group fold state for groups that still exist (keyed by
+        // document id + matches signature); clear it for groups that vanished.
+        let newGroups = documentGroups
+        var newFoldedGroups: Set<Int> = []
+        for (index, group) in newGroups.enumerated() {
+            if oldFoldedKeys.contains(groupKey(group)) {
+                newFoldedGroups.insert(index)
+            }
+        }
+        foldedGroups = newFoldedGroups
+        // Keep batch folds that still point at a valid batch.
+        var newFoldedBatches: Set<Int> = []
+        for index in oldFoldedBatches where searchBatches.indices.contains(index) {
+            newFoldedBatches.insert(index)
+        }
+        foldedBatches = newFoldedBatches
+
         rebuildDocumentRows()
         updateSummaryStatus()
     }
@@ -329,17 +359,37 @@ final class FindInFilesWindowController: NSWindowController {
     }
 
     private func updateSummaryStatus() {
+        // Reflect the current navigation state when the cursor is on a result,
+        // rather than a stale aggregate. Otherwise report an aggregate that is
+        // not misleadingly attributed to a single (last) query, and exclude
+        // empty groups (0 matches left) from the file count.
+        if currentResultIndex >= 0,
+           resultRows.indices.contains(currentResultIndex) {
+            statusLabel.stringValue = "Result \(currentResultIndex + 1) of \(resultRows.count)"
+            return
+        }
         let matchCount = documentResultCount
+        let fileCount = documentGroups.filter { !$0.matches.isEmpty }.count
         if matchCount == 0 {
-            statusLabel.stringValue = "No matches for \(lastSearchDescription)"
+            statusLabel.stringValue = "No matches"
         } else {
-            statusLabel.stringValue = "\(matchCount) matches in \(documentGroups.count) files for \(lastSearchDescription)"
+            statusLabel.stringValue = "\(matchCount) matches in \(fileCount) files"
         }
     }
 
     /// Total hits currently listed in document mode. Used by app tests.
     var documentResultCount: Int {
         documentGroups.reduce(0) { $0 + $1.matches.count }
+    }
+
+    /// Identity key for a result group, used to preserve fold state across a
+    /// refresh: document id plus the matches signature. Groups whose key is
+    /// unchanged keep their collapsed state; vanished groups are dropped.
+    private func groupKey(_ group: DocumentSearchGroup) -> String {
+        let matchesSignature = group.matches.map {
+            "\($0.range.location):\($0.range.length):\($0.line):\($0.text)"
+        }.joined(separator: ",")
+        return "\(group.documentID)|\(matchesSignature)"
     }
 
     /// Number of rows F4 / Shift+F4 can visit. Used by app tests.
@@ -446,8 +496,9 @@ final class FindInFilesWindowController: NSWindowController {
         let description = searchBatches[batchIndex].description
         let range = batchLayouts[batchIndex].groupRange
         let count = documentGroups[range].reduce(0) { $0 + $1.matches.count }
+        let fileCount = documentGroups[range].filter { !$0.matches.isEmpty }.count
         let marker = foldedBatches.contains(batchIndex) ? "▸" : "▾"
-        return "\(marker) Search \(description)  —  \(count) matches in \(range.count) files"
+        return "\(marker) Search \(description)  —  \(count) matches in \(fileCount) files"
     }
 
     /// Single-click handler. Only headers act; a match row's click is left to
@@ -678,7 +729,7 @@ final class FindInFilesWindowController: NSWindowController {
         let row = resultRows[currentResultIndex]
         resultsTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         resultsTable.scrollRowToVisible(row)
-        statusLabel.stringValue = "Result \(currentResultIndex + 1) of \(resultRows.count)"
+        updateSummaryStatus()
         openRow(row)
     }
 
