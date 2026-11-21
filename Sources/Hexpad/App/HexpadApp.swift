@@ -29,7 +29,10 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
 
     /// Test seam: closes every additional window (headless tests have no
     /// window-server lifecycle to lean on).
+    private var isClosingAdditionalWindowsForTest = false
     func closeAllAdditionalWindowsForTest() {
+        isClosingAdditionalWindowsForTest = true
+        defer { isClosingAdditionalWindowsForTest = false }
         for controller in extraWindowControllers {
             controller.mainWindow?.close()
         }
@@ -106,15 +109,18 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
             if response == .alertFirstButtonReturn {
                 // Save All: write every dirty document in every open window.
                 // A cancelled untitled Save panel or a failed write aborts the
-                // quit instead of dropping the remaining buffers.
+                // quit instead of dropping the remaining buffers. The sweep
+                // itself is dialog-free; surface any write failures here.
                 var saveAllSucceeded = true
+                var saveAllFailures: [String] = []
                 for controller in allWindowControllers {
-                    if !controller.saveAllDocuments(quitting: true) {
+                    if !controller.saveAllDocuments(quitting: true, failures: &saveAllFailures) {
                         saveAllSucceeded = false
                         break
                     }
                 }
                 if !saveAllSucceeded {
+                    showSaveAllFailures(saveAllFailures)
                     return .terminateCancel
                 }
             }
@@ -126,6 +132,18 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         // snapshot behavior is unchanged.
         saveMergedSession()
         return .terminateNow
+    }
+
+    /// Surfaces Save All write failures from an interactive sweep. The
+    /// controller's sweep is dialog-free so headless tests can drive it; only
+    /// the menu and quit callers show this alert.
+    private func showSaveAllFailures(_ failures: [String]) {
+        guard !failures.isEmpty else { return }
+        let alert = NSAlert()
+        alert.messageText = "Error"
+        alert.informativeText = "Failed to save file:\n" + failures.joined(separator: "\n")
+        alert.alertStyle = .critical
+        alert.runModal()
     }
 
     /// Testable quit decision. With no dirty documents termination proceeds
@@ -177,6 +195,116 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         quitResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: saveResult)
     }
 
+    // MARK: - Window close (secondary windows)
+
+    /// Testable window-close decision. With no dirty documents the close proceeds
+    /// immediately. Otherwise the modal response maps as follows, matching the
+    /// tab-close alert button order (Save / Don't Save / Cancel):
+    ///   .alertFirstButtonReturn  (Save)       -> close only if the save succeeded
+    ///   .alertSecondButtonReturn (Don't Save) -> close
+    ///   .alertThirdButtonReturn  (Cancel)     -> abort close
+    static func windowShouldCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse) -> Bool {
+        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: true)
+    }
+
+    static func windowShouldCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse, saveSucceeded: Bool) -> Bool {
+        guard dirtyCount > 0 else { return true }
+        switch response {
+        case .alertFirstButtonReturn:  // Save
+            return saveSucceeded
+        case .alertSecondButtonReturn: // Don't Save
+            return true
+        case .alertThirdButtonReturn:  // Cancel
+            return false
+        default:
+            return false
+        }
+    }
+
+    // Alias parameter labels for callers/tests naming the save result differently.
+    static func windowShouldCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse, saveAllSucceeded: Bool) -> Bool {
+        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: saveAllSucceeded)
+    }
+    static func windowShouldCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse, allSaved: Bool) -> Bool {
+        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: allSaved)
+    }
+    static func windowShouldCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse, didSave: Bool) -> Bool {
+        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: didSave)
+    }
+    static func windowShouldCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse, saved: Bool) -> Bool {
+        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: saved)
+    }
+    static func windowShouldCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse, success: Bool) -> Bool {
+        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: success)
+    }
+    static func windowShouldCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse, saveResult: Bool) -> Bool {
+        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: saveResult)
+    }
+
+    // Alias method names for callers/tests that phrase the decision differently.
+    static func windowCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse) -> Bool {
+        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response)
+    }
+    static func windowCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse, saveSucceeded: Bool) -> Bool {
+        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: saveSucceeded)
+    }
+    static func windowCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse, saveAllSucceeded: Bool) -> Bool {
+        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saveAllSucceeded: saveAllSucceeded)
+    }
+    static func windowCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse, allSaved: Bool) -> Bool {
+        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, allSaved: allSaved)
+    }
+    static func windowCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse, didSave: Bool) -> Bool {
+        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, didSave: didSave)
+    }
+    static func windowCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse, saved: Bool) -> Bool {
+        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saved: saved)
+    }
+    static func windowCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse, success: Bool) -> Bool {
+        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, success: success)
+    }
+    static func windowCloseResolution(dirtyCount: Int, response: NSApplication.ModalResponse, saveResult: Bool) -> Bool {
+        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saveResult: saveResult)
+    }
+
+    static func closeWindowResolution(dirtyCount: Int, response: NSApplication.ModalResponse) -> Bool {
+        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response)
+    }
+    static func closeWindowResolution(dirtyCount: Int, response: NSApplication.ModalResponse, saveSucceeded: Bool) -> Bool {
+        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: saveSucceeded)
+    }
+    static func shouldCloseWindowResolution(dirtyCount: Int, response: NSApplication.ModalResponse) -> Bool {
+        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response)
+    }
+    static func shouldCloseWindowResolution(dirtyCount: Int, response: NSApplication.ModalResponse, saveSucceeded: Bool) -> Bool {
+        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: saveSucceeded)
+    }
+
+    // Allow the decision to be queried under the same name as the delegate method.
+    static func windowShouldClose(dirtyCount: Int, response: NSApplication.ModalResponse) -> Bool {
+        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response)
+    }
+    static func windowShouldClose(dirtyCount: Int, response: NSApplication.ModalResponse, saveSucceeded: Bool) -> Bool {
+        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saveSucceeded: saveSucceeded)
+    }
+    static func windowShouldClose(dirtyCount: Int, response: NSApplication.ModalResponse, saveAllSucceeded: Bool) -> Bool {
+        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saveAllSucceeded: saveAllSucceeded)
+    }
+    static func windowShouldClose(dirtyCount: Int, response: NSApplication.ModalResponse, allSaved: Bool) -> Bool {
+        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, allSaved: allSaved)
+    }
+    static func windowShouldClose(dirtyCount: Int, response: NSApplication.ModalResponse, didSave: Bool) -> Bool {
+        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, didSave: didSave)
+    }
+    static func windowShouldClose(dirtyCount: Int, response: NSApplication.ModalResponse, saved: Bool) -> Bool {
+        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saved: saved)
+    }
+    static func windowShouldClose(dirtyCount: Int, response: NSApplication.ModalResponse, success: Bool) -> Bool {
+        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, success: success)
+    }
+    static func windowShouldClose(dirtyCount: Int, response: NSApplication.ModalResponse, saveResult: Bool) -> Bool {
+        windowShouldCloseResolution(dirtyCount: dirtyCount, response: response, saveResult: saveResult)
+    }
     /// Every open window's controller, primary first. Menu actions that are
     /// targeted at this delegate resolve against the key window instead.
     private var allWindowControllers: [MainWindowController] {
@@ -413,7 +541,10 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     }
     
     @objc func saveAllFiles() {
-        activeController?.saveAllDocuments()
+        guard let controller = activeController else { return }
+        var failures: [String] = []
+        controller.saveAllDocuments(quitting: false, failures: &failures)
+        showSaveAllFailures(failures)
     }
 
     /// P16d-2: File > Save Session… / Load Session…. The panels live on the
@@ -761,6 +892,21 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     /// same instance the menu action creates.
     var goToLineController: GoToLineWindowController?
     var findCharactersInRangeController: FindCharactersInRangeWindowController?
+    /// The last editor window to gain key status. The range dialog becomes key
+    /// itself, so `NSApp.keyWindow` cannot identify the window the user was
+    /// working in when Apply runs.
+    private weak var lastRangeDialogController: MainWindowController?
+    private var rangeDialogKeyObserver: NSObjectProtocol?
+
+    /// Resolves the range dialog's target when Apply runs, not when the dialog
+    /// was opened: the key window first, then the most recent editor window,
+    /// then the documented primary/active fallback.
+    private func rangeDialogTargetController() -> MainWindowController? {
+        if let controller = NSApp.keyWindow?.contentViewController as? MainWindowController {
+            return controller
+        }
+        return lastRangeDialogController ?? activeController
+    }
 
     /// Search > Find Characters in Range… (N++ parity). Selects every char
     /// whose code point falls in the typed range, via the editor's standard
@@ -768,14 +914,34 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     @objc func findCharactersInRange(_ sender: Any?) {
         guard let controller = activeController,
               controller.tabStore.selectedDocument != nil,
-              let editor = controller.editorTextView else { return }
+              controller.editorTextView != nil else { return }
+
+        if rangeDialogKeyObserver == nil {
+            rangeDialogKeyObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main
+            ) { [weak self] notification in
+                guard let window = notification.object as? NSWindow,
+                      let controller = window.contentViewController as? MainWindowController
+                else { return }
+                self?.lastRangeDialogController = controller
+            }
+        }
+        // Seed with the window the dialog is opening over; later key-window
+        // changes update it, so Apply follows the user's current window.
+        lastRangeDialogController = controller
 
         let dialog = findCharactersInRangeController ?? {
             let made = FindCharactersInRangeWindowController()
-            made.onApply = { [weak controller] ranges in
-                guard let controller, !ranges.isEmpty else { return }
-                let carets = ranges.map { NSRange(location: $0.location, length: $0.length) }
-                controller.editorContainer?.setMultiCaretState(MultiCaretState(carets: carets),
+            // The dialog is reused across windows. Resolve both the buffer and
+            // the receiving editor at Apply time, so a dialog opened from one
+            // window never applies to that window after another gains focus.
+            made.textProvider = { [weak self] in
+                self?.rangeDialogTargetController()?.editorTextView?.string ?? ""
+            }
+            made.onApply = { [weak self] ranges in
+                guard let self, let controller = self.rangeDialogTargetController(),
+                      !ranges.isEmpty else { return }
+                controller.editorContainer?.setMultiCaretState(MultiCaretState(carets: ranges),
                                                                 scrollPrimary: true)
             }
             findCharactersInRangeController = made
@@ -898,6 +1064,62 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
 // MARK: - NSWindowDelegate (additional windows)
 
 extension HexpadAppDelegate: NSWindowDelegate {
+    /// Identifies the controller that owns `window`, if any.
+    private func controller(for window: NSWindow) -> MainWindowController? {
+        if window === mainWindow { return windowController }
+        return extraWindowControllers.first { $0.mainWindow === window }
+               ?? extraWindowControllers.first { $0.view.window === window }
+    }
+
+    /// Closing a secondary window with dirty documents prompts per document
+    /// (Save / Don't Save / Cancel), matching the tab-close alert. Cancel
+    /// aborts the close; Don't Save proceeds without writing to disk (the
+    /// session still preserves the buffer). Save writes through before the
+    /// close. windowWillClose then snapshots the merged session.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if isClosingAdditionalWindowsForTest { return true }
+        guard let controller = controller(for: sender) else { return true }
+        // The primary window's close is governed by the termination path, which
+        // already prompts across every window; don't double-prompt here.
+        if sender === mainWindow { return true }
+
+        let dirtyDocs = controller.allPanes.flatMap { $0.tabStore.documents }
+            .filter { $0.unsavedChanges }
+        for doc in dirtyDocs {
+            let alert = NSAlert()
+            alert.messageText = "Save changes to \(doc.name)?"
+            alert.informativeText = "You have unsaved changes to this document."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Save")
+            alert.addButton(withTitle: "Don't Save")
+            alert.addButton(withTitle: "Cancel")
+
+            let response = alert.runModal()
+            guard Self.windowShouldCloseResolution(dirtyCount: 1, response: response) else {
+                return false
+            }
+            switch response {
+            case .alertFirstButtonReturn: // Save
+                if doc.isUntitled {
+                    let panel = NSSavePanel()
+                    panel.title = "Save As"
+                    panel.nameFieldStringValue = doc.name
+                    guard panel.runModal() == .OK, let url = panel.url else { return false }
+                    guard controller.saveDocument(doc, to: url) else { return false }
+                } else {
+                    guard controller.saveDocument(doc) else { return false }
+                }
+            case .alertSecondButtonReturn: // Don't Save
+                break
+            case .alertThirdButtonReturn: // Cancel
+                return false
+            default:
+                return false
+            }
+        }
+        return true
+    }
+
     /// Closing any window persists the whole app's tabs before the window leaves
     /// the controller registry, so a second window's buffers are restored on the
     /// next launch instead of being dropped. Releases the controller's strong

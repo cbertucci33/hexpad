@@ -116,7 +116,8 @@ final class SummaryDialogGapTests: XCTestCase {
         controller.revertToHistoryEntry(item)
 
         XCTAssertEqual(doc.text, "original", "revert restores the exact snapshot")
-        XCTAssertFalse(doc.unsavedChanges, "revert clears dirty")
+        XCTAssertTrue(doc.unsavedChanges,
+                      "revert restores an OLDER snapshot without writing to disk, so the doc must stay dirty (BUG1 fix contract change 2026-11-20)")
     }
 
     func testRevertDisabledForReadOnlyDocs() {

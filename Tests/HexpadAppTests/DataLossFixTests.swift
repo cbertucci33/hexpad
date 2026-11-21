@@ -21,11 +21,12 @@ final class DataLossFixTests: XCTestCase {
         try super.tearDownWithError()
     }
 
-    private func makeController() -> MainWindowController {
+    private func makeController(resolver: ((DocumentModel) -> ExternalChangeResolution)? = nil) -> MainWindowController {
         let window = MainWindow()
         let controller = MainWindowController(window: window)
         window.contentViewController = controller
         _ = controller.view
+        controller.externalChangeResolver = resolver
         return controller
     }
 

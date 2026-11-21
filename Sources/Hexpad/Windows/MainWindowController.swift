@@ -10,6 +10,16 @@ enum TrashPromptResolution {
     case cancel
 }
 
+/// The resolved answer to the "file changed on disk" prompt shown before a save
+/// would overwrite another program's changes. Like `TrashPromptResolution`,
+/// passing the already-resolved choice into the prompt-free core keeps the
+/// NSAlert as the only untested seam.
+enum ExternalChangeResolution {
+    case saveAnyway
+    case reload
+    case cancel
+}
+
 class MainWindowController: NSViewController {
     
     /// The two tab groups. Two independent TabStore instances (rather than one
@@ -1065,17 +1075,20 @@ class MainWindowController: NSViewController {
 
     func saveFile() {
         guard let doc = tabStore.selectedDocument else { return }
+        if doc.isUntitled {
+            saveAsFile()
+            return
+        }
+        // Never silently overwrite another program's version: the conflict
+        // prompt decides whether to write, reload, or abort this save.
+        guard applyExternalChange(externalChangeResolution(for: doc), to: doc) else { return }
         do {
-            if doc.isUntitled {
-                saveAsFile()
-            } else {
-                try doc.save()
-                recordSavePoint(for: doc)
-                doc.setModified(false)
-                NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
-                refreshTabBar()
-                updateStatusBar()
-            }
+            try doc.save()
+            recordSavePoint(for: doc)
+            doc.setModified(false)
+            NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
+            refreshTabBar()
+            updateStatusBar()
         } catch {
             showError("Failed to save file: \(error.localizedDescription)")
         }
@@ -1209,6 +1222,51 @@ class MainWindowController: NSViewController {
         }
     }
     
+    // MARK: - External Change Conflicts
+
+    /// Answers the conflict when `doc`'s backing file changed on disk while the
+    /// buffer held unsaved edits. Documents without the flag always save: the
+    /// prompt must not appear on the ordinary path. `externalChangeResolver`
+    /// answers headlessly; otherwise the user gets Save Anyway / Reload / Cancel.
+    func externalChangeResolution(for doc: DocumentModel) -> ExternalChangeResolution {
+        guard doc.hasExternalChange else { return .saveAnyway }
+        if let externalChangeResolver {
+            return externalChangeResolver(doc)
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "\(doc.name) changed on disk"
+        alert.informativeText = "This file changed on disk while you were editing. Saving now will overwrite those changes."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Save Anyway")
+        alert.addButton(withTitle: "Reload")
+        alert.addButton(withTitle: "Cancel")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: return .saveAnyway
+        case .alertSecondButtonReturn: return .reload
+        default: return .cancel
+        }
+    }
+
+    /// Prompt-free core of the conflict decision: applies `resolution` before a
+    /// save and returns true when the caller should write the buffer. `.reload`
+    /// swaps in the on-disk text through the existing reload path (which keeps
+    /// bookmarks and folds) and skips the write; `.cancel` skips the write and
+    /// leaves the buffer untouched.
+    @discardableResult
+    func applyExternalChange(_ resolution: ExternalChangeResolution,
+                             to doc: DocumentModel) -> Bool {
+        switch resolution {
+        case .saveAnyway:
+            return true
+        case .cancel:
+            return false
+        case .reload:
+            reloadDocumentFromDisk(doc)
+            return false
+        }
+    }
+
     // MARK: - Save All
 
     /// File > Save All. Writes every dirty file-backed document in both tab
@@ -1240,7 +1298,10 @@ class MainWindowController: NSViewController {
     /// Dialog-free core behind Save All: performs the sweep, appends one
     /// message per failed write to `failures`, and returns whether every write
     /// landed. No modal here — a headless test would block forever — so the
-    /// interactive callers show the alert after this returns.
+    /// interactive callers show the alert after this returns. The one exception
+    /// is a document whose file changed on disk: ``externalChangeResolution(for:)``
+    /// asks before overwriting, and Cancel skips that document (aborting the
+    /// whole sweep only when `quitting`, so quit keeps its abort semantics).
     @discardableResult
     func saveAllDocuments(quitting: Bool, failures: inout [String]) -> Bool {
         var saveFailures: [String] = []
@@ -1250,12 +1311,20 @@ class MainWindowController: NSViewController {
         for doc in allPanes.flatMap({ $0.tabStore.documents }) {
             guard doc.unsavedChanges else { continue }
             if doc.filePath != nil {
-                do {
-                    try doc.save()
-                    recordSavePoint(for: doc)
-                    savedAny = true
-                } catch {
-                    saveFailures.append("\(doc.name): \(error.localizedDescription)")
+                let resolution = externalChangeResolution(for: doc)
+                if applyExternalChange(resolution, to: doc) {
+                    do {
+                        try doc.save()
+                        recordSavePoint(for: doc)
+                        savedAny = true
+                    } catch {
+                        saveFailures.append("\(doc.name): \(error.localizedDescription)")
+                    }
+                } else if case .cancel = resolution {
+                    // Abort this doc; a quit sweep must also abort, while an
+                    // ordinary Save All keeps going with the remaining docs.
+                    cancelled = true
+                    if quitting { break }
                 }
             } else {
                 // Untitled: prompt for a destination.
@@ -1398,8 +1467,7 @@ class MainWindowController: NSViewController {
     /// buffer reloads silently; a dirty one asks before discarding edits.
     /// Validation disables the item when the focused tab has no file.
     @objc func reloadActiveDocument(_ sender: Any?) {
-        guard let doc = tabStore.selectedDocument,
-              let url = doc.filePath else { return }
+        guard let doc = tabStore.selectedDocument, doc.filePath != nil else { return }
 
         if doc.unsavedChanges {
             let alert = NSAlert()
@@ -1411,26 +1479,7 @@ class MainWindowController: NSViewController {
             guard alert.runModal() == .alertFirstButtonReturn else { return }
         }
 
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            showError("The file no longer exists on disk.")
-            return
-        }
-
-        if !reloadDocument(doc, from: url) {
-            // The on-disk text already matches the buffer. After a confirmed
-            // discard that still means dropping the dirty baseline.
-            doc.setModified(false)
-        }
-
-        // The explicit reload supersedes this tick's external-change signal.
-        if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-           let modDate = attrs[.modificationDate] as? Date {
-            seenModDates[doc.id] = modDate
-        }
-
-        refreshTabBar()
-        updateEditor(forceRebind: true)
-        updateStatusBar()
+        reloadDocumentFromDisk(doc)
     }
 
     // MARK: - Print
@@ -1662,8 +1711,13 @@ class MainWindowController: NSViewController {
     /// succeeded. Move to Trash needs that answer: a failed save must abort the
     /// trash rather than lose unsaved edits. The three Close call sites ignore
     /// the result, so this stays a drop-in replacement for the old Void helper.
+    /// A file that changed on disk asks first through the same conflict prompt
+    /// as Save; Cancel or Reload leaves the buffer unsaved and returns false.
     @discardableResult
     func saveDocument(_ doc: DocumentModel) -> Bool {
+        guard applyExternalChange(externalChangeResolution(for: doc), to: doc) else {
+            return false
+        }
         do {
             try doc.save()
             recordSavePoint(for: doc)
@@ -1673,9 +1727,10 @@ class MainWindowController: NSViewController {
             updateStatusBar()
             return true
         } catch {
-            // No modal: this runs in Close All sweeps and headless tests,
-            // where a modal NSAlert blocks the main thread. Returning false
-            // makes closeDocumentsInOrder abort the sweep (data preserved).
+            // No modal for write failures: this runs in Close All sweeps and
+            // headless tests, where a modal NSAlert blocks the main thread.
+            // Returning false makes closeDocumentsInOrder abort the sweep
+            // (data preserved).
             return false
         }
     }
@@ -1699,6 +1754,14 @@ class MainWindowController: NSViewController {
             seenModDates.removeValue(forKey: closed.id)
         }
 
+        // Change histories and Monitoring opt-outs are keyed by document id,
+        // not by tab object, so they get their own "last one out" check. A
+        // document restored from a session can reuse an id with a fresh
+        // object, so only clear these once no group holds that id.
+        if let closed {
+            pruneIDKeyedCaches(for: closed)
+        }
+
         // Refill only when the whole window is empty: closing one group's last
         // tab while the other group still has documents leaves that group empty
         // instead of spawning a tab the user did not ask for.
@@ -1706,6 +1769,17 @@ class MainWindowController: NSViewController {
             focusedGroup = .primary
             addNewTab()
         }
+    }
+
+    /// Drops the id-keyed per-document caches — change histories and Monitoring
+    /// opt-outs — once no group still holds a document with that id. Shared by
+    /// the close sweep and session load so both paths agree on when the state is
+    /// really gone; a document that is still open anywhere keeps its history.
+    private func pruneIDKeyedCaches(for doc: DocumentModel) {
+        guard !allPanes.contains(where: { $0.tabStore.documents.contains { $0.id == doc.id } })
+        else { return }
+        changeHistories.removeValue(forKey: doc.id)
+        monitoringDisabledIDs.remove(doc.id)
     }
 
     /// Closes `doc` in whichever group owns it. Focus follows the document so
@@ -3191,6 +3265,11 @@ class MainWindowController: NSViewController {
     /// a checkmarked View menu item.
     private var monitoringDisabledIDs: Set<UUID> = []
 
+    /// Test seam for the external-change save prompt, which would block a
+    /// headless test on `runModal()`. Production leaves this nil and answers
+    /// through the NSAlert in ``externalChangeResolution(for:)``.
+    var externalChangeResolver: ((DocumentModel) -> ExternalChangeResolution)?
+
     /// Whether external changes currently reload `doc`. Default on.
     func isMonitoring(_ doc: DocumentModel) -> Bool {
         !monitoringDisabledIDs.contains(doc.id)
@@ -3243,6 +3322,34 @@ class MainWindowController: NSViewController {
         // the on-disk text the clean baseline in the same notification.
         doc.reloadText(text)
         return true
+    }
+
+    /// Shared body of File > Reload and the external-change prompt's Reload
+    /// choice. The caller has already got the user's consent; this refreshes
+    /// the buffer from disk, rebaselines the watcher, and repaints chrome.
+    /// `reloadText` preserves bookmarks and folds by design.
+    private func reloadDocumentFromDisk(_ doc: DocumentModel) {
+        guard let url = doc.filePath else { return }
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            showError("The file no longer exists on disk.")
+            return
+        }
+
+        if !reloadDocument(doc, from: url) {
+            // The on-disk text already matches the buffer. After a confirmed
+            // discard that still means dropping the dirty baseline.
+            doc.setModified(false)
+        }
+
+        // The explicit reload supersedes this tick's external-change signal.
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+           let modDate = attrs[.modificationDate] as? Date {
+            seenModDates[doc.id] = modDate
+        }
+
+        refreshTabBar()
+        updateEditor(forceRebind: true)
+        updateStatusBar()
     }
 
     /// Internal for app tests: exercises the same watcher path the timer runs.
@@ -3838,10 +3945,14 @@ class MainWindowController: NSViewController {
         guard let command = commandRegistry.command(for: identifier) else { return nil }
         if let parameter, let makeAction = command.parameterizedExecute {
             let result = makeAction(parameter)(state.text, state.selection)
-            return (DocumentState(text: result.text,
-                                  selection: result.selection,
-                                  bookmarkState: state.bookmarkState,
-                                  tokenStyleState: state.tokenStyleState), false)
+            let output = DocumentState(text: result.text,
+                                       selection: result.selection,
+                                       bookmarkState: state.bookmarkState,
+                                       tokenStyleState: state.tokenStyleState)
+            guard !doc.isReadOnly || !commandMutatesDocument(from: state, to: output) else {
+                return nil
+            }
+            return (output, false)
         }
         if command.clipboardExecute != nil {
             let pasteboard = NSPasteboard.general
@@ -3849,6 +3960,17 @@ class MainWindowController: NSViewController {
                                                  on: state,
                                                  clipboard: pasteboard.string(forType: .string))
             guard let output else { return nil }
+            // Read-only documents must not reach the pasteboard write for a
+            // command whose content change the apply path would reject. Cut
+            // Lines is the case that matters: writing the payload first would
+            // empty the clipboard even though the buffer stays untouched. A
+            // bookmark-only difference counts here too, because Cut removes the
+            // bookmarks even when the removed line text is empty.
+            let mutatesContent = commandMutatesDocument(from: state, to: output.state)
+                || output.state.bookmarkState != state.bookmarkState
+            guard !doc.isReadOnly || !mutatesContent else {
+                return nil
+            }
             if let payload = output.clipboard {
                 pasteboard.clearContents()
                 pasteboard.setString(payload, forType: .string)
@@ -3856,7 +3978,18 @@ class MainWindowController: NSViewController {
             return (output.state, output.clipboard != nil)
         }
         guard let result = commandRegistry.execute(identifier, on: state) else { return nil }
+        guard !doc.isReadOnly || !commandMutatesDocument(from: state, to: result) else {
+            return nil
+        }
         return (result, false)
+    }
+
+    /// Whether a resolved command result would change document content or its
+    /// token styles. Selection-only results are read-safe, so Copy, Select All
+    /// and the styled-jump commands keep working on a locked document.
+    private func commandMutatesDocument(from current: DocumentState,
+                                        to result: DocumentState) -> Bool {
+        result.text != current.text || result.tokenStyleState != current.tokenStyleState
     }
 
     /// Applies a command/replay result to the document as one undoable edit.
@@ -4075,13 +4208,16 @@ class MainWindowController: NSViewController {
     /// Replays `macro` through the registry and applies the final document
     /// state as ONE undoable edit via the shared command apply path.
     ///
-    /// Replay itself is pure (``MacroModel/replay(using:text:selection:)``);
-    /// skipped steps are reported in a transient status flash and do not stop
-    /// the remaining steps, matching the Kit model's contract. View-only steps
-    /// (`fold-all`, `unfold-all`, `toggle-word-wrap`) are recorded like any
-    /// other command but have no text effect, so replay reports them as
-    /// no-change skips; restoring view state is outside the document replay
-    /// contract.
+    /// Replay itself is pure (``MacroModel/replay(using:text:selection:bookmarkState:tokenStyleState:)``)
+    /// and runs bookmark and token-style steps through their document-aware
+    /// registry actions, so a recorded bookmark macro mutates the real bookmark
+    /// and style state just like the live menu path. Text steps are coalesced
+    /// into the same single edit. Skipped steps are reported in a transient
+    /// status flash and do not stop the remaining steps, matching the Kit
+    /// model's contract. View-only steps (`fold-all`, `unfold-all`,
+    /// `toggle-word-wrap`) are recorded like any other command but have no
+    /// document effect, so replay reports them as no-change skips; restoring
+    /// view state is outside the document replay contract.
     @discardableResult
     func playMacro(_ macro: MacroModel) -> Bool {
         guard !macro.isEmpty,
@@ -4090,13 +4226,15 @@ class MainWindowController: NSViewController {
 
         let replay = macro.replay(using: commandRegistry,
                                   text: doc.text,
-                                  selection: editor.textView.selectedRange)
+                                  selection: editor.textView.selectedRange,
+                                  bookmarkState: doc.bookmarkState,
+                                  tokenStyleState: doc.editorState.tokenStyleState)
         lastMacro = macro
 
         let result = DocumentState(text: replay.text,
                                    selection: replay.selection,
-                                   bookmarkState: doc.bookmarkState,
-                                   tokenStyleState: doc.editorState.tokenStyleState)
+                                   bookmarkState: replay.bookmarkState,
+                                   tokenStyleState: replay.tokenStyleState)
         let applied = applyCommandResult(result, to: doc, editor: editor)
 
         if replay.skippedCount > 0 {
@@ -4425,6 +4563,10 @@ class MainWindowController: NSViewController {
         do {
             let snapshot = try SessionStore.loadSnapshot(from: url)
             let restored = TabStore.fromSessionData(snapshot.tabs)
+            // Capture the outgoing tabs before replacing them: this load is a
+            // replace, so every discarded document must release its id-keyed
+            // caches (histories can hold twenty full-text snapshots each).
+            let outgoing = allPanes.flatMap { $0.tabStore.documents }
             tabStore.documents = restored.documents
             tabStore.selectedIndex = min(max(0, snapshot.selectedIndex),
                                          max(0, restored.documents.count - 1))
@@ -4432,6 +4574,7 @@ class MainWindowController: NSViewController {
             // Force a rebind: restored documents are new objects even when a
             // session happens to carry the same ids as the outgoing tabs.
             updateEditor(forceRebind: true)
+            outgoing.forEach { pruneIDKeyedCaches(for: $0) }
         } catch {
             showError("Failed to load session: \(error.localizedDescription)")
         }
