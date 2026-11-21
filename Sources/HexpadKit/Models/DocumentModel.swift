@@ -299,8 +299,8 @@ public final class DocumentModel: Identifiable, ObservableObject {
     /// commands, macro replay, find-and-replace, the `text` setter, line ops,
     /// multi-select) funnels through here, so they are rejected together,
     /// matching the AppKit typing veto. The loader seam
-    /// (``replaceCharactersUnchecked(_:with:)``, used by `reloadText(_:)`)
-    /// bypasses the lock because it is not a user edit.
+    /// (``replaceCharactersUnchecked(_:with:)``, used by `reloadText(_:)` and
+    /// the undo closure) bypasses the lock because it is not a fresh user edit.
     public func replaceCharacters(in range: NSRange, with replacement: String) {
         guard !isReadOnly else { return }
         replaceCharactersUnchecked(in: range, with: replacement)
@@ -308,8 +308,8 @@ public final class DocumentModel: Identifiable, ObservableObject {
 
     /// The unchecked twin of ``replaceCharacters(in:with:)`` — the seam the
     /// loader paths use, because they are not user edits. Only `reloadText(_:)`
-    /// may call this; user-facing mutations must go through the guarded
-    /// `replaceCharacters`.
+    /// and the undo closure below may call this; user-facing mutations must go
+    /// through the guarded `replaceCharacters`.
     func replaceCharactersUnchecked(in range: NSRange, with replacement: String) {
         let current = textStorage.string as NSString
         let length = current.length
@@ -323,9 +323,11 @@ public final class DocumentModel: Identifiable, ObservableObject {
 
         undoManager.registerUndo(withTarget: self) { doc in
             // Registering while undoing turns this call into the matching redo.
-            doc.replaceCharacters(in: NSRange(location: range.location,
-                                             length: (replacement as NSString).length),
-                                  with: oldText)
+            // The unchecked path is required: undo must still revert an edit
+            // after the user toggles read-only, while forward edits stay guarded.
+            doc.replaceCharactersUnchecked(in: NSRange(location: range.location,
+                                                       length: (replacement as NSString).length),
+                                           with: oldText)
         }
         textStorage.replaceCharacters(in: range, with: replacement)
         _isDirty = true
