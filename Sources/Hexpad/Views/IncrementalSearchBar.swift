@@ -33,7 +33,14 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
 
     /// The focused pane's editor, injected by MainWindowController. The bar
     /// acts on the text view directly and never binds a document.
-    weak var editorRef: EditorContainer?
+    weak var editorRef: EditorContainer? {
+        didSet {
+            // A live pane switch re-injects the editor without a show/hide
+            // cycle; move the scroll observation to the new clip view.
+            guard isVisible else { return }
+            startObservingViewport()
+        }
+    }
     /// Called after `hide()` so the owner can relayout and restore focus.
     var onClose: (() -> Void)?
 
@@ -45,6 +52,13 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
     private var isHandlingCommand = false
     private var isHiding = false
     private var tabSelectionObserver: NSObjectProtocol?
+    private var viewportObservers: [NSObjectProtocol] = []
+    /// Character range whose visible band has highlight-all temporary
+    /// attributes painted. Scroll only repaints the band when the viewport
+    /// moves outside it, which keeps scrolling O(viewport) and never rescans
+    /// the document.
+    private var highlightedRange: NSRange?
+    private var pendingHighlightRefresh = false
 
     static let preferredHeight: CGFloat = 30
 
@@ -59,6 +73,7 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
 
     deinit {
         stopObservingTabSelection()
+        stopObservingViewport()
     }
 
     private func setupUI() {
@@ -174,6 +189,7 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
         lastQuery = ""
         clearHighlights()
         startObservingTabSelection()
+        startObservingViewport()
         if !initialQuery.isEmpty {
             performSearch()
         }
@@ -197,6 +213,7 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
         wrapLabel?.stringValue = ""
         updateCounter()
         stopObservingTabSelection()
+        stopObservingViewport()
         isHiding = false
         onClose?()
     }
@@ -286,33 +303,87 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
 
     // MARK: - Highlighting
 
+    /// Paints highlight-all for the visible band only. Temporary attributes are
+    /// view state, so a document can be searched without rewriting its text.
     private func applyHighlights(in textView: NSTextView) {
         guard let layoutManager = textView.layoutManager,
               let container = textView.textContainer else { return }
         let length = (textView.string as NSString).length
-        guard length > 0 else { return }
-
-        let visibleRect = textView.visibleRect
-        let visibleRange: NSRange
-        if visibleRect.isEmpty {
-            visibleRange = NSRange(location: 0, length: length)
-        } else {
-            let glyphRange = layoutManager.glyphRange(forBoundingRect: visibleRect, in: container)
-            visibleRange = layoutManager.characterRange(forGlyphRange: glyphRange,
-                                                        actualGlyphRange: nil)
+        guard length > 0 else {
+            highlightedRange = nil
+            return
         }
 
+        let range = visibleCharacterRange(in: textView,
+                                          layoutManager: layoutManager,
+                                          container: container,
+                                          length: length)
+        paintHighlights(in: range, layoutManager: layoutManager, length: length)
+        highlightedRange = range
+    }
+
+    /// Character range currently visible in the clip view, resolved through the
+    /// layout manager rather than by guessing a character-per-pixel ratio.
+    private func visibleCharacterRange(in textView: NSTextView,
+                                       layoutManager: NSLayoutManager,
+                                       container: NSTextContainer,
+                                       length: Int) -> NSRange {
+        let visibleRect = textView.visibleRect
+        guard !visibleRect.isEmpty else { return NSRange(location: 0, length: length) }
+        let glyphRange = layoutManager.glyphRange(forBoundingRect: visibleRect, in: container)
+        return layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+    }
+
+    /// Paints the matches intersecting `range`, clamped to that band so a match
+    /// spanning the document never makes one paint pass O(document).
+    private func paintHighlights(in range: NSRange,
+                                 layoutManager: NSLayoutManager,
+                                 length: Int) {
         let color = NSColor.findHighlightColor.withAlphaComponent(0.3)
         for match in matches where match.range.length > 0 {
             guard match.range.location != NSNotFound,
                   match.range.location + match.range.length <= length else { continue }
-            guard NSIntersectionRange(match.range, visibleRange).length > 0 else { continue }
+            let paintedRange = NSIntersectionRange(match.range, range)
+            guard paintedRange.length > 0 else { continue }
             layoutManager.addTemporaryAttributes([.backgroundColor: color],
-                                                 forCharacterRange: match.range)
+                                                 forCharacterRange: paintedRange)
         }
     }
 
+    /// Repaints only the band that scrolled into view. Repainting every band the
+    /// viewport passes over is what keeps the highlights from going stale; the
+    /// contained check skips pixel-sized scrolls inside the painted band.
+    private func refreshHighlightsForVisibleBand() {
+        guard isVisible,
+              highlightAllButton?.state == .on,
+              !matches.isEmpty,
+              let textView = editorRef?.textView,
+              let layoutManager = textView.layoutManager,
+              let container = textView.textContainer else { return }
+        let length = (textView.string as NSString).length
+        guard length > 0 else {
+            highlightedRange = nil
+            return
+        }
+
+        let range = visibleCharacterRange(in: textView,
+                                          layoutManager: layoutManager,
+                                          container: container,
+                                          length: length)
+        if let painted = highlightedRange,
+           painted.location <= range.location,
+           range.location + range.length <= painted.location + painted.length {
+            return
+        }
+        // Drop any stale band attributes before repainting the newly visible
+        // band, including partial matches left by the previous position.
+        layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: range)
+        paintHighlights(in: range, layoutManager: layoutManager, length: length)
+        highlightedRange = range
+    }
+
     private func clearHighlights() {
+        highlightedRange = nil
         guard let textView = editorRef?.textView,
               let layoutManager = textView.layoutManager else { return }
         let length = (textView.string as NSString).length
@@ -357,6 +428,45 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
     }
 
     // MARK: - Focus / tab lifecycle
+
+    /// Watches the focused editor's clip view the standard AppKit way: the clip
+    /// posts bounds changes, and each one means `visibleRect` moved. Updates are
+    /// coalesced to one run-loop turn so a trackpad flick does not repaint per
+    /// pixel.
+    private func startObservingViewport() {
+        stopObservingViewport()
+        guard let clip = editorRef?.scrollView.contentView else { return }
+        clip.postsBoundsChangedNotifications = true
+        clip.postsFrameChangedNotifications = true
+
+        let center = NotificationCenter.default
+        for name in [NSView.boundsDidChangeNotification, NSView.frameDidChangeNotification] {
+            viewportObservers.append(center.addObserver(
+                forName: name,
+                object: clip,
+                queue: .main
+            ) { [weak self] _ in
+                self?.scheduleViewportHighlightRefresh()
+            })
+        }
+    }
+
+    private func stopObservingViewport() {
+        viewportObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        viewportObservers.removeAll()
+        pendingHighlightRefresh = false
+    }
+
+    private func scheduleViewportHighlightRefresh() {
+        guard isVisible, !pendingHighlightRefresh,
+              highlightAllButton?.state == .on, !matches.isEmpty else { return }
+        pendingHighlightRefresh = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.pendingHighlightRefresh = false
+            self.refreshHighlightsForVisibleBand()
+        }
+    }
 
     private func startObservingTabSelection() {
         guard tabSelectionObserver == nil else { return }
