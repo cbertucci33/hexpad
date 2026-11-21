@@ -3248,7 +3248,8 @@ class MainWindowController: NSViewController {
     }
 
     func canShowColumnEditor() -> Bool {
-        focusedEditor?.hasColumnSelection ?? false
+        guard let doc = tabStore.selectedDocument, !doc.isReadOnly else { return false }
+        return focusedEditor?.hasColumnSelection ?? false
     }
 
     // MARK: - External change monitoring
@@ -3666,16 +3667,19 @@ class MainWindowController: NSViewController {
         updateStatusBar()
     }
 
-    /// "Encode in" needs raw bytes on disk; an untitled buffer has none.
+    /// "Encode in" needs raw bytes on disk; an untitled buffer has none. It
+    /// also rewrites the file on save, so a locked document stays disabled.
     func canEncodeIn(_ encoding: String) -> Bool {
-        guard let doc = tabStore.selectedDocument, let path = doc.filePath else { return false }
+        guard let doc = tabStore.selectedDocument, !doc.isReadOnly,
+              let path = doc.filePath else { return false }
         return FileManager.default.fileExists(atPath: path.path)
     }
 
     /// "Convert to" is available only when the current text can actually be
-    /// written in the target encoding (ASCII cannot hold emoji, for example).
+    /// written in the target encoding (ASCII cannot hold emoji, for example),
+    /// and only on an unlocked document.
     func canConvertTo(_ encoding: String) -> Bool {
-        guard let doc = tabStore.selectedDocument else { return false }
+        guard let doc = tabStore.selectedDocument, !doc.isReadOnly else { return false }
         return doc.canEncode(as: encoding)
     }
 
@@ -3714,13 +3718,16 @@ class MainWindowController: NSViewController {
         // The bookmarked-line commands have applicability rules that the
         // pure transform cannot express: Copy changes only the pasteboard,
         // Paste needs a clipboard the command cannot see here, and Inverse is
-        // available on any non-empty document.
+        // available on any non-empty document. Copy and Inverse are read-safe;
+        // the three editing commands are disabled on a locked document, exactly
+        // as ``commandResult`` would reject their text/bookmark result.
         switch identifier {
+        case "bookmark-copy-lines":
+            return !doc.bookmarkState.isEmpty
         case "bookmark-cut-lines",
-             "bookmark-copy-lines",
              "bookmark-paste-replace-lines",
              "bookmark-remove-lines":
-            return !doc.bookmarkState.isEmpty
+            return !doc.isReadOnly && !doc.bookmarkState.isEmpty
         case "bookmark-inverse":
             return !doc.text.isEmpty
         default:
@@ -3736,13 +3743,18 @@ class MainWindowController: NSViewController {
                                   bookmarkState: doc.bookmarkState,
                                   tokenStyleState: doc.editorState.tokenStyleState)
         if let result = commandRegistry.execute(identifier, on: state), command.documentExecute != nil {
+            // Read-only documents still allow selection and bookmark changes,
+            // but a text or token-style mutation is a no-op there.
+            guard !doc.isReadOnly || !commandMutatesDocument(from: state, to: result) else {
+                return false
+            }
             // Bookmark commands can change only the bookmarks or only the
             // selection; compare the whole state so those are not reported as
             // no-ops.
             return result != state
         }
         let result = command.execute(doc.text, editor.textView.selectedRange)
-        return result.text != doc.text
+        return result.text != doc.text && !doc.isReadOnly
     }
 
     /// View commands are only applicable when the live editor can service
@@ -3825,18 +3837,20 @@ class MainWindowController: NSViewController {
         let styles = doc.editorState.tokenStyleState
 
         if let style = tokenStyleNumber(identifier, prefix: "style-all-occurrences-") {
-            return style > 0 && SearchEngine.selectionSearchRange(text: doc.text,
-                                                                  selection: selection) != nil
+            return !doc.isReadOnly && style > 0
+                && SearchEngine.selectionSearchRange(text: doc.text,
+                                                     selection: selection) != nil
         }
         if let style = tokenStyleNumber(identifier, prefix: "style-one-token-") {
-            return style > 0 && SearchEngine.selectionSearchRange(text: doc.text,
-                                                                  selection: selection) != nil
+            return !doc.isReadOnly && style > 0
+                && SearchEngine.selectionSearchRange(text: doc.text,
+                                                     selection: selection) != nil
         }
         if identifier == "clear-style-all" {
-            return !styles.isEmpty
+            return !doc.isReadOnly && !styles.isEmpty
         }
         if let style = tokenStyleNumber(identifier, prefix: "clear-style-") {
-            return styles.hasRanges(for: style)
+            return !doc.isReadOnly && styles.hasRanges(for: style)
         }
         if let style = tokenStyleNumber(identifier, prefix: "jump-up-") {
             return styles.hasRanges(for: style)
@@ -4033,8 +4047,10 @@ class MainWindowController: NSViewController {
         // changed them (the style/clear commands), adopt the result. When the
         // command left them untouched but its text edit moved ranges, the
         // storage observer has already remapped the document's state, so the
-        // stale pre-edit value must not be written back.
-        if result.tokenStyleState != originalTokenStyles {
+        // stale pre-edit value must not be written back. Macro replay can hand
+        // this path a style-only change the live command gate never saw, so a
+        // locked document skips the write here too.
+        if result.tokenStyleState != originalTokenStyles, !doc.isReadOnly {
             doc.editorState.tokenStyleState = result.tokenStyleState
             editor.textView.applyTokenStyles(result.tokenStyleState,
                                              theme: theme(for: editor))

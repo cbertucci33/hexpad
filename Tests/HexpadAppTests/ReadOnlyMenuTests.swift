@@ -218,6 +218,11 @@ final class ReadOnlyMenuTests: XCTestCase {
         controller.updateEditor()
         let textView = try XCTUnwrap(controller.editorTextView)
 
+        // clearContents first: setString on a pasteboard holding foreign/rich
+        // content can fail (verified 2026-11-21 - setString without a prior
+        // clear returns false from a fresh process). The test owns the
+        // pasteboard state instead of inheriting whatever ran before it.
+        NSPasteboard.general.clearContents()
         XCTAssertTrue(NSPasteboard.general.setString("pasted", forType: .string))
         doc.setReadOnly(true)
         textView.setSelectedRange(NSRange(location: 0, length: 0))
