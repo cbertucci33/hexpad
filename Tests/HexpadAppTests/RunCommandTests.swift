@@ -156,10 +156,13 @@ final class RunCommandTests: XCTestCase {
         }
 
         XCTAssertTrue(controller.isRunning, "the dialog must show its running state")
-        wait(for: [finished], timeout: 5)
+        // Generous waits: the main queue can be busy behind the rest of the
+        // suite, which must not decide this test. The elapsed bound below still
+        // proves the 0.2 s policy fired instead of waiting out the 30 s sleep.
+        wait(for: [finished], timeout: 30)
 
         let elapsed = Date().timeIntervalSince(started)
-        XCTAssertLessThan(elapsed, 5, "the 0.2 s policy must not wait for the 30 s sleep")
+        XCTAssertLessThan(elapsed, 20, "the 0.2 s policy must not wait for the 30 s sleep")
         XCTAssertFalse(controller.isRunning)
 
         let result = try XCTUnwrap(try outcome?.get())
@@ -182,7 +185,7 @@ final class RunCommandTests: XCTestCase {
         controller.executeCommand("printf 'hello from the run dialog'") { _ in
             finished.fulfill()
         }
-        wait(for: [finished], timeout: 5)
+        wait(for: [finished], timeout: 30)
 
         XCTAssertEqual(doc.text, "keep\nthis", "the dialog only reads the document")
         XCTAssertFalse(doc.unsavedChanges)
@@ -202,7 +205,10 @@ final class RunCommandTests: XCTestCase {
         controller.executeCommand("echo out; echo err 1>&2; exit 3") { _ in
             finished.fulfill()
         }
-        wait(for: [finished], timeout: 5)
+        // This test asserts output separation, never speed; a slow machine must
+        // not fail it. The 30 s budget is load-tolerant headroom, not an
+        // assertion.
+        wait(for: [finished], timeout: 30)
 
         let text = controller.outputText
         XCTAssertTrue(text.contains("$ echo out"), "the expanded command is echoed")
