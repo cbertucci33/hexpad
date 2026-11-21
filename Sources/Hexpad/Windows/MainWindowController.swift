@@ -1037,10 +1037,30 @@ class MainWindowController: NSViewController {
     }
 
     /// Appends a save point holding the buffer text at the instant the write
-    /// succeeded. Every successful `save()` / `saveAs(to:)` call site below
+    /// succeeded, then rebaselines the external-change watcher onto the file
+    /// we just wrote. Every successful `save()` / `saveAs(to:)` call site below
     /// calls this; Save a Copy deliberately does not (it retargets nothing).
     func recordSavePoint(for document: DocumentModel) {
         history(for: document).recordSaved(snapshot: document.text)
+        // Our own write moves the file's modification date. Without this the
+        // watcher keeps its pre-save baseline (T0), sees T1 on the next tick
+        // while the user has typed on, and flags our own save as an external
+        // change — prompting "changed on disk" on the following save.
+        // Save As retargets `filePath` before returning, so this follows the
+        // document onto its new path.
+        rebaselineWatcher(for: document)
+    }
+
+    /// Moves the external-change watcher's baseline to the file's current
+    /// modification date. Internal so app tests can drive it directly: it is
+    /// the one seam that keeps a successful write from being mistaken for
+    /// another program's edit. A missing/unreadable file (or an untitled
+    /// buffer) leaves the baseline untouched.
+    func rebaselineWatcher(for document: DocumentModel) {
+        guard let path = document.filePath?.path,
+              let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+              let modDate = attrs[.modificationDate] as? Date else { return }
+        seenModDates[document.id] = modDate
     }
 
     /// The single text-mutation capture hook. Typing republishes the model's
@@ -1245,6 +1265,11 @@ class MainWindowController: NSViewController {
                 try? FileManager.default.setAttributes([.modificationDate: modDate],
                                                       ofItemAtPath: url.path)
             }
+            // The watcher is keyed by document id and the baseline moves with
+            // the path. A rename saves nothing, so this cannot go through
+            // recordSavePoint (that would invent a save point), but the old
+            // path's baseline must follow the bytes to the new one.
+            rebaselineWatcher(for: doc)
             if FileManager.default.fileExists(atPath: oldURL.path) {
                 try FileManager.default.removeItem(at: oldURL)
             }
