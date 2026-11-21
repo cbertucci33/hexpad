@@ -73,6 +73,10 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         windowController = controller
         
         window.contentViewController = controller
+        // The primary needs the same close lifecycle as an extra window.
+        // Without this, closing it skips windowShouldClose/windowWillClose and
+        // strands its buffers in a controller nothing can reach again.
+        window.delegate = self
         window.makeKeyAndOrderFront(nil)
         
         controller.recentFilesManager = recentFilesManager
@@ -168,7 +172,7 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // MARK: - Window close (secondary windows)
+    // MARK: - Window close
 
     /// Testable window-close decision. With no dirty documents the close proceeds
     /// immediately. Otherwise the modal response maps as follows, matching the
@@ -937,14 +941,22 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         // lands the file in a real editor rather than nowhere (app can launch
         // without windows when launched directly with files and no session).
         if windowController == nil {
-            let window = MainWindow()
-            mainWindow = window
-            let controller = MainWindowController(window: window)
-            window.contentViewController = controller
-            controller.recentFilesManager = recentFilesManager
-            controller.applyPreferences()
-            window.makeKeyAndOrderFront(nil)
-            windowController = controller
+            if extraWindowControllers.isEmpty {
+                let window = MainWindow()
+                mainWindow = window
+                let controller = MainWindowController(window: window)
+                window.contentViewController = controller
+                window.delegate = self
+                controller.recentFilesManager = recentFilesManager
+                controller.applyPreferences()
+                window.makeKeyAndOrderFront(nil)
+                windowController = controller
+            } else {
+                // The primary closed while extras remain. Open into a window
+                // that skips its own snapshots, so a revived primary cannot
+                // overwrite the merged session with only its own tabs.
+                newWindow()
+            }
         }
         for url in urls {
             activeController?.openFile(atPath: url.path)
@@ -952,7 +964,7 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-// MARK: - NSWindowDelegate (additional windows)
+// MARK: - NSWindowDelegate
 
 extension HexpadAppDelegate: NSWindowDelegate {
     /// Identifies the controller that owns `window`, if any.
@@ -962,18 +974,12 @@ extension HexpadAppDelegate: NSWindowDelegate {
                ?? extraWindowControllers.first { $0.view.window === window }
     }
 
-    /// Closing a secondary window with dirty documents prompts per document
-    /// (Save / Don't Save / Cancel), matching the tab-close alert. Cancel
-    /// aborts the close; Don't Save proceeds without writing to disk (the
-    /// session still preserves the buffer). Save writes through before the
-    /// close. windowWillClose then snapshots the merged session.
-    func windowShouldClose(_ sender: NSWindow) -> Bool {
-        if isClosingAdditionalWindowsForTest { return true }
-        guard let controller = controller(for: sender) else { return true }
-        // The primary window's close is governed by the termination path, which
-        // already prompts across every window; don't double-prompt here.
-        if sender === mainWindow { return true }
-
+    /// Per-document Save / Don't Save / Cancel flow, matching the tab-close
+    /// alert. Returns false when the user cancels or a write fails, aborting
+    /// the close. Shared by an extra window's close and the primary's close
+    /// while other windows remain: both strand their buffers if the close goes
+    /// through unguarded.
+    private func confirmClose(of controller: MainWindowController) -> Bool {
         let dirtyDocs = controller.allPanes.flatMap { $0.tabStore.documents }
             .filter { $0.unsavedChanges }
         for doc in dirtyDocs {
@@ -1013,11 +1019,33 @@ extension HexpadAppDelegate: NSWindowDelegate {
         return true
     }
 
+    /// Closing a window with dirty documents prompts per document
+    /// (Save / Don't Save / Cancel), matching the tab-close alert. Cancel
+    /// aborts the close; Don't Save proceeds without writing to disk (the
+    /// session still preserves the buffer). Save writes through before the
+    /// close. windowWillClose then snapshots the merged session.
+    ///
+    /// The primary window runs the same flow whenever extra windows remain:
+    /// the app keeps running, so nothing else would prompt or persist its
+    /// buffers. When it is the last window, the termination path already
+    /// prompts across every window; return true there to avoid a double prompt.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if isClosingAdditionalWindowsForTest { return true }
+        guard let controller = controller(for: sender) else { return true }
+        if sender === mainWindow && extraWindowControllers.isEmpty { return true }
+        return confirmClose(of: controller)
+    }
+
     /// Closing any window persists the whole app's tabs before the window leaves
     /// the controller registry, so a second window's buffers are restored on the
     /// next launch instead of being dropped. Releases the controller's strong
     /// window reference so a closed additional window can deallocate (the window
     /// retains its content view controller, which would otherwise be a cycle).
+    ///
+    /// The primary is dropped the same way when extra windows remain, so menu
+    /// validation cannot target its closed documents. As the last window it
+    /// keeps its registry entry: applicationShouldTerminate still needs the
+    /// controller to prompt before the app exits.
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
         let isPrimary = window === mainWindow
@@ -1029,6 +1057,11 @@ extension HexpadAppDelegate: NSWindowDelegate {
         if let extraIndex {
             let closing = extraWindowControllers.remove(at: extraIndex)
             closing.releaseWindowReference()
+        } else if !extraWindowControllers.isEmpty {
+            let closing = windowController
+            windowController = nil
+            mainWindow = nil
+            closing?.releaseWindowReference()
         }
     }
 }
