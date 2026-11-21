@@ -1,5 +1,4 @@
 import Foundation
-import HexpadKit
 
 /// Wave 6, docs review item 27 second half: N++ Search > "Find characters in
 /// range…" takes a range like 20-300 and selects every character whose

@@ -114,8 +114,6 @@ final class DataLossFixTests: XCTestCase {
 
     func testSaveDocumentReturnsFalseOnFailure() throws {
         let controller = makeController()
-        // Point at a directory so the write fails.
-        let badURL = directory // a directory, not a file
         let blocker = directory.appendingPathComponent("blocker")
         try "x".write(to: blocker, atomically: true, encoding: .utf8)
         let doc = DocumentModel(text: "dirty\n",
@@ -123,9 +121,7 @@ final class DataLossFixTests: XCTestCase {
         doc.setModified(true)
         select([doc], in: controller)
         XCTAssertTrue(doc.unsavedChanges)
-        print("ABOUT TO CALL SAVEDOCUMENT")
         XCTAssertFalse(controller.saveDocument(doc))
-        print("RETURNED")
     }
 
     // MARK: - Quit Save All aborts on failure
