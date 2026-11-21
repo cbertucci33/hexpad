@@ -133,7 +133,7 @@ final class LineOpsWave3Tests: XCTestCase {
 
     func testRemoveUnnecessaryBlankLinesCollapsesRunsAndTrimsEdges() {
         XCTAssertEqual(LineOps.removeUnnecessaryBlankLines("a\n\n\nb\n\n\nc\n"), "a\n\nb\n\nc")
-        XCTAssertEqual(LineOps.removeUnnecessaryBlankLines(" \na\n \n"), " \na")
+        XCTAssertEqual(LineOps.removeUnnecessaryBlankLines(" \na\n \n"), "a")
         XCTAssertEqual(LineOps.removeUnnecessaryBlankLines("\n \n"), "")
     }
 

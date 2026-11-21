@@ -451,7 +451,7 @@ public struct LineOps {
         let isBlank = { (line: String) in line.trimmingCharacters(in: .whitespaces).isEmpty }
         var result: [String] = []
         for line in text.components(separatedBy: "\n") {
-            if isBlank(line), let last = result.last, isBlank(last) { continue }
+            if isBlank(line), result.isEmpty || isBlank(result[result.count - 1]) { continue }
             result.append(line)
         }
         while let last = result.last, isBlank(last) {
