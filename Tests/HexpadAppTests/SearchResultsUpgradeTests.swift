@@ -146,7 +146,11 @@ final class SearchResultsUpgradeTests: XCTestCase {
     }
 
     func testContextMenuCopiesPathAndLineThenRemovesHit() throws {
-        let (results, _, _) = stubResults()
+        // Keep the doc alive for the whole test: results hold it weakly now
+        // (BUG8 fix), so the old accidental retain via the tuple no longer
+        // exists and a dropped reference would deallocate the buffer mid-test.
+        let (results, doc, _) = stubResults()
+        _ = doc // retained: weak-ref contract means the test owns the lifetime
         let titles = results.contextMenuTitles
         XCTAssertTrue(titles.contains("Copy Path"))
         XCTAssertTrue(titles.contains("Copy Line"))
