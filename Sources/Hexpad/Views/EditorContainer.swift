@@ -668,6 +668,23 @@ class EditorContainer: NSView {
     /// keep their own widths so only the editor area grows on resize.
     private func layoutEditorSubviews() {
         let height = bounds.height
+        // A zero-width container would size the scroll view to nothing, and
+        // TextKit's usable line width is the text container's width minus its
+        // line-fragment padding (10 points by default). At (or below) zero the
+        // typesetter breaks after every glyph — including the zero-advance null
+        // glyphs the fold hider installs — so the glyphs stay null but the
+        // line fragments are still created and collapsed rows reappear in the
+        // gutter. That state is reachable before the editor is laid out (a
+        // freshly created pane, or a headless test), where bounds is still
+        // empty. Keep the bootstrap scroll-view width until a real layout pass
+        // supplies the container width; every visible layout takes the branch
+        // below.
+        guard bounds.width > 0 else {
+            ruler.frame = NSRect(x: 0, y: 0,
+                                 width: LineNumberGutter.width,
+                                 height: height)
+            return
+        }
         let available = max(0, bounds.width - LineNumberGutter.width)
         let minimapWidth = minimap.isHidden
             ? 0
