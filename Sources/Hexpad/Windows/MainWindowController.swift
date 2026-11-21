@@ -432,6 +432,10 @@ class MainWindowController: NSViewController {
         guard let userInfo = notification.userInfo,
               let index = userInfo["index"] as? Int else { return }
         guard tabStore.count > 0, index >= 0, index < tabStore.count else { return }
+        // Resolve the index to its document right here, at prompt time. The
+        // sheet below can outlive the strip it opened on, so the close has to
+        // land on this document wherever it is by then — not on whatever sits
+        // at this index once the sheet dismisses.
         let doc = tabStore.documents[index]
         
         if doc.unsavedChanges {
@@ -454,10 +458,10 @@ class MainWindowController: NSViewController {
                             self.saveAsAndClose(doc)
                         } else {
                             self.saveDocument(doc)
-                            self.closeTabAtIndex(index)
+                            self.closeDocument(doc)
                         }
                     case .alertSecondButtonReturn: // Don't Save
-                        self.closeTabAtIndex(index)
+                        self.closeDocument(doc)
                     case .alertThirdButtonReturn: // Cancel
                         break
                     default:
@@ -466,7 +470,7 @@ class MainWindowController: NSViewController {
                 }
             }
         } else {
-            closeTabAtIndex(index)
+            closeDocument(doc)
         }
     }
     
@@ -1147,10 +1151,12 @@ class MainWindowController: NSViewController {
     }
 
     /// Moves a file-backed document's file on disk and retargets the open tab
-    /// in place: new path/name and a refreshed saved modification date, while
-    /// a dirty buffer stays dirty (N++ semantics). Untitled documents follow
-    /// the ordinary Save As path and simply gain a path and name. The tab is
-    /// never closed, even though the logic overlaps `saveAsAndClose`.
+    /// in place: new path/name, the bytes that were already on disk (a rename
+    /// never saves the buffer) and a saved modification date that still matches
+    /// them, while a dirty buffer stays dirty (N++ semantics). Untitled
+    /// documents follow the ordinary Save As path and simply gain a path and
+    /// name. The tab is never closed, even though the logic overlaps
+    /// `saveAsAndClose`.
     func renameSelectedDocument(to url: URL) {
         guard let doc = tabStore.selectedDocument else { return }
 
@@ -1173,21 +1179,79 @@ class MainWindowController: NSViewController {
 
         let wasDirty = doc.unsavedChanges
         let hadPendingConversion = doc.hasPendingSaveConversion
+        // The pending "Convert to" is one shared flag for two kinds; capture
+        // which one is waiting so the restore below puts back the same kind.
+        let pendingSaveEncoding = doc.saveEncoding
+        let pendingEOLType = doc.eolType
         do {
             // A rename must not silently save the buffer: capture the bytes
             // already on disk first. `saveAs(to:)` is the model's only public
-            // way to retarget filePath, so let it update path/name/mtime, then
-            // restore the on-disk bytes and the dirty/conversion flags.
+            // way to retarget filePath, so let it update path/name, then put
+            // the captured bytes straight back under the new name.
             let savedBytes = try Data(contentsOf: oldURL)
+            let attrs = try? FileManager.default.attributesOfItem(atPath: oldURL.path)
+            let modDate = attrs?[.modificationDate] as? Date
             if FileManager.default.fileExists(atPath: url.path) {
                 try FileManager.default.removeItem(at: url)
             }
-            try FileManager.default.moveItem(at: oldURL, to: url)
-            try doc.saveAs(to: url)
-            try savedBytes.write(to: url, options: .atomic)
-            doc.setModified(false) // refresh savedModificationDate from the renamed file
-            if wasDirty { doc.setModified(true) }
-            if hadPendingConversion { doc.convertEOL(to: doc.eolType) }
+            // Copy rather than move: the original stays at the old path until
+            // the new name holds those bytes again, so no failure in between
+            // can leave the buffer's bytes as the only copy on disk.
+            try FileManager.default.copyItem(at: oldURL, to: url)
+            do {
+                try doc.saveAs(to: url)
+            } catch {
+                // saveAs writes before it retargets: the tab still points at
+                // the old path, so drop the copy and leave disk as it was.
+                try? FileManager.default.removeItem(at: url)
+                throw error
+            }
+            do {
+                try savedBytes.write(to: url, options: .atomic)
+            } catch {
+                // The original bytes are still at the old path: free the
+                // buffer's copy and move them into place, so a failed write
+                // cannot leave the unsaved buffer on disk while we report it.
+                try? FileManager.default.removeItem(at: url)
+                try FileManager.default.moveItem(at: oldURL, to: url)
+            }
+            // The new name holds the original bytes again, so their
+            // modification date belongs with them: the external-change watcher
+            // and Sort by Saved Date both read it, and a rename is not a
+            // change on disk. Best effort — the rename has already happened.
+            if let modDate {
+                try? FileManager.default.setAttributes([.modificationDate: modDate],
+                                                      ofItemAtPath: url.path)
+            }
+            if FileManager.default.fileExists(atPath: oldURL.path) {
+                try FileManager.default.removeItem(at: oldURL)
+            }
+            if wasDirty {
+                // The bytes under the new name are the old ones, not the
+                // buffer, so the document stays dirty: clearing it would rebase
+                // the saved baseline onto unsaved text.
+                doc.setModified(true)
+            } else {
+                // Only a clean buffer's bytes match what is on disk, so this is
+                // the one case allowed to clear dirty — it also refreshes the
+                // saved date from the renamed file.
+                doc.setModified(false)
+            }
+            if hadPendingConversion {
+                // Restore the conversion in the kind it was waiting: saveAs
+                // cleared the shared pending flag, while the encode/EOL targets
+                // it points at survive, so an encoding conversion must not come
+                // back as an EOL conversion.
+                if pendingSaveEncoding != doc.encoding {
+                    try? doc.convertEncoding(to: pendingSaveEncoding)
+                }
+                if !doc.hasPendingSaveConversion {
+                    // EOL kind — or convertEncoding refused to re-validate the
+                    // target: put the shared flag back so the conversion is
+                    // not silently dropped.
+                    doc.convertEOL(to: pendingEOLType)
+                }
+            }
 
             recentFilesManager?.replaceRecent(oldPath: oldURL.path, newPath: url.path)
             NotificationCenter.default.post(name: NSNotification.Name("DocumentModifiedDidChange"), object: nil)
@@ -1613,6 +1677,11 @@ class MainWindowController: NSViewController {
     
     func closeSelectedTab() {
         guard tabStore.count > 0 else { return }
+        // Capture the document, not `tabStore.selectedIndex`: the prompt below
+        // runs as a sheet and the strip can change while it is up. Closing by
+        // identity lands on this document wherever it is now (or nowhere, if it
+        // was already closed) instead of on whatever is selected when the sheet
+        // dismisses.
         guard let doc = tabStore.selectedDocument else { return }
         
         if doc.unsavedChanges {
@@ -1635,10 +1704,10 @@ class MainWindowController: NSViewController {
                             self.saveAsAndClose(doc)
                         } else {
                             self.saveDocument(doc)
-                            self.closeTabAtIndex(self.tabStore.selectedIndex)
+                            self.closeDocument(doc)
                         }
                     case .alertSecondButtonReturn: // Don't Save
-                        self.closeTabAtIndex(self.tabStore.selectedIndex)
+                        self.closeDocument(doc)
                     case .alertThirdButtonReturn: // Cancel
                         break
                     default:
@@ -1647,7 +1716,7 @@ class MainWindowController: NSViewController {
                 }
             }
         } else {
-            closeTabAtIndex(tabStore.selectedIndex)
+            closeDocument(doc)
         }
     }
 
@@ -4981,6 +5050,13 @@ extension MainWindowController: NSTextViewDelegate {
         // compare every document's full text on each keystroke.
         refreshDirtyIndicators()
         updateStatusBar()
+        // The model notice republished below is tagged with the edited range,
+        // which makes this controller's own observer return before it posts
+        // DocumentModifiedDidChange — the one notice that drives
+        // updateWindowTitle. Refresh the window's native edited marker here so
+        // the first keystroke flips it instead of waiting for a save or a
+        // programmatic edit.
+        updateWindowTitle()
         applySyntaxHighlighting(to: editor,
                                 for: doc,
                                 editedRange: editedRange,
