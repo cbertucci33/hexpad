@@ -1748,20 +1748,37 @@ class EditorContainer: NSView {
             return
         }
 
-        // Keep the collapsed set aligned with the edit, but defer the
-        // O(document) fold discovery and the full layout invalidation until
-        // the gutter or a visibility query actually needs them. Reading the
-        // live per-document state (rather than the stale model) is what keeps
+        // Keep the collapsed set aligned with the edit, then hand the remapped
+        // spans to the glyph hider straight away. Reading the live
+        // per-document state (rather than the stale model) is what keeps
         // back-to-back edits — including multi-caret's per-caret replacements —
-        // composing correctly before the next refresh.
+        // composing correctly, and recomputing hidden spans from that state is
+        // O(folds). Only the O(document) fold discovery stays deferred until
+        // the gutter or a marker read needs it.
         let state = foldStates[document.id] ?? document.foldState
-        adoptFoldState(state.remapped(for: edit), for: document)
+        let remapped = state.remapped(for: edit)
+        adoptFoldState(remapped, for: document)
+        applyFoldVisibility(for: remapped, in: document.text)
     }
 
     /// Hands the model's hidden ranges to the glyph hider and relayouts when
     /// visibility actually changed.
     private func applyFoldVisibility() {
         let hidden = foldModel?.visibility().hiddenRanges ?? []
+        guard foldHider.setHiddenRanges(hidden) else { return }
+        invalidateFoldLayout()
+    }
+
+    /// Applies visibility for an already-remapped fold state.
+    ///
+    /// The edit path calls this because it remaps collapsed ranges into
+    /// post-edit coordinates itself: deriving the hidden spans from `state`
+    /// and the live text costs O(folds) and matches what a rebuilt model would
+    /// report, without triggering the O(document) fold discovery that reading
+    /// `foldModel` would on every keystroke.
+    private func applyFoldVisibility(for state: FoldState, in text: String) {
+        let hidden = FoldVisibility(text: text,
+                                    collapsedRanges: state.collapsedRanges).hiddenRanges
         guard foldHider.setHiddenRanges(hidden) else { return }
         invalidateFoldLayout()
     }
