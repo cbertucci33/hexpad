@@ -3,14 +3,44 @@ import HexpadKit
 
 /// One document's Find All results: the identity needed to jump back to the
 /// right editor, and the matches found in that buffer.
+///
+/// The document itself is held weakly. Results outlive the tabs they came from,
+/// and a strong reference here kept every closed buffer (plus its text storage)
+/// alive for as long as the results window existed. The identity captured at
+/// search time lets a closed document's group keep rendering as disabled rather
+/// than disappearing or jumping nowhere.
 struct DocumentSearchGroup {
-    let document: DocumentModel
+    let documentID: DocumentModel.ID
+    let name: String
+    let filePath: URL?
     let matches: [DocumentMatch]
 
+    /// Weak storage behind `document`. A closed buffer deallocates and leaves
+    /// this nil; nothing in the results window keeps it alive.
+    private weak var liveDocument: DocumentModel?
+
+    init(document: DocumentModel, matches: [DocumentMatch]) {
+        self.documentID = document.id
+        self.name = document.name
+        self.filePath = document.filePath
+        self.liveDocument = document
+        self.matches = matches
+    }
+
+    /// Live document, if its tab is still open. Implicitly unwrapped so the
+    /// existing call sites/tests can keep reading `document.id` / comparing
+    /// identity; callers must check `isDocumentOpen` first.
+    var document: DocumentModel! { liveDocument }
+
+    /// Whether the tab behind this group is still open. A nil weak reference
+    /// means the buffer was closed while the results were on screen.
+    var isDocumentOpen: Bool { liveDocument != nil }
+
     /// Header title. File-backed documents show their path so two same-named
-    /// files stay distinguishable; untitled buffers say so explicitly.
+    /// files stay distinguishable; untitled buffers say so explicitly. Built
+    /// from the captured metadata so a closed document still has a title.
     var title: String {
-        document.filePath?.path ?? "\(document.name) (untitled)"
+        filePath?.path ?? "\(name) (untitled)"
     }
 }
 
@@ -313,7 +343,10 @@ final class FindInFilesWindowController: NSWindowController {
     }
 
     /// Number of rows F4 / Shift+F4 can visit. Used by app tests.
-    var navigableResultCount: Int { resultRows.count }
+    var navigableResultCount: Int {
+        guard mode == .documents else { return resultRows.count }
+        return liveResultRows().count
+    }
 
     /// Currently highlighted table row, or -1. Used by app tests.
     var selectedResultsRow: Int { resultsTable.selectedRow }
@@ -396,6 +429,10 @@ final class FindInFilesWindowController: NSWindowController {
     func headerText(for groupIndex: Int) -> String? {
         guard documentGroups.indices.contains(groupIndex) else { return nil }
         let group = documentGroups[groupIndex]
+        let marker = foldedGroups.contains(groupIndex) ? "▸" : "▾"
+        if !group.isDocumentOpen {
+            return "\(marker) \(group.title)  —  \(group.matches.count) matches (document closed)"
+        }
         if foldedGroups.contains(groupIndex) {
             return "▸ \(group.title)  —  \(group.matches.count) matches"
         }
@@ -462,8 +499,11 @@ final class FindInFilesWindowController: NSWindowController {
         var groups = searchBatches[batchIndex].groups
         guard groups.indices.contains(localIndex) else { return }
         let old = groups[localIndex]
+        // A closed document has no live model to build the trimmed group from;
+        // its rows are already non-selectable, so leave the group untouched.
+        guard let document = old.document else { return }
         let trimmed = DocumentSearchGroup(
-            document: old.document,
+            document: document,
             matches: old.matches.enumerated()
                 .filter { $0.offset != matchIndex }
                 .map { $0.element })
@@ -502,7 +542,7 @@ final class FindInFilesWindowController: NSWindowController {
         case .documents:
             guard documentRows.indices.contains(row),
                   case .match(let groupIndex, _) = documentRows[row] else { return nil }
-            return documentGroups[groupIndex].document.filePath?.path
+            return documentGroups[groupIndex].filePath?.path
         }
     }
 
@@ -547,19 +587,53 @@ final class FindInFilesWindowController: NSWindowController {
         case .files:
             resultRows = results.indices.filter { !results[$0].1.isEmpty }
         case .documents:
-            resultRows = documentRows.indices.filter { row in
-                if case .match = documentRows[row] { return true }
-                return false
-            }
+            resultRows = liveResultRows()
         }
         currentResultIndex = -1
         resultsTable.deselectAll(nil)
     }
 
+    /// Table rows for matches whose documents are still open, in display order.
+    /// Header rows and matches owned by closed documents are excluded, so the
+    /// next F4 / Shift+F4 jump always lands on a live buffer.
+    private func liveResultRows() -> [Int] {
+        documentRows.indices.filter { row in
+            guard case .match(let groupIndex, _) = documentRows[row] else { return false }
+            return documentGroups[groupIndex].isDocumentOpen
+        }
+    }
+
+    /// Drops match rows whose documents were closed since the row model was
+    /// last rebuilt, so F4 / Shift+F4 never land on a dead hit. Dead groups stay
+    /// in the table (headers and rows) but render disabled; keeping their
+    /// indices stable means fold state and group indices do not shift when a
+    /// tab closes. The cursor stays on the same match while it is still live.
+    private func pruneClosedResultRows() {
+        guard mode == .documents else { return }
+        let previousRow = resultRows.indices.contains(currentResultIndex)
+            ? resultRows[currentResultIndex] : nil
+        let liveRows = liveResultRows()
+        guard liveRows != resultRows else { return }
+        resultRows = liveRows
+        if let previousRow, let index = liveRows.firstIndex(of: previousRow) {
+            currentResultIndex = index
+        } else {
+            currentResultIndex = -1
+        }
+        // Re-render so rows for the closed document show their disabled state.
+        resultsTable.reloadData()
+    }
+
     /// Search > Next Result (F4). Moves to the next row in navigation order,
     /// wrapping from the last result back to the first.
     func nextResult() {
-        guard !resultRows.isEmpty else { return }
+        pruneClosedResultRows()
+        guard !resultRows.isEmpty else {
+            if documentsClosedMessageNeeded() {
+                statusLabel.stringValue = "Matching documents are closed"
+            }
+            return
+        }
         if currentResultIndex < 0 {
             currentResultIndex = 0
         } else {
@@ -571,13 +645,26 @@ final class FindInFilesWindowController: NSWindowController {
     /// Search > Previous Result (Shift+F4). Wrapping mirrors `nextResult`;
     /// with no cursor yet it starts at the last result, N++ style.
     func previousResult() {
-        guard !resultRows.isEmpty else { return }
+        pruneClosedResultRows()
+        guard !resultRows.isEmpty else {
+            if documentsClosedMessageNeeded() {
+                statusLabel.stringValue = "Matching documents are closed"
+            }
+            return
+        }
         if currentResultIndex < 0 {
             currentResultIndex = resultRows.count - 1
         } else {
             currentResultIndex = (currentResultIndex - 1 + resultRows.count) % resultRows.count
         }
         jumpToCurrentResult()
+    }
+
+    /// True when an empty navigation list is explained by closed documents
+    /// rather than by a search with no hits.
+    private func documentsClosedMessageNeeded() -> Bool {
+        mode == .documents
+            && documentGroups.contains { !$0.isDocumentOpen && !$0.matches.isEmpty }
     }
 
     /// Same action names as the main window's passthroughs. The results
@@ -726,7 +813,15 @@ final class FindInFilesWindowController: NSWindowController {
             guard case .match(let groupIndex, let matchIndex) = documentRows[row] else { return }
             let group = documentGroups[groupIndex]
             guard group.matches.indices.contains(matchIndex) else { return }
-            onOpenDocumentMatch?(group.document, group.matches[matchIndex].range)
+            // Double-click can still target a row whose document closed after
+            // the table was built. Refresh the disabled styling and say why
+            // instead of silently doing nothing.
+            guard let document = group.document else {
+                pruneClosedResultRows()
+                statusLabel.stringValue = "\(group.title) is closed"
+                return
+            }
+            onOpenDocumentMatch?(document, group.matches[matchIndex].range)
         }
     }
 }
@@ -745,7 +840,8 @@ extension FindInFilesWindowController: NSTableViewDataSource, NSTableViewDelegat
         guard row >= 0, row < documentRows.count else { return false }
         switch documentRows[row] {
         case .header, .batchHeader: return false
-        case .match: return true
+        case .match(let groupIndex, _):
+            return documentGroups[groupIndex].isDocumentOpen
         }
     }
 
@@ -793,14 +889,23 @@ extension FindInFilesWindowController: NSTableViewDataSource, NSTableViewDelegat
             let group = documentGroups[groupIndex]
             label.font = NSFont.boldSystemFont(ofSize: 11)
             label.stringValue = headerText(for: groupIndex) ?? ""
-            label.toolTip = group.document.filePath?.path
+            label.toolTip = group.filePath?.path
             label.maximumNumberOfLines = 1
+            if !group.isDocumentOpen {
+                label.textColor = .disabledControlTextColor
+            }
         case .match(let groupIndex, let matchIndex):
-            let match = documentGroups[groupIndex].matches[matchIndex]
+            let group = documentGroups[groupIndex]
+            let match = group.matches[matchIndex]
             let preview = match.context.isEmpty ? "(blank line)" : match.context
             label.stringValue = "    \(match.line): \(preview)"
             label.toolTip = "Line \(match.line), column \(match.column): \(match.text)"
             label.maximumNumberOfLines = 1
+            if !group.isDocumentOpen {
+                label.stringValue = "    \(match.line): \(preview)  (document closed)"
+                label.toolTip = "This document was closed; the hit can no longer be opened"
+                label.textColor = .disabledControlTextColor
+            }
         }
         return label
     }
