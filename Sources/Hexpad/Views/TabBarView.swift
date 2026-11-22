@@ -119,7 +119,6 @@ class TabBarView: NSView {
     /// buttons are only re-slotted for visual feedback.
     private var previewOrder: [TabButton]?
     private var previewDraggedButton: TabButton?
-    private var previewMonitor: Any?
     
     init(tabStore: TabStore) {
         self.tabStore = tabStore
@@ -219,9 +218,6 @@ class TabBarView: NSView {
     }
     
     deinit {
-        if let previewMonitor {
-            NSEvent.removeMonitor(previewMonitor)
-        }
         NotificationCenter.default.removeObserver(self)
         Self.liveBars.removeAll { $0 === self }
     }
@@ -388,10 +384,6 @@ class TabBarView: NSView {
               let button = tabButtons.first(where: { $0.index == index }) else { return }
         previewOrder = tabButtons
         previewDraggedButton = button
-        previewMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { [weak self] event in
-            self?.commitDragPreview()
-            return event
-        }
     }
 
     /// Moves the dragged button to a visual slot without touching the store.
@@ -427,10 +419,6 @@ class TabBarView: NSView {
     }
 
     private func finishDragPreview() {
-        if let previewMonitor {
-            NSEvent.removeMonitor(previewMonitor)
-        }
-        previewMonitor = nil
         previewOrder = nil
         previewDraggedButton = nil
     }
@@ -778,15 +766,22 @@ class TabButton: NSButton {
     }
 
     override func mouseDown(with event: NSEvent) {
-        // Settings > Tab Bar > double-click to close. Handled before the
-        // button's tracking so the first click does not also start a drag.
+        // Settings > Tab Bar > double-click to close. Handled before any drag
+        // state so the double-click never also starts a reorder.
         if event.clickCount == 2, reorderDelegate?.doubleClickTabCloses == true {
+            dragStart = nil
+            draggedOut = false
             closeTabClicked()
             return
         }
+        // Deliberately no `super.mouseDown`: NSButton's cell tracking runs its
+        // own window event loop and consumes every leftMouseDragged, so the
+        // `mouseDragged` override below is unreachable while it is active.
+        // Returning lets AppKit feed the drag/up sequence straight to this
+        // view; `mouseUp` sends the action itself for a click that never
+        // crossed the reorder threshold.
         dragStart = convert(event.locationInWindow, from: nil)
         draggedOut = false
-        super.mouseDown(with: event)
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -817,8 +812,23 @@ class TabButton: NSButton {
     }
 
     override func mouseUp(with event: NSEvent) {
+        // `armed` is false for the double-click-to-close path, whose
+        // `mouseDown` returned before arming; that mouse-up must not select
+        // the tab it just asked to close.
+        let armed = dragStart != nil
+        let wasDragged = draggedOut
+        dragStart = nil
+        draggedOut = false
+        // No `super.mouseDown` means the cell never drove the action, so a
+        // plain click (in place, under the threshold) selects here. This is
+        // exactly the old `sendAction(on: [.leftMouseUp])` behaviour.
+        if armed,
+           !wasDragged,
+           bounds.contains(convert(event.locationInWindow, from: nil)),
+           let action {
+            _ = NSApp.sendAction(action, to: target, from: self)
+        }
         reorderDelegate?.commitDragPreview()
-        super.mouseUp(with: event)
     }
     
     /// Updates this button's dot without rebuilding the bar. Called on typing.
