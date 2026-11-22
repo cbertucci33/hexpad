@@ -44,6 +44,18 @@ final class CommentCommandTests: XCTestCase {
             .item(withTitle: "Block Comment")
     }
 
+    /// Runs the block command the way the Edit menu does: resolve the focused
+    /// document's language pair at call time and pass it as the macro-style
+    /// parameter. A language without a pair resolves to nil, which the command
+    /// treats as a no-op (there is no C-family fallback).
+    @discardableResult
+    private func performBlockComment(in controller: MainWindowController) -> Bool {
+        controller.performCommand(
+            identifier: "toggle-block-comment",
+            parameter: CommentPrefixResolver.blockCommentParameter(
+                for: controller.tabStore.selectedDocument))
+    }
+
     // MARK: - Line comments
 
     func testPythonDocumentTogglesHashPrefix() throws {
@@ -146,10 +158,10 @@ final class CommentCommandTests: XCTestCase {
         let textView = try XCTUnwrap(controller.editorTextView)
         textView.setSelectedRange(NSRange(location: 0, length: (original as NSString).length))
 
-        XCTAssertTrue(controller.performCommand(identifier: "toggle-block-comment"))
+        XCTAssertTrue(performBlockComment(in: controller))
         XCTAssertEqual(document.text, "/*alpha\nbeta*/")
 
-        XCTAssertTrue(controller.performCommand(identifier: "toggle-block-comment"))
+        XCTAssertTrue(performBlockComment(in: controller))
         XCTAssertEqual(document.text, original)
     }
 
@@ -160,7 +172,7 @@ final class CommentCommandTests: XCTestCase {
         let textView = try XCTUnwrap(controller.editorTextView)
         textView.setSelectedRange(NSRange(location: 0, length: (original as NSString).length))
 
-        XCTAssertTrue(controller.performCommand(identifier: "toggle-block-comment"))
+        XCTAssertTrue(performBlockComment(in: controller))
         XCTAssertEqual(document.text, "<!--alpha\nbeta-->")
     }
 
@@ -171,7 +183,7 @@ final class CommentCommandTests: XCTestCase {
         let textView = try XCTUnwrap(controller.editorTextView)
         textView.setSelectedRange(NSRange(location: 0, length: (original as NSString).length))
 
-        XCTAssertTrue(controller.performCommand(identifier: "toggle-block-comment"))
+        XCTAssertTrue(performBlockComment(in: controller))
         XCTAssertEqual(document.text, "  /*alpha\n  beta*/")
     }
 
@@ -185,12 +197,20 @@ final class CommentCommandTests: XCTestCase {
 
         XCTAssertFalse(controller.validateMenuItem(item),
                        "Python declares no block pair; the item must be disabled")
-        XCTAssertFalse(controller.performCommand(identifier: "toggle-block-comment"))
+        XCTAssertFalse(performBlockComment(in: controller))
         XCTAssertEqual(document.text, "alpha", "no guessed `/* */` delimiters")
 
         try useLanguage(.swift, text: "alpha", in: controller)
         textView.setSelectedRange(NSRange(location: 0, length: 5))
         XCTAssertTrue(controller.validateMenuItem(item), "Swift declares `/* */`")
+
+        // The bare identity execute is not a working substitute for the
+        // parameterized command: calling it without the language pair must
+        // still be a no-op even though Swift has one.
+        XCTAssertFalse(controller.performCommand(identifier: "toggle-block-comment"))
+        XCTAssertEqual(document.text, "alpha")
+        XCTAssertTrue(performBlockComment(in: controller))
+        XCTAssertEqual(document.text, "/*alpha*/")
     }
 
     func testBlockCommentIsOneUndoGroup() throws {
@@ -201,7 +221,7 @@ final class CommentCommandTests: XCTestCase {
         textView.setSelectedRange(NSRange(location: 0, length: (original as NSString).length))
         document.undoManager.removeAllActions()
 
-        XCTAssertTrue(controller.performCommand(identifier: "toggle-block-comment"))
+        XCTAssertTrue(performBlockComment(in: controller))
         XCTAssertEqual(document.text, "/*alpha\nbeta*/")
 
         document.undoManager.undo()
@@ -216,7 +236,26 @@ final class CommentCommandTests: XCTestCase {
 
         XCTAssertEqual(item.representedObject as? String, "toggle-block-comment")
         XCTAssertEqual(item.action,
-                       #selector(MainWindowController.performCommand(withIdentifier:)))
+                       #selector(MainWindowController.performCommentCommand(_:)),
+                       "the block command must carry the language-resolved parameter")
         XCTAssertNil(item.target, "resolves through the first responder like the Text menu")
+    }
+
+    /// One Comment/Uncomment menu serves every tab, so the action must resolve
+    /// the focused language when it runs rather than when the menu was built.
+    func testBlockCommentMenuActionResolvesLanguageAtCallTime() throws {
+        let controller = makeController()
+        let item = try XCTUnwrap(blockCommentMenuItem(HexpadAppDelegate()))
+
+        let document = try useLanguage(.swift, text: "alpha", in: controller)
+        let textView = try XCTUnwrap(controller.editorTextView)
+        textView.setSelectedRange(NSRange(location: 0, length: 5))
+        controller.performCommentCommand(item)
+        XCTAssertEqual(document.text, "/*alpha*/")
+
+        try useLanguage(.html, text: "alpha", in: controller)
+        textView.setSelectedRange(NSRange(location: 0, length: 5))
+        controller.performCommentCommand(item)
+        XCTAssertEqual(document.text, "<!--alpha-->")
     }
 }

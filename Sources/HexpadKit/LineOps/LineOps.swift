@@ -343,8 +343,8 @@ public struct LineOps {
     /// selection is left alone, matching ``toggleLineComment(_:selection:prefix:)``.
     public static func toggleBlockComment(_ text: String,
                                           selection: NSRange,
-                                          open: String = "/*",
-                                          close: String = "*/") -> (text: String, selection: NSRange) {
+                                          open: String,
+                                          close: String) -> (text: String, selection: NSRange) {
         let ns = text as NSString
         let sel = clamped(selection, in: ns)
         guard !open.isEmpty, !close.isEmpty else { return (text, sel) }

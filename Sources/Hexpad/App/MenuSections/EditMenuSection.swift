@@ -158,17 +158,18 @@ extension HexpadAppDelegate {
         insertItem.submenu = insertMenu
 
         // Wave 3A: Notepad++ groups comment toggles, blank operations and the
-        // non-bookmarked-line removal under Edit. The comment leaves are
-        // nil-targeted registry commands (like Convert Case and Blank
-        // Operations), so recording, validation and the single undo path are
-        // shared with every other command. The controller resolves the focused
-        // language's token and disables the item when the grammar declares
-        // none; no C-family default is ever guessed.
+        // non-bookmarked-line removal under Edit. The block-comment leaf is
+        // nil-targeted but uses a parameter-carrying action: one menu serves
+        // every tab, so the focused language's delimiter pair must be resolved
+        // when the item runs, not when this menu is built. Recording,
+        // validation and the single undo path still run through the registry.
+        // The controller disables the item when the grammar declares no pair;
+        // no C-family default is ever guessed.
         let commentItem = NSMenuItem(title: "Comment/Uncomment", action: nil, keyEquivalent: "")
         let commentMenu = NSMenu(title: "Comment/Uncomment")
         for command in CommandRegistry.default.commentCommands {
             let item = NSMenuItem(title: command.title,
-                                  action: #selector(MainWindowController.performCommand(withIdentifier:)),
+                                  action: #selector(MainWindowController.performCommentCommand(_:)),
                                   keyEquivalent: "")
             item.target = nil
             item.representedObject = command.identifier

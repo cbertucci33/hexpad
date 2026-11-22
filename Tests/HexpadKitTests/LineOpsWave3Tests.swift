@@ -12,11 +12,17 @@ final class LineOpsWave3Tests: XCTestCase {
     // MARK: - Block comment
 
     func testBlockCommentWrapsAndUnwrapsSingleLine() {
-        let first = LineOps.toggleBlockComment("abc", selection: NSRange(location: 0, length: 0))
+        let first = LineOps.toggleBlockComment("abc",
+                                               selection: NSRange(location: 0, length: 0),
+                                               open: "/*",
+                                               close: "*/")
         XCTAssertEqual(first.text, "/*abc*/")
         XCTAssertEqual(first.selection, NSRange(location: 2, length: 0))
 
-        let second = LineOps.toggleBlockComment(first.text, selection: first.selection)
+        let second = LineOps.toggleBlockComment(first.text,
+                                                selection: first.selection,
+                                                open: "/*",
+                                                close: "*/")
         XCTAssertEqual(second.text, "abc")
         XCTAssertEqual(second.selection, caret)
     }
@@ -24,29 +30,42 @@ final class LineOpsWave3Tests: XCTestCase {
     func testBlockCommentPlacesDelimitersOnFirstAndLastNonBlankLines() {
         let text = "  alpha\n  beta  "
         let result = LineOps.toggleBlockComment(text,
-                                                 selection: NSRange(location: 0, length: text.utf16.count))
+                                                 selection: NSRange(location: 0,
+                                                                    length: text.utf16.count),
+                                                 open: "/*",
+                                                 close: "*/")
         XCTAssertEqual(result.text, "  /*alpha\n  beta  */")
 
         let restored = LineOps.toggleBlockComment(result.text,
                                                    selection: NSRange(location: 0,
-                                                                      length: result.text.utf16.count))
+                                                                      length: result.text.utf16.count),
+                                                   open: "/*",
+                                                   close: "*/")
         XCTAssertEqual(restored.text, text)
     }
 
     func testBlockCommentLeavesOnlyNestedPairIntactWhenUncommenting() {
         let text = "/* outer /* inner */ still */"
         let result = LineOps.toggleBlockComment(text,
-                                                 selection: NSRange(location: 0, length: text.utf16.count))
+                                                 selection: NSRange(location: 0,
+                                                                    length: text.utf16.count),
+                                                 open: "/*",
+                                                 close: "*/")
         XCTAssertEqual(result.text, " outer /* inner */ still ")
     }
 
     func testBlockCommentOnEmptyOrBlankDocumentIsNoOp() {
-        let empty = LineOps.toggleBlockComment("", selection: caret)
+        let empty = LineOps.toggleBlockComment("",
+                                               selection: caret,
+                                               open: "/*",
+                                               close: "*/")
         XCTAssertEqual(empty.text, "")
         XCTAssertEqual(empty.selection, caret)
 
         let blank = LineOps.toggleBlockComment("  \n\t",
-                                                selection: NSRange(location: 0, length: 4))
+                                                selection: NSRange(location: 0, length: 4),
+                                                open: "/*",
+                                                close: "*/")
         XCTAssertEqual(blank.text, "  \n\t")
     }
 
