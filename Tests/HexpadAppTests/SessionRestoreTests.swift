@@ -36,6 +36,21 @@ final class SessionRestoreTests: XCTestCase {
         return (controller, window)
     }
 
+    private func toolsMenuItem(titled title: String) throws -> NSMenuItem {
+        let menu = HexpadAppDelegate().buildMainMenu()
+        let tools = try XCTUnwrap(menu.item(withTitle: "Tools")?.submenu)
+        return try XCTUnwrap(tools.items.first { $0.title == title })
+    }
+
+    /// Sends the item's own action through NSApplication, exactly as a menu
+    /// click does, instead of calling `toggleFileMonitoring` directly.
+    @discardableResult
+    private func dispatchMenuAction(_ item: NSMenuItem,
+                                    to controller: MainWindowController) -> Bool {
+        guard let action = item.action else { return false }
+        return NSApp.sendAction(action, to: controller, from: item)
+    }
+
     private func utf16LEFile(named name: String, text: String) throws -> URL {
         let url = testDir.appendingPathComponent("\(name)-\(UUID().uuidString).txt")
         let body = try XCTUnwrap(text.data(using: .utf16LittleEndian))
@@ -270,6 +285,114 @@ final class SessionRestoreTests: XCTestCase {
         controller.checkExternalChanges()
         XCTAssertEqual(doc.text, "one\ntwo\nthree\nfour\n")
         XCTAssertEqual(textView.selectedRange.location, 0, "a caret away from the tail stays put")
+    }
+
+    /// P-13: Tools > Monitor File must work through its real menu dispatch.
+    /// Calling `setFileMonitoring` directly (as the older tests do) cannot catch
+    /// a nil-targeted item wired to the wrong selector or a validation branch
+    /// that never draws the checkmark.
+    func testMonitorFileMenuActionTogglesTailStateAndCheckmark() throws {
+        let file = testDir.appendingPathComponent("monitor-menu-\(UUID().uuidString).txt")
+        try "one\n".write(to: file, atomically: true, encoding: .utf8)
+        let (controller, _) = makeController()
+        controller.openFile(atPath: file.path)
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        let item = try toolsMenuItem(titled: "Monitor File")
+
+        XCTAssertFalse(controller.isFileMonitoring(doc))
+        XCTAssertTrue(controller.validateMenuItem(item),
+                      "a file-backed document makes the toggle available")
+        XCTAssertEqual(item.state, .off)
+
+        XCTAssertTrue(dispatchMenuAction(item, to: controller))
+        XCTAssertTrue(controller.isFileMonitoring(doc),
+                      "the menu action enables tail-follow")
+        XCTAssertTrue(controller.validateMenuItem(item))
+        XCTAssertEqual(item.state, .on, "the checkmark follows the document's tail state")
+
+        XCTAssertTrue(dispatchMenuAction(item, to: controller))
+        XCTAssertFalse(controller.isFileMonitoring(doc),
+                       "dispatching again turns tail-follow off")
+        XCTAssertTrue(controller.validateMenuItem(item))
+        XCTAssertEqual(item.state, .off)
+    }
+
+    /// P-14: the viewport-pinned half of the tail rule. A tall buffer scrolled
+    /// up must not be treated as bottom-pinned, so an append leaves the clip
+    /// where the user put it. The old rule compared `textView.frame.maxY` with
+    /// the clip height; with the editor's `.height` autoresizing mask that frame
+    /// could collapse to the viewport and every viewport looked pinned.
+    func testTailAppendDoesNotScrollAScrolledUpViewport() throws {
+        let file = testDir.appendingPathComponent("tail-scrollback-\(UUID().uuidString).txt")
+        let original = String(repeating: "line\n", count: 2_000)
+        try original.write(to: file, atomically: true, encoding: .utf8)
+        let (controller, _) = makeController()
+        controller.openFile(atPath: file.path)
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        let editor = try XCTUnwrap(controller.editorContainer)
+        let textView = try XCTUnwrap(controller.editorTextView)
+
+        // Give the editor a real viewport and force a full layout so the clip
+        // view can actually scroll through the tall buffer.
+        editor.frame = NSRect(x: 0, y: 0, width: 800, height: 400)
+        editor.layout()
+        editor.textView.layoutManager?.ensureLayout(for: try XCTUnwrap(textView.textContainer))
+        let clip = editor.scrollView.contentView
+        clip.scroll(to: CGPoint(x: 0, y: 240))
+        editor.scrollView.reflectScrolledClipView(clip)
+        XCTAssertEqual(clip.bounds.origin.y, 240, accuracy: 1,
+                       "fixture must actually be scrolled into the buffer")
+
+        XCTAssertFalse(controller.isViewportAtDocumentEnd(doc),
+                       "a scrolled-up viewport is not pinned to the document end")
+
+        controller.setFileMonitoring(true, for: doc)
+        try (original + "appended\n").write(to: file, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: 30)],
+            ofItemAtPath: file.path
+        )
+        controller.checkExternalChanges()
+
+        XCTAssertEqual(doc.text, original + "appended\n")
+        XCTAssertFalse(controller.isViewportAtDocumentEnd(doc))
+        XCTAssertEqual(clip.bounds.origin.y, 240, accuracy: 1,
+                       "a tail append must not yank a user reading scrollback to the end")
+    }
+
+    /// P-15: cadence is 0.5 s while any document is tailed and 2.0 s otherwise;
+    /// closing the last tailed document restores the slower poll.
+    func testWatchCadenceFollowsTailedDocumentsAndRestoresOnLastClose() throws {
+        let fileA = testDir.appendingPathComponent("cadence-a-\(UUID().uuidString).txt")
+        let fileB = testDir.appendingPathComponent("cadence-b-\(UUID().uuidString).txt")
+        try "a\n".write(to: fileA, atomically: true, encoding: .utf8)
+        try "b\n".write(to: fileB, atomically: true, encoding: .utf8)
+
+        let (controller, _) = makeController()
+        controller.openFile(atPath: fileA.path)
+        let docA = try XCTUnwrap(controller.tabStore.selectedDocument)
+        XCTAssertEqual(controller.currentWatchInterval(), 2.0, accuracy: 0.0001,
+                       "no tailed document keeps the ordinary watcher cadence")
+
+        controller.setFileMonitoring(true, for: docA)
+        XCTAssertEqual(controller.currentWatchInterval(), 0.5, accuracy: 0.0001,
+                       "tail mode shortens the poll for live appends")
+
+        controller.openFile(atPath: fileB.path)
+        let docB = try XCTUnwrap(controller.tabStore.selectedDocument)
+        controller.setFileMonitoring(true, for: docB)
+        XCTAssertEqual(controller.currentWatchInterval(), 0.5, accuracy: 0.0001,
+                       "two tailed documents still use the short cadence")
+
+        controller.closeDocument(docA)
+        XCTAssertEqual(controller.currentWatchInterval(), 0.5, accuracy: 0.0001,
+                       "one remaining tailed document keeps the short cadence")
+
+        controller.closeDocument(docB)
+        XCTAssertFalse(controller.isFileMonitoring(docA))
+        XCTAssertFalse(controller.isFileMonitoring(docB))
+        XCTAssertEqual(controller.currentWatchInterval(), 2.0, accuracy: 0.0001,
+                       "closing the last tailed document restores the ordinary cadence")
     }
 
     /// P-02: a non-empty selection is part of the parked state. The old

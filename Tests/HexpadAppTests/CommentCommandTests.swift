@@ -56,6 +56,17 @@ final class CommentCommandTests: XCTestCase {
                 for: controller.tabStore.selectedDocument))
     }
 
+    /// Dispatches `item` the way the menu does, through NSApplication and the
+    /// item's own target/action, rather than calling the controller method
+    /// directly. P-12: a nil-targeted menu item that is mis-wired to the
+    /// parameterless command path must fail here.
+    @discardableResult
+    private func dispatchMenuAction(_ item: NSMenuItem,
+                                    to controller: MainWindowController) -> Bool {
+        guard let action = item.action else { return false }
+        return NSApp.sendAction(action, to: controller, from: item)
+    }
+
     // MARK: - Line comments
 
     func testPythonDocumentTogglesHashPrefix() throws {
@@ -230,6 +241,32 @@ final class CommentCommandTests: XCTestCase {
     }
 
     // MARK: - Menu wiring
+
+    /// P-12: the block-comment command must work when the real Edit menu item
+    /// is dispatched, not only when a test calls the parameter-carrying helper.
+    /// A regression to the nil-parameter identity path (P-01) makes this fail:
+    /// validation may stay enabled but the dispatched action would not mutate
+    /// the buffer.
+    func testBlockCommentMenuItemDispatchWrapsSwiftSelection() throws {
+        let controller = makeController()
+        let delegate = HexpadAppDelegate()
+        let item = try XCTUnwrap(blockCommentMenuItem(delegate))
+        let original = "alpha\nbeta"
+        let document = try useLanguage(.swift, text: original, in: controller)
+        let textView = try XCTUnwrap(controller.editorTextView)
+        textView.setSelectedRange(NSRange(location: 0,
+                                          length: (original as NSString).length))
+
+        XCTAssertTrue(controller.validateMenuItem(item),
+                      "Swift declares a block pair, so the item is enabled")
+        XCTAssertTrue(dispatchMenuAction(item, to: controller),
+                      "the menu action must report that it changed the buffer")
+        XCTAssertEqual(document.text, "/*alpha\nbeta*/")
+
+        XCTAssertTrue(controller.validateMenuItem(item))
+        XCTAssertTrue(dispatchMenuAction(item, to: controller))
+        XCTAssertEqual(document.text, original, "the same item toggles back off")
+    }
 
     func testEditMenuHasCommentSubmenuWithBlockCommand() throws {
         let item = try XCTUnwrap(blockCommentMenuItem(HexpadAppDelegate()))

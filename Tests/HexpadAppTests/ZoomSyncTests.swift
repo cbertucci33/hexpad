@@ -154,19 +154,35 @@ final class ZoomSyncTests: XCTestCase {
                        "zoom-out keeps the panes uniform too")
     }
 
-    func testSynchronizeOnResetZoomUnifiesDivergentPanes() throws {
+    /// P-16: replaces the old reset test, which passed on delta-based code
+    /// because resetting every pane also ended at 1.0. The new rule copies the
+    /// focused pane's *absolute* scale, so panes at different base fonts must
+    /// still end at the same multiplier — and that multiplier is the focused
+    /// pane's result, not 1.0. Delta-based code steps each pane from its own
+    /// base font and leaves the secondary at a different scale
+    /// (0.8 - 1/20 here, instead of 1.4).
+    func testSynchronizeOnCopiesFocusedScaleAcrossDifferentBaseFonts() throws {
         UserDefaults.standard.set(true, forKey: "synchronizeZoom")
         let (controller, _) = makeController()
         controller.openSplitView()
         let primary = controller.allPanes[0].editor
         let secondary = controller.allPanes[1].editor
+        primary.setBodyFont(NSFont.monospacedSystemFont(ofSize: 10, weight: .regular))
+        secondary.setBodyFont(NSFont.monospacedSystemFont(ofSize: 20, weight: .regular))
         primary.setZoomScale(1.5)
         secondary.setZoomScale(0.8)
 
-        controller.resetZoom()
+        controller.zoomOut()
 
-        XCTAssertEqual(primary.zoomScale, 1.0, accuracy: 0.0001)
-        XCTAssertEqual(secondary.zoomScale, 1.0, accuracy: 0.0001)
+        let focusedScale = primary.zoomScale
+        XCTAssertLessThan(focusedScale, 1.5)
+        XCTAssertNotEqual(focusedScale, 1.0, accuracy: 0.0001,
+                          "the focused pane did not reset, so the shared target is not 1.0")
+        XCTAssertEqual(secondary.zoomScale, focusedScale, accuracy: 0.0001,
+                       "the focused pane's absolute scale is copied, not stepped from the other base font")
+        XCTAssertEqual(secondary.bodyFont.pointSize / secondary.zoomScale,
+                       20, accuracy: 0.0001,
+                       "the other pane's base font is preserved, not clobbered")
     }
 
     /// The command comes from the focused editor, so the secondary pane drives

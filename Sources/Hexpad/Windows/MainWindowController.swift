@@ -3437,11 +3437,17 @@ class MainWindowController: NSViewController {
         updateStatusBar()
     }
 
+    /// Cadence the watcher would use right now: tail mode needs a short poll to
+    /// feel live, while ordinary external-change detection keeps the cheaper
+    /// shipped cadence. Internal rather than inspecting the private `Timer`, so
+    /// tests can pin the 0.5 / 2.0 rule and the last-tailed-tab restoration.
+    func currentWatchInterval() -> TimeInterval {
+        fileMonitoringIDs.isEmpty ? 2.0 : 0.5
+    }
+
     private func startFileWatching() {
         stopFileWatching()
-        // Tail mode needs a short poll to feel live; ordinary external-change
-        // detection keeps the cheaper shipped cadence.
-        let interval: TimeInterval = fileMonitoringIDs.isEmpty ? 2.0 : 0.5
+        let interval = currentWatchInterval()
         let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             self?.checkExternalChanges()
         }
@@ -3662,14 +3668,43 @@ class MainWindowController: NSViewController {
     /// True when `doc` is selected in a pane whose viewport is at the bottom.
     /// A missing or not-yet-laid-out editor counts as the end, so a headless
     /// window still follows appends instead of silently doing nothing.
-    private func isViewportAtDocumentEnd(_ doc: DocumentModel) -> Bool {
+    ///
+    /// Uses the scroll view's `documentVisibleRect` (the visible slice in
+    /// document coordinates) rather than the clip view's own bounds, and takes
+    /// the content height from the layout manager when the text view's frame
+    /// has been resized to the viewport. The editor sets
+    /// `textView.autoresizingMask = [.width, .height]`, which can make
+    /// `textView.frame.maxY` track the clip height; reading only that frame
+    /// would then make every viewport look bottom-pinned and yank a user who
+    /// is reading scrollback to the new end (P-14).
+    func isViewportAtDocumentEnd(_ doc: DocumentModel) -> Bool {
         guard let pane = allPanes.first(where: { $0.tabStore.selectedDocument === doc })
         else { return false }
         let textView = pane.editor.textView
-        let clip = pane.editor.scrollView.contentView
-        let contentBottom = textView.frame.maxY
+        let scrollView = pane.editor.scrollView
+        let clip = scrollView.contentView
+        let contentBottom = documentContentBottom(of: textView,
+                                                  viewportHeight: clip.bounds.height)
         guard contentBottom > clip.bounds.height else { return true }
-        return clip.bounds.maxY >= contentBottom - 4
+        return scrollView.documentVisibleRect.maxY >= contentBottom - 4
+    }
+
+    /// Bottom of the laid-out text in document-view coordinates. The text
+    /// view's frame is normally content-sized, but its `.height` autoresizing
+    /// mask can collapse it to the viewport; the layout manager's used rect is
+    /// the content height in that case.
+    private func documentContentBottom(of textView: NSTextView,
+                                       viewportHeight: CGFloat) -> CGFloat {
+        var bottom = textView.frame.maxY
+        guard bottom <= viewportHeight + 4,
+              let layoutManager = textView.layoutManager,
+              let container = textView.textContainer else { return bottom }
+        let used = layoutManager.usedRect(for: container)
+        bottom = max(bottom,
+                     textView.textContainerOrigin.y
+                        + used.maxY
+                        + textView.textContainerInset.height)
+        return bottom
     }
 
     /// The selected pane's full caret state before a tail reload, or nil when

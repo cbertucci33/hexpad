@@ -178,6 +178,18 @@ final class ToolbarTests: XCTestCase {
                        "every MainWindow, not just the test fixture, opts out")
     }
 
+    /// P-18: the app-wide opt-out is set in `applicationWillFinishLaunching`,
+    /// before AppKit restores window state, not after launch. Calling the
+    /// delegate's real lifecycle hook pins both the flag and the call site.
+    func testWindowTabbingPolicyIsAppliedBeforeLaunchCompletes() {
+        NSWindow.allowsAutomaticWindowTabbing = true
+        appDelegate.applicationWillFinishLaunching(
+            Notification(name: NSApplication.willFinishLaunchingNotification)
+        )
+        XCTAssertFalse(NSWindow.allowsAutomaticWindowTabbing,
+                       "native tabbing must be off before restored windows can join a group")
+    }
+
     // MARK: - Saved chrome restore
     
     /// The Post-It path captures `window.toolbar` and restores the same instance.
