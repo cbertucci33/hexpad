@@ -215,6 +215,14 @@ class MainWindowController: NSViewController {
     // Syntax highlighting pipeline: one sparse token cache for the selected
     // document, plus the last attributed range, so a keystroke or scroll never
     // resets the whole buffer.
+    //
+    // Token style edits are remapped as they arrive (the ranges are model
+    // state), but the temporary-attribute repaint that follows is layout work.
+    // It must not run inside `NSTextStorage`'s own editing pass, so the repaint
+    // is coalesced to the next run-loop turn, one pass per burst of edits.
+    private var pendingTokenStyleDocuments: Set<UUID> = []
+    private var tokenStyleApplyScheduled = false
+
     private let syntaxStore = TokenStore(language: .plain)
     private var lastHighlightedRange = NSRange(location: 0, length: 0)
     private weak var highlightedDoc: DocumentModel?
@@ -520,9 +528,42 @@ class MainWindowController: NSViewController {
                 .remapped(from: doc.text, for: edit, to: doc.text)
         }
 
-        if let pane = allPanes.first(where: { $0.editor.textView.textStorage === storage }) {
-            pane.editor.textView.applyTokenStyles(doc.editorState.tokenStyleState,
-                                                  theme: theme(for: pane.editor))
+        // The remap above is pure range bookkeeping. `applyTokenStyles` writes
+        // temporary attributes, which is layout work: doing it here would re-enter
+        // TextKit from inside its editing notification. Defer it to the next
+        // run-loop turn and let a burst of edits share one repaint.
+        scheduleTokenStyleApply(for: doc)
+    }
+
+    /// Coalesces token-style repaints after character edits.
+    ///
+    /// The state has already been remapped synchronously by
+    /// ``handleTokenStyleEdit(_:)``, so the deferred pass only reads the latest
+    /// state; an edit later in the same turn is folded into the same repaint.
+    private func scheduleTokenStyleApply(for doc: DocumentModel) {
+        pendingTokenStyleDocuments.insert(doc.id)
+        guard !tokenStyleApplyScheduled else { return }
+        tokenStyleApplyScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.tokenStyleApplyScheduled = false
+            let pending = self.pendingTokenStyleDocuments
+            self.pendingTokenStyleDocuments.removeAll()
+            for id in pending {
+                guard let doc = self.allPanes
+                    .flatMap({ $0.tabStore.documents })
+                    .first(where: { $0.id == id }),
+                      let pane = self.allPanes.first(where: {
+                          $0.editor.textView.textStorage === doc.textStorage
+                      }) else { continue }
+                // The typing path may already have repainted this state after
+                // the edit (it compares the applied state too). Skip that case
+                // so a keystroke never pays for two full-buffer rewrites.
+                guard pane.editor.textView.tokenStyleState != doc.editorState.tokenStyleState
+                else { continue }
+                pane.editor.textView.applyTokenStyles(doc.editorState.tokenStyleState,
+                                                      theme: self.theme(for: pane.editor))
+            }
         }
     }
 
@@ -2651,9 +2692,10 @@ class MainWindowController: NSViewController {
         // attribute rewrite below, but they must be re-applied when the theme
         // (and therefore the palette) can have changed, on a forced reset, or
         // when this view is showing a different state. The storage observer
-        // (`handleTokenStyleEdit`) has already applied this edit's remapped
-        // state by the time typing reaches here; comparing avoids repeating
-        // that whole-buffer temporary-attribute rewrite once per keystroke.
+        // (`handleTokenStyleEdit`) has already remapped this edit's state by the
+        // time typing reaches here, and may have queued its repaint for the next
+        // turn; comparing catches that queued work here instead of repeating a
+        // whole-buffer temporary-attribute rewrite once per keystroke.
         let tokenStylesNeedApply = forceReset
             || docThemeNames[doc.id] != theme.name
             || editor.textView.tokenStyleState != doc.editorState.tokenStyleState
@@ -4751,16 +4793,15 @@ class MainWindowController: NSViewController {
 
     /// Interactive entry point. Decodes the file FIRST so a bad session still
     /// reports its error without ever asking about unsaved tabs, then prompts
-    /// once and hands the resolved answer to the dialog-free core.
+    /// once and applies the already-parsed snapshot. Decoding once keeps the
+    /// full session JSON from being parsed twice for a single load.
     func loadSessionFile(from url: URL) {
         do {
-            _ = try SessionStore.loadSnapshot(from: url)
+            let snapshot = try SessionStore.loadSnapshot(from: url)
+            applySessionSnapshot(snapshot, resolution: promptForSessionLoad())
         } catch {
             showError("Failed to load session: \(error.localizedDescription)")
-            return
         }
-
-        loadSessionFile(from: url, resolution: promptForSessionLoad())
     }
 
     /// Dialog-free core behind `loadSessionFile(from:)`. Headless tests drive
@@ -4841,8 +4882,8 @@ class MainWindowController: NSViewController {
 
         let restored = TabStore.fromSessionData(snapshot.tabs)
         // Capture the outgoing tabs before replacing them: this load is a
-        // replace, so every discarded document must release its id-keyed
-        // caches (histories can hold twenty full-text snapshots each).
+        // replace, so every discarded document must release the caches its
+        // close path would release.
         let outgoing = allPanes.flatMap { $0.tabStore.documents }
         tabStore.documents = restored.documents
         tabStore.selectedIndex = min(max(0, snapshot.selectedIndex),
@@ -4851,6 +4892,18 @@ class MainWindowController: NSViewController {
         // Force a rebind: restored documents are new objects even when a
         // session happens to carry the same ids as the outgoing tabs.
         updateEditor(forceRebind: true)
+        // Release the per-document state closeTabAtIndex releases. A document
+        // that is also open in the other group keeps its caches; everything
+        // else drops its fold/bookmark/hide maps, theme tag and watcher
+        // baseline here, so repeated loads cannot accumulate them and a stale
+        // baseline for a reused UUID is gone before the watcher consults it.
+        for doc in outgoing {
+            guard !allPanes.contains(where: { $0.tabStore.documents.contains { $0 === doc } })
+            else { continue }
+            allPanes.forEach { $0.editor.forgetDocumentState(for: doc.id) }
+            docThemeNames.removeValue(forKey: doc.id)
+            seenModDates.removeValue(forKey: doc.id)
+        }
         outgoing.forEach { pruneIDKeyedCaches(for: $0) }
         return true
     }
