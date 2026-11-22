@@ -42,6 +42,12 @@ class TabBarView: NSView {
     /// The other group's bar while the split view is open. Drags that leave
     /// this bar over its sibling move the tab between the two TabStores.
     weak var siblingTabBar: TabBarView?
+    /// All tab bars alive in the process. `creationDates` is a shared static,
+    /// so its prune must consider every bar's tabs, not just this bar's
+    /// sibling pair — a bar reloads once at init, before its sibling exists,
+    // and that reload must not erase a date for a tab shown in another pane
+    // or another window.
+    private static var liveBars: [TabBarView] = []
     /// Called when the user interacts with this bar, so the controller can make
     /// this group the focused one.
     var onFocus: (() -> Void)?
@@ -121,7 +127,8 @@ class TabBarView: NSView {
         wantsLayer = true
         refreshChromeColors()
         setupOverflowButtons()
-        
+        Self.liveBars.append(self)
+
         NotificationCenter.default.addObserver(self, selector: #selector(selectedIndexDidChange), name: NSNotification.Name("TabStoreSelectedIndexDidChange"), object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(preferencesDidChange(_:)), name: .preferencesDidChange, object: nil)
     }
@@ -216,6 +223,7 @@ class TabBarView: NSView {
             NSEvent.removeMonitor(previewMonitor)
         }
         NotificationCenter.default.removeObserver(self)
+        Self.liveBars.removeAll { $0 === self }
     }
     
     func fitWidthToClip() {
@@ -256,13 +264,13 @@ class TabBarView: NSView {
             tabButtons.append(button)
         }
 
-        // Drop dates for documents that no longer appear in either bar. Closed
-        // tabs are the only source of stale ids, and this bar plus its sibling
-        // are the only places a tab can be displayed, so pruning here keeps the
-        // shared map bounded without changing any live tab's date.
+        // Drop dates for documents no longer displayed in any live bar. A
+        // reload before the sibling bar exists must not erase entries that
+        // belong to a tab visible elsewhere, so the live set is collected from
+        // the shared static registry of all bars, not just this bar's sibling.
         var liveIDs = Set(tabStore.documents.map(\.id))
-        if let siblingTabBar {
-            liveIDs.formUnion(siblingTabBar.tabStore.documents.map(\.id))
+        for bar in Self.liveBars where bar !== self {
+            liveIDs.formUnion(bar.tabStore.documents.map(\.id))
         }
         Self.creationDates = Self.creationDates.filter { liveIDs.contains($0.key) }
         
