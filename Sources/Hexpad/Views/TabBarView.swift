@@ -357,7 +357,8 @@ class TabBarView: NSView {
     
     // MARK: - Drag reorder
 
-    /// TabStore.moveDocument existed from the start but nothing drove it.
+    /// Single reorder path shared by drag-reorder and View > Tab's Move to
+    /// Start/End commands, so selection, reload, and notifications stay aligned.
     func moveTab(from source: Int, to destination: Int) {
         // A reorder moves documents, not the selection index. Follow the
         // selected document to its new slot, otherwise dragging the active tab
