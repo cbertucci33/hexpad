@@ -244,6 +244,55 @@ class EditorContainer: NSView {
     /// test hook; fold-only spans remain available as ``foldHiddenRanges``.
     var hiddenLineCharacterSpans: [NSRange] { hiddenLineCharacterRanges }
 
+    // MARK: - Line index
+    //
+    // The gutter draws on every scroll pixel, keystroke and resize, and its
+    // click/drag math runs per drag event. Rebuilding line starts inside those
+    // paths would make each line fragment pay a document scan, so one index is
+    // shared here and reused until the buffer itself changes.
+
+    /// A line index plus the identity of the text it was built from.
+    ///
+    /// `documentID`/`storageID` prevent a tab switch from reusing another
+    /// buffer's offsets, and `revision`/`length` make the cache valid exactly
+    /// while the bound text is unchanged. This mirrors the status bar's cache.
+    private struct LineIndexCache {
+        let documentID: UUID?
+        let storageID: ObjectIdentifier
+        let revision: Int
+        let length: Int
+        let index: LineIndex
+    }
+
+    private var lineIndexCache: LineIndexCache?
+
+    /// The line index for the bound document's current text.
+    ///
+    /// Shared by gutter drawing, gutter hit-testing and the window controller's
+    /// line-selection drag math. An edit bumps `textRevision`, which rebuilds
+    /// once on the next request instead of on every redraw.
+    var lineIndex: LineIndex? {
+        guard let storage = textView.textStorage else { return nil }
+        let documentID = boundDocument?.id
+        let revision = boundDocument?.textRevision ?? 0
+        let storageID = ObjectIdentifier(storage)
+        let length = storage.length
+        if let cache = lineIndexCache,
+           cache.documentID == documentID,
+           cache.storageID == storageID,
+           cache.revision == revision,
+           cache.length == length {
+            return cache.index
+        }
+        let index = LineIndex(textView.string)
+        lineIndexCache = LineIndexCache(documentID: documentID,
+                                        storageID: storageID,
+                                        revision: revision,
+                                        length: length,
+                                        index: index)
+        return index
+    }
+
     /// Used when no tab is selected, so the text view always has a storage.
     private let unboundStorage = NSTextStorage()
 
@@ -633,6 +682,11 @@ class EditorContainer: NSView {
         ruler.autoresizingMask = [.height]
         ruler.foldMarkersProvider = { [weak self] in
             self?.markersForGutter() ?? [:]
+        }
+        // Shares one revision-keyed index between draw, hit-testing and the
+        // window controller so none of those paths rescans the document.
+        ruler.lineIndexProvider = { [weak self] in
+            self?.lineIndex
         }
         ruler.onToggleFold = { [weak self] line in
             self?.toggleFold(atLine: line)

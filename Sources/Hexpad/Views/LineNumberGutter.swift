@@ -254,6 +254,11 @@ final class LineNumberGutter: NSView {
     /// paints, so markers never lag one edit behind.
     var foldMarkersProvider: (() -> [Int: FoldMarkerState])?
 
+    /// Supplies the editor's cached line index. Drawing and hit-testing use it
+    /// to map a fragment or click offset to a line in O(log lines), so neither
+    /// path rescans the document per fragment or per drag event.
+    var lineIndexProvider: (() -> LineIndex?)?
+
     /// Called with the 1-based logical line whose fold marker was clicked.
     var onToggleFold: ((Int) -> Void)?
 
@@ -405,7 +410,7 @@ final class LineNumberGutter: NSView {
             // which is too faint for 10pt digits on the now-light rail.
             .foregroundColor: NSColor.secondaryLabelColor,
         ]
-        let rows = Self.rows(in: textView)
+        let rows = Self.rows(in: textView, lineIndex: lineIndexProvider?())
         let markers = foldMarkersProvider?() ?? [:]
         let bookmarkedLines = bookmarkLinesProvider?() ?? []
         let hidden = hiddenLinesProvider?() ?? .empty
@@ -442,14 +447,18 @@ final class LineNumberGutter: NSView {
     ///
     /// Shared by drawing and tests so line numbering has one implementation.
     /// Pass `characterRange` to force a range (tests); omit it to use the
-    /// text view's visible rect.
-    static func rows(in textView: NSTextView, characterRange: NSRange? = nil) -> [Row] {
+    /// text view's visible rect. Pass the editor's cached `lineIndex` from the
+    /// draw path — without it this falls back to the old per-fragment
+    /// `GutterGeometry` scan so unbound/test callers still work.
+    static func rows(in textView: NSTextView,
+                     characterRange: NSRange? = nil,
+                     lineIndex: LineIndex? = nil) -> [Row] {
         guard let layoutManager = textView.layoutManager,
               let container = textView.textContainer else { return [] }
 
         let glyphRange: NSRange
         if let characterRange {
-            let textLength = (textView.string as NSString).length
+            let textLength = lineIndex?.textLength ?? textView.textStorage?.length ?? 0
             let location = min(max(0, characterRange.location), textLength)
             let length = min(max(0, characterRange.length), textLength - location)
             let clamped = NSRange(location: location, length: length)
@@ -462,12 +471,20 @@ final class LineNumberGutter: NSView {
         }
         guard glyphRange.length > 0 else { return [] }
 
-        let text = textView.string
+        // Only the fallback path reads the buffer; the normal draw path maps
+        // each fragment through the cached index.
+        let fallbackText = lineIndex == nil ? textView.string : ""
         var rows: [Row] = []
         var lastDrawnLine = -1
         layoutManager.enumerateLineFragments(forGlyphRange: glyphRange) {
             fragmentRect, _, _, fragmentCharRange, _ in
-            let line = GutterGeometry.logicalLine(of: fragmentCharRange.location, in: text)
+            let line: Int
+            if let lineIndex {
+                line = lineIndex.line(of: fragmentCharRange.location)
+            } else {
+                line = GutterGeometry.logicalLine(of: fragmentCharRange.location,
+                                                  in: fallbackText)
+            }
             guard line != lastDrawnLine else { return } // wrapped visual line: draw once
             lastDrawnLine = line
             rows.append(Row(line: line, topY: fragmentRect.minY, height: fragmentRect.height))
@@ -681,9 +698,14 @@ final class LineNumberGutter: NSView {
     }
 
     /// 1-based logical line under a point in this view, resolved through text
-    /// layout.
+    /// layout. Uses the shared index so gutter clicks and drags never rescan the
+    /// buffer.
     private func logicalLine(atViewPoint point: NSPoint) -> Int? {
-        guard let index = characterIndex(atViewPoint: point), let textView else { return nil }
+        guard let index = characterIndex(atViewPoint: point) else { return nil }
+        if let lineIndex = lineIndexProvider?() {
+            return lineIndex.line(of: index)
+        }
+        guard let textView else { return nil }
         return GutterGeometry.logicalLine(of: index, in: textView.string)
     }
 }
