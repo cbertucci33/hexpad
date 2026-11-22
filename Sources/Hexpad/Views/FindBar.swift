@@ -1105,6 +1105,13 @@ class FindBar: NSView, NSSearchFieldDelegate {
             }
             return false
         }
+        // Escape arrives here as cancelOperation, the same field-editor path as
+        // Enter. Declining it lets NSSearchField clear the query and leave the
+        // bar open, so close the bar instead.
+        if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+            hide()
+            return true
+        }
         return false
     }
     
