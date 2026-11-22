@@ -100,7 +100,7 @@ class TabBarView: NSView {
     private weak var overflowChromeHost: NSScrollView?
     private var overflowChromeConstraints: [NSLayoutConstraint] = []
 
-    /// Settings > Tab Bar: drag reordering disabled while locked.
+    /// Settings > Tab Bar: drag reordering and move commands disabled while locked.
     var lockTabBar = false
     /// Settings > Tab Bar: a double-click on a tab posts the close request.
     var doubleClickTabCloses = false

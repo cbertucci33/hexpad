@@ -90,6 +90,41 @@ final class MainWindowLayoutCoverageTests: XCTestCase {
         XCTAssertEqual(controller.findBar?.frame.height ?? 0, 0, accuracy: 0.5)
     }
 
+    // MARK: - Geometry: show-tab-bar preference
+
+    /// V19k-4: Settings > Tab Bar > Show tab bar collapses the strip's layout
+    /// slot (not just its paint) and restoring it puts the 32pt band back.
+    func testShowTabBarPreferenceCollapsesSlotAndRestores() throws {
+        let (controller, window) = makeController()
+        window.setContentSize(NSSize(width: 900, height: 600))
+        controller.viewDidLayout()
+        let pane = controller.allPanes[0]
+
+        var hidden = controller.preferences
+        hidden.showTabBar = false
+        NotificationCenter.default.post(name: .preferencesDidChange, object: hidden)
+
+        XCTAssertTrue(pane.tabScrollView.isHidden,
+                      "hiding the strip removes the scroll view")
+        XCTAssertTrue(pane.tabBar.isHidden)
+        XCTAssertEqual(pane.tabScrollView.frame, .zero,
+                       "the strip reserves no layout slot")
+        XCTAssertEqual(pane.editor.frame.maxY, controller.view.bounds.height,
+                       accuracy: 0.5,
+                       "the editor reclaims the 32pt band")
+
+        var shown = hidden
+        shown.showTabBar = true
+        NotificationCenter.default.post(name: .preferencesDidChange, object: shown)
+
+        XCTAssertFalse(pane.tabScrollView.isHidden)
+        XCTAssertFalse(pane.tabBar.isHidden)
+        XCTAssertEqual(pane.tabScrollView.frame.height, 32, accuracy: 0.5)
+        XCTAssertEqual(pane.editor.frame.maxY,
+                       controller.view.bounds.height - 32,
+                       accuracy: 0.5)
+    }
+
     // MARK: - Geometry: find bar overlay
 
     func testFindBarOverlayGeometryAtWideWidth() throws {

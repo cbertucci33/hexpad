@@ -80,6 +80,39 @@ final class PreferencesTests: XCTestCase {
         XCTAssertEqual(PreferencesStore.load().selectedTheme, .monokai)
     }
 
+    /// V19k-4: the tab-bar hide/lock toggles persist in preferences.json and
+    /// survive a relaunch like every other key.
+    func testTabBarChromePreferencesRoundTrip() throws {
+        XCTAssertTrue(Preferences.defaults.showTabBar,
+                      "the strip is visible by default")
+        XCTAssertFalse(Preferences.defaults.lockTabBar,
+                       "reordering is allowed by default")
+
+        var preferences = Preferences.defaults
+        preferences.showTabBar = false
+        preferences.lockTabBar = true
+        try PreferencesStore.save(preferences)
+
+        let loaded = PreferencesStore.load()
+        XCTAssertFalse(loaded.showTabBar)
+        XCTAssertTrue(loaded.lockTabBar)
+        XCTAssertEqual(loaded, preferences)
+    }
+
+    /// A preferences.json written before the tab-bar keys existed keeps the
+    /// defaults for those keys and leaves the known keys intact.
+    func testLegacyFileWithoutTabBarKeysKeepsTabBarDefaults() throws {
+        try writePreferences("""
+        { "fontFamily": "Menlo", "fontSize": 13 }
+        """)
+
+        let loaded = PreferencesStore.load()
+        XCTAssertEqual(loaded.fontFamily, "Menlo")
+        XCTAssertEqual(loaded.fontSize, 13)
+        XCTAssertTrue(loaded.showTabBar)
+        XCTAssertFalse(loaded.lockTabBar)
+    }
+
     func testSaveNormalizesOutOfRangeValuesBeforeWriting() throws {
         var preferences = Preferences.defaults
         preferences.fontSize = 500

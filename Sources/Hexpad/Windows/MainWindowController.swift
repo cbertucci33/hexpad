@@ -139,6 +139,10 @@ class MainWindowController: NSViewController {
     /// snapshot back into the buffer (a revert is not a fresh user edit).
     private var isRevertingHistory = false
 
+    /// Suppresses the "modified" capture while a disk reload replaces the
+    /// buffer. A reload is a new clean baseline, not an edit the user made.
+    private var isReloadingDocument = false
+
     /// The text view backing the focused document. Exposed for menu
     /// validation/action tests in the app test bundle.
     var editorTextView: NSTextView? { editorContainer?.textView }
@@ -572,9 +576,12 @@ class MainWindowController: NSViewController {
         guard let doc = notification.object as? DocumentModel else { return }
 
         // Wave 5B: the one "modified" capture seam. Typing republishes this
-        // notice from textDidChange; programmatic edits post it from the model.
-        // Coalescing into one row per burst lives in ChangeHistoryModel.
-        recordTextMutation(for: doc)
+        // notice from textDidChange with the edited range; programmatic edits
+        // post it from the model without one. Coalescing into one menu row per
+        // burst lives in ChangeHistoryModel; every edit still advances its
+        // since-save count.
+        let editedRange = (notification.userInfo?["editedRange"] as? NSValue)?.rangeValue
+        recordTextMutation(for: doc, editedRange: editedRange)
 
         // Typing reaches this path too (NSTextViewDelegate republishes the
         // model notice), so this is the keystroke-driven session save. The
@@ -1107,10 +1114,12 @@ class MainWindowController: NSViewController {
 
     /// The single text-mutation capture hook. Typing republishes the model's
     /// notice from `textDidChange`, and programmatic edits post it directly,
-    /// so both bursts arrive here; the model's 2s window coalesces them.
-    private func recordTextMutation(for document: DocumentModel) {
-        guard !isRevertingHistory else { return }
-        history(for: document).recordModified()
+    /// so both bursts arrive here; the model's 2s window coalesces them into
+    /// menu rows while the since-save log keeps every edit.
+    private func recordTextMutation(for document: DocumentModel,
+                                    editedRange: NSRange? = nil) {
+        guard !isRevertingHistory, !isReloadingDocument else { return }
+        history(for: document).recordModified(in: editedRange)
     }
 
     /// Edit > Change History > "Saved on …". Reverts the focused buffer to the
@@ -2132,6 +2141,9 @@ class MainWindowController: NSViewController {
     /// an index, so it must follow the document to its new slot or the next
     /// command would act on whichever tab slid into the old index.
     private func moveSelectedTab(to destination: Int) {
+        // Locked tab bar: reordering is drag-disabled in the bar; block the
+        // move commands here too so a direct/keyboard invocation is a no-op.
+        guard !preferences.lockTabBar else { return }
         guard tabStore.count > 1 else { return }
         let source = tabStore.selectedIndex
         guard source >= 0, source != destination else { return }
@@ -3511,7 +3523,13 @@ class MainWindowController: NSViewController {
         // Reload through the shared buffer: the visible editor updates
         // immediately and the reload stays undoable. reloadText also makes
         // the on-disk text the clean baseline in the same notification.
+        // The notice is synchronous, so the flag hides this non-user edit from
+        // the change-history seam; clearing the since-save log keeps the
+        // history's dirty view consistent with the now-clean document.
+        isReloadingDocument = true
         doc.reloadText(text)
+        isReloadingDocument = false
+        changeHistories[doc.id]?.markSaved()
         return .reloaded
     }
 
@@ -5168,13 +5186,18 @@ extension MainWindowController: NSMenuItemValidation {
             return menuItem.tag >= 1 && menuItem.tag <= tabStore.count
         }
         if menuItem.action == #selector(MainWindowController.selectFirstTab(_:))
-            || menuItem.action == #selector(MainWindowController.selectLastTab(_:))
-            || menuItem.action == #selector(MainWindowController.moveTabToStart(_:))
-            || menuItem.action == #selector(MainWindowController.moveTabToEnd(_:)) {
-            // Jumping to an edge or reordering needs a second tab; the move
-            // items stay enabled even when the tab is already there, because
-            // validation is about applicability, not about a visible effect.
+            || menuItem.action == #selector(MainWindowController.selectLastTab(_:)) {
+            // Jumping to an edge needs a second tab.
             return tabStore.count > 1
+        }
+        if menuItem.action == #selector(MainWindowController.moveTabToStart(_:))
+            || menuItem.action == #selector(MainWindowController.moveTabToEnd(_:)) {
+            // Reordering needs a second tab, and Settings > Tab Bar > Lock tab
+            // bar disables move commands just as it disables drag reorder.
+            // The move items otherwise stay enabled even when the tab is
+            // already there, because validation is about applicability, not
+            // about a visible effect.
+            return tabStore.count > 1 && !preferences.lockTabBar
         }
         if menuItem.action == #selector(MainWindowController.sortDocumentsBy(_:)) {
             // Sorting needs at least two tabs to be meaningful.

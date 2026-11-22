@@ -312,6 +312,63 @@ final class MenuWiringTests: XCTestCase {
         XCTAssertFalse(controller.validateMenuItem(tab2))
     }
 
+    /// Settings > Tab Bar > Lock tab bar disables reordering: the bar already
+    /// refuses drags, and the View > Tab move commands must go with it while
+    /// plain selection still works.
+    func testLockTabBarDisablesMoveCommandsButNotSelection() throws {
+        let (controller, _) = makeController()
+        controller.addNewTab()
+        controller.addNewTab()
+        controller.tabStore.selectDocument(at: 2)
+
+        // Start from the unlocked state no matter what the developer's real
+        // preferences.json says; this test posts preference objects, no disk.
+        var base = controller.preferences
+        base.lockTabBar = false
+        NotificationCenter.default.post(name: .preferencesDidChange, object: base)
+
+        let moveStart = NSMenuItem(title: "Move Tab to Start",
+                                   action: #selector(MainWindowController.moveTabToStart(_:)),
+                                   keyEquivalent: "")
+        let moveEnd = NSMenuItem(title: "Move Tab to End",
+                                 action: #selector(MainWindowController.moveTabToEnd(_:)),
+                                 keyEquivalent: "")
+        let firstTab = NSMenuItem(title: "First Tab",
+                                  action: #selector(MainWindowController.selectFirstTab(_:)),
+                                  keyEquivalent: "")
+
+        XCTAssertTrue(controller.validateMenuItem(moveStart))
+        XCTAssertTrue(controller.validateMenuItem(moveEnd))
+        XCTAssertTrue(controller.validateMenuItem(firstTab))
+
+        var locked = controller.preferences
+        locked.lockTabBar = true
+        NotificationCenter.default.post(name: .preferencesDidChange, object: locked)
+
+        XCTAssertTrue(controller.allPanes[0].tabBar.lockTabBar,
+                      "the live notification pushes lock into the bar")
+        XCTAssertFalse(controller.validateMenuItem(moveStart),
+                       "lock disables the move commands")
+        XCTAssertFalse(controller.validateMenuItem(moveEnd))
+        XCTAssertTrue(controller.validateMenuItem(firstTab),
+                      "clicking/selecting still works while locked")
+
+        let orderBefore = controller.tabStore.documents.map(\.id)
+        controller.moveTabToStart(nil)
+        XCTAssertEqual(controller.tabStore.selectedIndex, 2,
+                       "a direct move command is a no-op while locked")
+        XCTAssertEqual(controller.tabStore.documents.map(\.id), orderBefore)
+
+        var unlocked = locked
+        unlocked.lockTabBar = false
+        NotificationCenter.default.post(name: .preferencesDidChange, object: unlocked)
+
+        XCTAssertFalse(controller.allPanes[0].tabBar.lockTabBar)
+        XCTAssertTrue(controller.validateMenuItem(moveStart))
+        controller.moveTabToStart(nil)
+        XCTAssertEqual(controller.tabStore.selectedIndex, 0)
+    }
+
     // MARK: - File > Close Multiple Documents
 
     /// Bulk-close menu wiring plus the clean-document sweep. Dirty-document
