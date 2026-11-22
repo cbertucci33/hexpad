@@ -212,6 +212,104 @@ final class SessionRestoreTests: XCTestCase {
         XCTAssertEqual(textView.selectedRange.location, 0, "a caret away from the tail stays put")
     }
 
+    /// P-02: a non-empty selection is part of the parked state. The old
+    /// restore path only handled zero-length carets, so every append collapsed
+    /// the selection to the new end.
+    func testTailMonitoringPreservesNonEmptySelectionThroughAppend() throws {
+        let file = testDir.appendingPathComponent("tail-selection-\(UUID().uuidString).txt")
+        try "one\ntwo\nthree\n".write(to: file, atomically: true, encoding: .utf8)
+        let (controller, _) = makeController()
+        controller.openFile(atPath: file.path)
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        let textView = try XCTUnwrap(controller.editorTextView)
+
+        controller.setFileMonitoring(true, for: doc)
+        let selection = NSRange(location: 4, length: 3) // "two"
+        textView.setSelectedRange(selection)
+
+        try "one\ntwo\nthree\nfour\n".write(to: file, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: 30)],
+            ofItemAtPath: file.path
+        )
+        controller.checkExternalChanges()
+
+        XCTAssertEqual(doc.text, "one\ntwo\nthree\nfour\n")
+        XCTAssertEqual(textView.selectedRange, selection,
+                       "a non-empty selection must survive the tail reload")
+    }
+
+    /// P-04: log rotation can shrink a tailed file under a parked caret. The
+    /// restore path must clamp into the new buffer instead of handing AppKit an
+    /// out-of-range selection (NSRangeException).
+    func testTailMonitoringClampsCaretWhenFileShrinks() throws {
+        let file = testDir.appendingPathComponent("tail-shrink-\(UUID().uuidString).txt")
+        try String(repeating: "0123456789", count: 300)
+            .write(to: file, atomically: true, encoding: .utf8)
+        let (controller, _) = makeController()
+        controller.openFile(atPath: file.path)
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        let textView = try XCTUnwrap(controller.editorTextView)
+
+        controller.setFileMonitoring(true, for: doc)
+        textView.setSelectedRange(NSRange(location: 1500, length: 0))
+
+        try "short\n".write(to: file, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: 30)],
+            ofItemAtPath: file.path
+        )
+        controller.checkExternalChanges()
+
+        XCTAssertEqual(doc.text, "short\n")
+        XCTAssertEqual(textView.selectedRange, NSRange(location: 6, length: 0),
+                       "the parked caret clamps to the shrunken buffer")
+    }
+
+    /// P-03: Tools > Monitor File is the stronger per-document request. View >
+    /// Monitoring off must not strand a tailed document between a checkmarked
+    /// Monitor File and a watcher that refuses to reload it, which used to leave
+    /// the save path able to overwrite the external edit with no prompt.
+    func testTailMonitoringOutranksMonitoringOptOut() throws {
+        let file = testDir.appendingPathComponent("tail-optout-\(UUID().uuidString).txt")
+        try "one\n".write(to: file, atomically: true, encoding: .utf8)
+        let (controller, _) = makeController()
+        controller.openFile(atPath: file.path)
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+
+        controller.setFileMonitoring(true, for: doc)
+        controller.setMonitoring(false, for: doc)
+        XCTAssertFalse(controller.isMonitoring(doc))
+        XCTAssertTrue(controller.isFileMonitoring(doc),
+                      "the Tools checkmark stays authoritative")
+
+        doc.text = "local edit\n"
+        try "external\n".write(to: file, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: 30)],
+            ofItemAtPath: file.path
+        )
+        controller.checkExternalChanges()
+
+        XCTAssertEqual(doc.text, "external\n",
+                       "tail-follow keeps reloading while View > Monitoring is off")
+        XCTAssertFalse(doc.hasExternalChange,
+                       "tail mode never leaves a pending conflict behind")
+
+        var prompted = false
+        controller.externalChangeResolver = { _ in
+            prompted = true
+            return .cancel
+        }
+        doc.noteExternalChange()
+        let resolution = controller.externalChangeResolution(for: doc)
+        XCTAssertFalse(prompted,
+                       "a tailed document must not prompt when the watcher owns the reload")
+        if case .saveAnyway = resolution {} else {
+            XCTFail("tail mode should bypass the prompt, got \(resolution)")
+        }
+    }
+
     // MARK: - P2-10: missing files and session scheduling
 
     func testMissingFileWithUnsavedChangesIsKeptAsDirtyTab() throws {

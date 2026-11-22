@@ -1370,6 +1370,10 @@ class MainWindowController: NSViewController {
         guard doc.hasExternalChange else { return .saveAnyway }
         // Tail mode owns the conflict: the watcher reloads the file and this
         // path must never surprise the user with the "changed on disk" alert.
+        // Tail-follow is authoritative over the View > Monitoring opt-out (see
+        // the guard in ``checkExternalChanges``), so the watcher replaces the
+        // buffer even when Monitoring is off: skipping the prompt can never
+        // silently write over an unseen disk edit.
         if isFileMonitoring(doc) { return .saveAnyway }
         if let externalChangeResolver {
             return externalChangeResolver(doc)
@@ -3580,9 +3584,14 @@ class MainWindowController: NSViewController {
     func checkExternalChanges() {
         for doc in allPanes.flatMap({ $0.tabStore.documents }) {
             guard let path = doc.filePath?.path else { continue }
-            // View > Monitoring off: leave the buffer (and its dirty flag)
-            // completely alone, exactly as if the file had not changed.
-            guard isMonitoring(doc) else { continue }
+            // View > Monitoring off leaves the buffer (and its dirty flag)
+            // completely alone, exactly as if the file had not changed — with
+            // one exception: Tools > Monitor File is the stronger per-document
+            // request and keeps tail-follow running. That keeps the Tools
+            // checkmark honest while Monitoring is off and guarantees a save
+            // can never silently overwrite an unseen disk edit on a tailed
+            // document (``externalChangeResolution(for:)`` relies on this).
+            guard isMonitoring(doc) || isFileMonitoring(doc) else { continue }
             let attrs = try? FileManager.default.attributesOfItem(atPath: path)
             guard let modDate = attrs?[.modificationDate] as? Date else { continue }
 
@@ -3627,10 +3636,14 @@ class MainWindowController: NSViewController {
                                           previousSelection: previousSelection)
                     }
                     // forceRebind resets the caret to the new end. Restore a
-                    // parked caret unless it was at the old end (tail rule:
-                    // the caret follows only when it sat at the tail),
-                    // independent of viewport pinning.
-                    let caretWasAtTail = previousSelection.map { $0.length == 0 && $0.location >= previousLength } ?? false
+                    // parked selection unless it was a lone caret at the old
+                    // end (tail rule: the caret follows only when it sat at
+                    // the tail), independent of viewport pinning.
+                    let caretWasAtTail = previousSelection.map { selection -> Bool in
+                        guard selection.count == 1, let caret = selection.primaryCaret
+                        else { return false }
+                        return caret.length == 0 && caret.location >= previousLength
+                    } ?? false
                     if previousSelection != nil, !caretWasAtTail {
                         restoreParkedCaret(doc, previousSelection: previousSelection)
                     }
@@ -3686,12 +3699,20 @@ class MainWindowController: NSViewController {
         return clip.bounds.maxY >= contentBottom - 4
     }
 
-    /// The selected pane's selection before a tail reload, or nil when the
-    /// document is not the visible tab (nothing to follow).
-    private func tailSelection(of doc: DocumentModel) -> NSRange? {
+    /// The selected pane's full caret state before a tail reload, or nil when
+    /// the document is not the visible tab (nothing to follow).
+    /// The container's mirrored state is what carries a non-empty selection and
+    /// any extra carets; the single-caret case still prefers the text view's
+    /// live range because a programmatic `setSelectedRange` is authoritative
+    /// even before the selection notification reaches the container.
+    private func tailSelection(of doc: DocumentModel) -> MultiCaretState? {
         guard let pane = allPanes.first(where: { $0.tabStore.selectedDocument === doc })
         else { return nil }
-        return pane.editor.textView.selectedRange
+        let state = pane.editor.multiCaretState
+        guard state.count > 1 else {
+            return MultiCaretState(caret: pane.editor.textView.selectedRange)
+        }
+        return state
     }
 
     /// After a tail reload, keep a bottom-pinned viewport at the new end. The
@@ -3699,27 +3720,33 @@ class MainWindowController: NSViewController {
     /// middle of the buffer stays put. A user who scrolled up is untouched.
     private func followDocumentEnd(_ doc: DocumentModel,
                                    previousLength: Int,
-                                   previousSelection: NSRange?) {
+                                   previousSelection: MultiCaretState?) {
         guard let pane = allPanes.first(where: { $0.tabStore.selectedDocument === doc })
         else { return }
         let textView = pane.editor.textView
         let length = (doc.text as NSString).length
         if let previousSelection,
-           previousSelection.length == 0,
-           previousSelection.location >= previousLength {
+           previousSelection.count == 1,
+           let caret = previousSelection.primaryCaret,
+           caret.length == 0,
+           caret.location >= previousLength {
             textView.setSelectedRange(NSRange(location: length, length: 0))
         }
         textView.scrollRangeToVisible(NSRange(location: length, length: 0))
     }
 
-    /// `updateEditor(forceRebind:)` resets the caret to the new end after a
-    /// tail reload; a parked caret that should NOT follow (viewport not
-    /// bottom-pinned) is put back here so a mid-buffer caret stays put.
-    private func restoreParkedCaret(_ doc: DocumentModel, previousSelection: NSRange?) {
-        guard let previousSelection, previousSelection.length == 0,
+    /// `updateEditor(forceRebind:)` collapses the selection to the new end after
+    /// a tail reload; a parked selection that should NOT follow is put back here
+    /// so a mid-buffer caret — or a non-empty selection, or a multi-caret state
+    /// — stays put. `setMultiCaretState` normalizes every caret to the current
+    /// buffer, so a file that shrank (log rotation) can never leave a range past
+    /// the end: the long-running 30 KB-caret-on-a-2 KB-buffer crash is clamped
+    /// here exactly like `applyEditorState` clamps a restored caret.
+    private func restoreParkedCaret(_ doc: DocumentModel, previousSelection: MultiCaretState?) {
+        guard let previousSelection,
               let pane = allPanes.first(where: { $0.tabStore.selectedDocument === doc })
         else { return }
-        pane.editor.textView.setSelectedRange(previousSelection)
+        pane.editor.setMultiCaretState(previousSelection)
     }
 
     // MARK: - View
@@ -4058,6 +4085,16 @@ class MainWindowController: NSViewController {
         }
         if command.viewExecute != nil {
             return canPerformViewCommand(identifier)
+        }
+        // Block comment needs the focused language's delimiter pair, which the
+        // bare command does not carry. Validation therefore asks the same
+        // metadata resolver the menu action uses: enabled exactly when the
+        // language declares a complete pair and the document is writable, so
+        // Python/Shell/JSON/Plain/Diff stay disabled rather than guessing a
+        // C-family pair.
+        if identifier == "toggle-block-comment" {
+            return !doc.isReadOnly
+                && CommentPrefixResolver.blockCommentParameter(for: doc) != nil
         }
         // The bookmarked-line commands have applicability rules that the
         // pure transform cannot express: Copy changes only the pasteboard,
@@ -4428,6 +4465,23 @@ class MainWindowController: NSViewController {
         guard let item = sender as? NSMenuItem,
               let identifier = item.representedObject as? String else { return }
         performCommand(identifier: identifier)
+    }
+
+    /// First-responder entry point for Edit > Comment/Uncomment.
+    ///
+    /// The block command's delimiter pair belongs to the focused document's
+    /// language, not to the menu: the same Comment/Uncomment menu serves every
+    /// tab, so resolving the pair when the menu is built would bake in whichever
+    /// language happened to be focused then. This reads it at action time and
+    /// hands it to the registry as the macro-style parameter. A language with
+    /// no complete pair resolves to `nil`, leaving the command a no-op — the
+    /// no-fallback contract; validation disables the item for that language.
+    @objc func performCommentCommand(_ sender: Any?) {
+        guard let item = sender as? NSMenuItem,
+              let identifier = item.representedObject as? String else { return }
+        performCommand(identifier: identifier,
+                       parameter: CommentPrefixResolver.blockCommentParameter(
+                           for: tabStore.selectedDocument))
     }
 
     /// First-responder entry point for the bookmark group of the Text menu.
@@ -5159,6 +5213,7 @@ class MainWindowController: NSViewController {
 extension MainWindowController: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(MainWindowController.performCommand(withIdentifier:))
+            || menuItem.action == #selector(MainWindowController.performCommentCommand(_:))
             || menuItem.action == #selector(MainWindowController.performBookmarkCommand(withIdentifier:))
             || menuItem.action == #selector(MainWindowController.performTokenStyleCommand(withIdentifier:))
             || menuItem.action == #selector(MainWindowController.performMultiSelectCommand(withIdentifier:)) {
