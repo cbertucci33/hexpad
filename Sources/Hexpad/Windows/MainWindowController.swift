@@ -2204,7 +2204,13 @@ class MainWindowController: NSViewController {
         incrementalSearchBar?.editorRef = pane.editor
 
         if let doc = pane.tabStore.selectedDocument {
-            applySyntaxHighlighting(to: pane.editor, for: doc, forceReset: true)
+            // This runs on every focus change, including a click between split
+            // panes showing the same document. Only a different document or
+            // language invalidates the token store; a same-document refresh
+            // reuses it instead of re-tokenizing the visible band.
+            let language = Language(rawValue: doc.language) ?? .plain
+            let needsReset = highlightedDoc !== doc || syntaxStore.language != language
+            applySyntaxHighlighting(to: pane.editor, for: doc, forceReset: needsReset)
         } else {
             highlightedDoc = nil
             syntaxStore.reset()
@@ -5233,9 +5239,20 @@ extension MainWindowController: NSTextViewDelegate {
     func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         if selector == #selector(insertNewline(_:))
             || selector == #selector(insertNewlineIgnoringFieldEditor(_:)) {
-            guard preferences.autoIndent,
+            // A marked (IME) composition owns its own range. Some input-manager
+            // paths still deliver Return here mid-composition; reading that
+            // range as the insertion point would commit the composition and
+            // replace it with a newline plus indentation. Let AppKit finish
+            // the composition instead, matching the Auto-close guard above.
+            guard !textView.hasMarkedText(),
+                  preferences.autoIndent,
                   let editor = pane(containing: textView)?.editor,
                   editor.multiCaretState.count == 1 else { return false }
+            // insertText vetoes itself on a read-only buffer and reports no
+            // status, so check the same bound document shouldChangeTextIn
+            // uses and fall through to AppKit rather than swallowing Return.
+            let boundDoc = pane(containing: textView)?.boundDocument ?? tabStore.selectedDocument
+            guard boundDoc?.isReadOnly != true else { return false }
             let settings = IndentSettings(tabSize: preferences.tabSize,
                                           useTabs: preferences.useTabs)
             let text: NSString = textView.textStorage?.mutableString
