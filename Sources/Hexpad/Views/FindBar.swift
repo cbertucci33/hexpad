@@ -23,6 +23,24 @@ class FindBar: NSView, NSSearchFieldDelegate {
     
     private var currentMatchIndex = 0
     private var allMatches: [SearchMatch] = []
+    /// True when the match list stopped at ``maximumMatchCount`` and the buffer
+    /// holds more occurrences than are stored. The counter appends "+" so a
+    /// capped "1 of 1000+" cannot be mistaken for an exact total.
+    private var matchesWereTruncated = false
+    /// Cap on stored matches. A pathological one-character query over a large
+    /// buffer can match hundreds of thousands of times; the bar only needs
+    /// enough to navigate and paint, so it keeps the first N like Find
+    /// Characters in Range caps its carets.
+    private static let maximumMatchCount = 1000
+    /// Temporary-attribute marker for this bar's own highlight paint. Rendering
+    /// still comes from .backgroundColor; the private key records ownership so
+    /// clearing here cannot erase the other search surface's highlight
+    /// (SMELL-3), mirroring MultiCaretTextView.tokenStyleAttribute.
+    static let highlightAttribute = NSAttributedString.Key("HexpadFindBarHighlight")
+    /// Match ranges this bar painted, per layout manager, so clearing removes
+    /// only its own ranges instead of sweeping .backgroundColor over the whole
+    /// buffer (and over the incremental search bar's paint).
+    private var paintedRangesByLayoutManager: [ObjectIdentifier: [NSRange]] = [:]
     // Wrap is on by default (historical behaviour) but now switchable; the
     // other options were previously unreachable from the UI at all.
     private var searchOptions: SearchOptions = [.wrapAround]
@@ -350,18 +368,17 @@ class FindBar: NSView, NSSearchFieldDelegate {
         selectionScope = nil
         lastSelectedMatchRange = nil
         historyIndex = nil
-        // Reopen with the last query, like Notepad++ does. MainWindowController
-        // still overwrites this when the editor has a fresh selection to seed.
-        if searchField.stringValue.isEmpty, let last = searchHistory.first {
-            searchField.stringValue = last
-        }
-        // Also seed from the editor's current selection if available, so that
-        // Cmd+F with a selection behaves consistently through show().
-        if searchField.stringValue.isEmpty, let editor = editorContainer,
+        // A fresh editor selection always wins: reopening Find after a previous
+        // search must search the selected text, not the old query (Notepad++
+        // behaviour). With no selection, keep the field's previous query, or
+        // fall back to the newest history entry when the field is empty.
+        if let editor = editorContainer,
            editor.textView.selectedRange.length > 0 {
             let selected = (editor.textView.string as NSString)
                 .substring(with: editor.textView.selectedRange)
             searchField.stringValue = selected
+        } else if searchField.stringValue.isEmpty, let last = searchHistory.first {
+            searchField.stringValue = last
         }
         if !searchField.stringValue.isEmpty {
             performFind()
@@ -637,7 +654,12 @@ class FindBar: NSView, NSSearchFieldDelegate {
         }
         lastQuery = rawPattern
         let scope = activeSearchScope()
-        allMatches = SearchEngine.search(doc.text, pattern: pattern, options: searchOptions, range: scope)
+        // Ask for one past the cap so the counter can tell an exact list from a
+        // truncated one; only the capped prefix is stored and painted.
+        let found = SearchEngine.search(doc.text, pattern: pattern, options: searchOptions,
+                                        range: scope, limit: Self.maximumMatchCount + 1)
+        matchesWereTruncated = found.count > Self.maximumMatchCount
+        allMatches = matchesWereTruncated ? Array(found.prefix(Self.maximumMatchCount)) : found
         matchesDocumentID = doc.id
         matchesRevision = doc.textRevision
 
@@ -645,6 +667,7 @@ class FindBar: NSView, NSSearchFieldDelegate {
             // Empty query: show nothing
             matchCountLabel.stringValue = ""
             currentMatchIndex = 0
+            matchesWereTruncated = false
             clearHighlights()
             return
         }
@@ -658,6 +681,7 @@ class FindBar: NSView, NSSearchFieldDelegate {
                 matchCountLabel.stringValue = "No matches"
             }
             currentMatchIndex = 0
+            matchesWereTruncated = false
             clearHighlights()
             return
         }
@@ -667,7 +691,7 @@ class FindBar: NSView, NSSearchFieldDelegate {
         if currentMatchIndex >= allMatches.count {
             currentMatchIndex = 0
         }
-        matchCountLabel.stringValue = "\(currentMatchIndex + 1) of \(allMatches.count)"
+        matchCountLabel.stringValue = "\(currentMatchIndex + 1) of \(allMatches.count)\(matchesWereTruncated ? "+" : "")"
         applyHighlights()
 
         // Selection is only applied on explicit navigation/toggle so that
@@ -702,9 +726,11 @@ class FindBar: NSView, NSSearchFieldDelegate {
 
     // MARK: - Match highlighting
 
-    /// Paints every match with a temporary background attribute. Temporary
-    /// attributes belong to the layout manager, not the document, so they are
-    /// never saved and never pollute undo/syntax colouring.
+    /// Paints every stored match with a temporary background attribute.
+    /// Temporary attributes belong to the layout manager, not the document, so
+    /// they are never saved and never pollute undo/syntax colouring. The match
+    /// list is capped (see ``maximumMatchCount``), so this stays bounded even
+    /// for a one-character query.
     private func applyHighlights() {
         guard isVisible,
               let textView = editorContainer?.textView,
@@ -717,23 +743,72 @@ class FindBar: NSView, NSSearchFieldDelegate {
         guard length > 0 else { return }
 
         let color = NSColor.findHighlightColor.withAlphaComponent(0.25)
+        var painted: [NSRange] = []
         for match in allMatches where match.range.length > 0 {
             guard match.range.location != NSNotFound,
                   match.range.location + match.range.length <= length else { continue }
-            layoutManager.addTemporaryAttributes([.backgroundColor: color], forCharacterRange: match.range)
+            layoutManager.addTemporaryAttributes(
+                [.backgroundColor: color, Self.highlightAttribute: NSNumber(value: 1)],
+                forCharacterRange: match.range)
+            painted.append(match.range)
+        }
+        if !painted.isEmpty {
+            paintedRangesByLayoutManager[ObjectIdentifier(layoutManager)] = painted
         }
     }
 
+    /// Removes only the ranges this bar painted, identified by its private
+    /// attribute key. A whole-buffer .backgroundColor sweep would also clear the
+    /// incremental search bar's highlights (SMELL-3).
     private func clearHighlights() {
         // Temporary attributes live on each pane's layout manager, so the
         // unfocused split group keeps stale match highlights unless it is
         // cleared too.
         for textView in allEditorTextViews() {
-            guard let layoutManager = textView.layoutManager else { continue }
-            let length = (textView.string as NSString).length
-            guard length > 0 else { continue }
-            layoutManager.removeTemporaryAttribute(.backgroundColor,
-                                                   forCharacterRange: NSRange(location: 0, length: length))
+            guard let layoutManager = textView.layoutManager,
+                  let painted = paintedRangesByLayoutManager[ObjectIdentifier(layoutManager)] else {
+                continue
+            }
+            for range in painted {
+                removeOwnHighlight(in: range, layoutManager: layoutManager)
+            }
+        }
+        paintedRangesByLayoutManager.removeAll()
+    }
+
+    /// Drops this bar's marker from `range`. When the incremental search bar
+    /// also owns the run, its background stays painted and only our marker is
+    /// removed; the last surface to clear then removes the background.
+    private func removeOwnHighlight(in range: NSRange, layoutManager: NSLayoutManager) {
+        guard let textStorage = layoutManager.textStorage else { return }
+        let clamped = NSIntersectionRange(range, NSRange(location: 0, length: textStorage.length))
+        var cursor = clamped.location
+        let end = clamped.location + clamped.length
+        while cursor < end {
+            var ownRange = NSRange(location: cursor, length: 0)
+            let owns = layoutManager.temporaryAttribute(Self.highlightAttribute,
+                                                        atCharacterIndex: cursor,
+                                                        effectiveRange: &ownRange) != nil
+            var otherRange = NSRange(location: cursor, length: 0)
+            let otherOwns = layoutManager.temporaryAttribute(
+                IncrementalSearchBar.highlightAttribute,
+                atCharacterIndex: cursor,
+                effectiveRange: &otherRange) != nil
+
+            var step = end - cursor
+            if owns, ownRange.length > 0 { step = min(step, ownRange.location + ownRange.length - cursor) }
+            if otherOwns, otherRange.length > 0 { step = min(step, otherRange.location + otherRange.length - cursor) }
+            let stepRange = NSRange(location: cursor, length: max(1, min(step, end - cursor)))
+
+            if owns {
+                layoutManager.removeTemporaryAttribute(Self.highlightAttribute,
+                                                       forCharacterRange: stepRange)
+                if !otherOwns {
+                    layoutManager.removeTemporaryAttribute(.backgroundColor,
+                                                           forCharacterRange: stepRange)
+                }
+            }
+            cursor = stepRange.location + stepRange.length
         }
     }
 
@@ -898,7 +973,7 @@ class FindBar: NSView, NSSearchFieldDelegate {
         textView.setSelectedRange(range)
         textView.scrollRangeToVisible(range)
         lastSelectedMatchRange = range
-        matchCountLabel.stringValue = "\(currentMatchIndex + 1) of \(allMatches.count)"
+        matchCountLabel.stringValue = "\(currentMatchIndex + 1) of \(allMatches.count)\(matchesWereTruncated ? "+" : "")"
     }
 
     // MARK: - Find All

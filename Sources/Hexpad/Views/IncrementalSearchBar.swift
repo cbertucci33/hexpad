@@ -28,9 +28,14 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
     weak var editorRef: EditorContainer? {
         didSet {
             // A live pane switch re-injects the editor without a show/hide
-            // cycle; move the scroll observation to the new clip view.
-            guard isVisible else { return }
+            // cycle; move the scroll observation to the new clip view and
+            // rebuild the match list, which still describes the old buffer.
+            guard isVisible, editorRef !== oldValue else { return }
             startObservingViewport()
+            matchesRevision = -1
+            if !searchField.stringValue.isEmpty {
+                performSearch(select: false)
+            }
         }
     }
     /// Called after `hide()` so the owner can relayout and restore focus.
@@ -38,6 +43,19 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
 
     private(set) var matches: [SearchMatch] = []
     private(set) var currentMatchIndex = -1
+    /// True when the match list stopped at ``maximumMatchCount``. The counter
+    /// appends "+" so a capped count is not mistaken for an exact total.
+    private var matchesWereTruncated = false
+    /// Cap on stored matches. A pathological one-character query can match
+    /// hundreds of thousands of times; the bar only needs enough to navigate
+    /// and paint, so it keeps the first N like Find Characters in Range caps
+    /// its carets.
+    private static let maximumMatchCount = 1000
+    /// Temporary-attribute marker for this bar's own highlight paint. Rendering
+    /// still comes from .backgroundColor; the private key records ownership so
+    /// clearing here cannot erase FindBar's highlight (SMELL-3), mirroring
+    /// MultiCaretTextView.tokenStyleAttribute.
+    static let highlightAttribute = NSAttributedString.Key("HexpadIncrementalSearchHighlight")
     private var lastQuery = ""
     /// Debounce for live full-buffer searches in large documents, matching
     /// FindBar's policy so both search surfaces behave the same: documents
@@ -57,6 +75,11 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
     /// the document.
     private var highlightedRange: NSRange?
     private var pendingHighlightRefresh = false
+    private var documentChangeObserver: NSObjectProtocol?
+    /// `DocumentModel.textRevision` the current `matches` were computed from.
+    /// A different revision means the stored ranges may no longer point at the
+    /// same characters, so the list is rebuilt before it is painted or walked.
+    private var matchesRevision = -1
 
     static let preferredHeight: CGFloat = 30
 
@@ -73,6 +96,7 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
         pendingSearchWorkItem?.cancel()
         stopObservingTabSelection()
         stopObservingViewport()
+        stopObservingDocumentChanges()
     }
 
     private func setupUI() {
@@ -188,9 +212,11 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
         matches = []
         currentMatchIndex = -1
         lastQuery = ""
+        matchesRevision = -1
         clearHighlights()
         startObservingTabSelection()
         startObservingViewport()
+        startObservingDocumentChanges()
         if !initialQuery.isEmpty {
             performSearch()
         }
@@ -213,10 +239,12 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
         matches = []
         currentMatchIndex = -1
         lastQuery = ""
+        matchesRevision = -1
         wrapLabel?.stringValue = ""
         updateCounter()
         stopObservingTabSelection()
         stopObservingViewport()
+        stopObservingDocumentChanges()
         isHiding = false
         onClose?()
     }
@@ -255,6 +283,7 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
         clearHighlights()
         guard isVisible, let textView = editorRef?.textView else {
             matches = []
+            matchesWereTruncated = false
             currentMatchIndex = -1
             updateCounter()
             return
@@ -266,13 +295,19 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
         }
         guard !query.isEmpty else {
             matches = []
+            matchesWereTruncated = false
             currentMatchIndex = -1
             wrapLabel?.stringValue = ""
             updateCounter()
             return
         }
         let options: SearchOptions = matchCaseButton?.state == .on ? .caseSensitive : []
-        matches = SearchEngine.search(textView.string, pattern: query, options: options)
+        // Ask for one past the cap so the counter can tell an exact list from a
+        // truncated one; only the capped prefix is stored and painted.
+        let found = SearchEngine.search(textView.string, pattern: query, options: options,
+                                        limit: Self.maximumMatchCount + 1)
+        matchesWereTruncated = found.count > Self.maximumMatchCount
+        matches = matchesWereTruncated ? Array(found.prefix(Self.maximumMatchCount)) : found
         guard !matches.isEmpty else {
             currentMatchIndex = -1
             wrapLabel?.stringValue = ""
@@ -366,24 +401,59 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
     }
 
     /// Paints the matches intersecting `range`, clamped to that band so a match
-    /// spanning the document never makes one paint pass O(document).
+    /// spanning the document never makes one paint pass O(document). Matches are
+    /// stored in ascending document order (SearchEngine returns them that way),
+    /// so a binary search finds the first candidate instead of scanning the
+    /// whole list on every band crossing (PERF-3).
     private func paintHighlights(in range: NSRange,
                                  layoutManager: NSLayoutManager,
                                  length: Int) {
+        guard range.length > 0 else { return }
         let color = NSColor.findHighlightColor.withAlphaComponent(0.3)
-        for match in matches where match.range.length > 0 {
-            guard match.range.location != NSNotFound,
-                  match.range.location + match.range.length <= length else { continue }
-            let paintedRange = NSIntersectionRange(match.range, range)
+        let bandEnd = range.location + range.length
+        var index = firstMatchIndex(intersecting: range)
+        while index < matches.count {
+            let matchRange = matches[index].range
+            if matchRange.location == NSNotFound {
+                index += 1
+                continue
+            }
+            // Sorted by location: nothing later can intersect this band either.
+            if matchRange.location >= bandEnd { break }
+            index += 1
+            guard matchRange.length > 0,
+                  matchRange.location + matchRange.length <= length else { continue }
+            let paintedRange = NSIntersectionRange(matchRange, range)
             guard paintedRange.length > 0 else { continue }
-            layoutManager.addTemporaryAttributes([.backgroundColor: color],
-                                                 forCharacterRange: paintedRange)
+            layoutManager.addTemporaryAttributes(
+                [.backgroundColor: color, Self.highlightAttribute: NSNumber(value: 1)],
+                forCharacterRange: paintedRange)
         }
     }
 
-    /// Repaints only the band that scrolled into view. Repainting every band the
-    /// viewport passes over is what keeps the highlights from going stale; the
-    /// contained check skips pixel-sized scrolls inside the painted band.
+    /// Index of the first match whose end reaches `range.location`, i.e. the
+    /// first one that can intersect the band. Matches are ascending by location.
+    private func firstMatchIndex(intersecting range: NSRange) -> Int {
+        var low = 0
+        var high = matches.count
+        while low < high {
+            let mid = low + (high - low) / 2
+            let matchRange = matches[mid].range
+            let endsBeforeBand = matchRange.location != NSNotFound
+                && matchRange.location + matchRange.length < range.location
+            if endsBeforeBand {
+                low = mid + 1
+            } else {
+                high = mid
+            }
+        }
+        return low
+    }
+
+    /// Repaints only the band that scrolled into view. The contained check skips
+    /// pixel-sized scrolls inside the painted band; when the viewport leaves it,
+    /// the previous band is dropped and the new one painted, so only one band of
+    /// this bar's paint exists at a time.
     private func refreshHighlightsForVisibleBand() {
         guard isVisible,
               highlightAllButton?.state == .on,
@@ -393,7 +463,7 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
               let container = textView.textContainer else { return }
         let length = (textView.string as NSString).length
         guard length > 0 else {
-            highlightedRange = nil
+            clearHighlights()
             return
         }
 
@@ -406,21 +476,58 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
            range.location + range.length <= painted.location + painted.length {
             return
         }
-        // Drop any stale band attributes before repainting the newly visible
-        // band, including partial matches left by the previous position.
-        layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: range)
+        // Drop this bar's previous band before repainting the newly visible
+        // band, including partial matches left by the previous position. Only
+        // our own key's ranges are touched (SMELL-3).
+        if let painted = highlightedRange {
+            removeOwnHighlights(in: painted, layoutManager: layoutManager)
+        }
         paintHighlights(in: range, layoutManager: layoutManager, length: length)
         highlightedRange = range
     }
 
     private func clearHighlights() {
-        highlightedRange = nil
+        defer { highlightedRange = nil }
         guard let textView = editorRef?.textView,
-              let layoutManager = textView.layoutManager else { return }
-        let length = (textView.string as NSString).length
-        guard length > 0 else { return }
-        layoutManager.removeTemporaryAttribute(.backgroundColor,
-                                              forCharacterRange: NSRange(location: 0, length: length))
+              let layoutManager = textView.layoutManager,
+              let painted = highlightedRange else { return }
+        removeOwnHighlights(in: painted, layoutManager: layoutManager)
+    }
+
+    /// Removes this bar's marker from `range` and removes the background only on
+    /// runs FindBar does not also own. A shared run keeps its background and
+    /// loses just our marker, so either bar's clear cannot wipe the other's paint
+    /// (SMELL-3).
+    private func removeOwnHighlights(in range: NSRange, layoutManager: NSLayoutManager) {
+        guard let textStorage = layoutManager.textStorage else { return }
+        let clamped = NSIntersectionRange(range, NSRange(location: 0, length: textStorage.length))
+        var cursor = clamped.location
+        let end = clamped.location + clamped.length
+        while cursor < end {
+            var ownRange = NSRange(location: cursor, length: 0)
+            let owns = layoutManager.temporaryAttribute(Self.highlightAttribute,
+                                                        atCharacterIndex: cursor,
+                                                        effectiveRange: &ownRange) != nil
+            var otherRange = NSRange(location: cursor, length: 0)
+            let otherOwns = layoutManager.temporaryAttribute(FindBar.highlightAttribute,
+                                                             atCharacterIndex: cursor,
+                                                             effectiveRange: &otherRange) != nil
+
+            var step = end - cursor
+            if owns, ownRange.length > 0 { step = min(step, ownRange.location + ownRange.length - cursor) }
+            if otherOwns, otherRange.length > 0 { step = min(step, otherRange.location + otherRange.length - cursor) }
+            let stepRange = NSRange(location: cursor, length: max(1, min(step, end - cursor)))
+
+            if owns {
+                layoutManager.removeTemporaryAttribute(Self.highlightAttribute,
+                                                       forCharacterRange: stepRange)
+                if !otherOwns {
+                    layoutManager.removeTemporaryAttribute(.backgroundColor,
+                                                           forCharacterRange: stepRange)
+                }
+            }
+            cursor = stepRange.location + stepRange.length
+        }
     }
 
     private func updateCounter() {
@@ -434,7 +541,7 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
         if matches.isEmpty || currentMatchIndex < 0 {
             label.stringValue = ""
         } else {
-            label.stringValue = "\(currentMatchIndex + 1)/\(matches.count)"
+            label.stringValue = "\(currentMatchIndex + 1)/\(matches.count)\(matchesWereTruncated ? "+" : "")"
         }
     }
 
@@ -497,6 +604,35 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
             self.pendingHighlightRefresh = false
             self.refreshHighlightsForVisibleBand()
         }
+    }
+
+    /// Watches the focused buffer for text changes. The bar's match list is a
+    /// snapshot of ranges, so an edit can shift every entry; comparing the
+    /// document's monotonic revision invalidates it without scanning the text.
+    private func startObservingDocumentChanges() {
+        guard documentChangeObserver == nil else { return }
+        documentChangeObserver = NotificationCenter.default.addObserver(
+            forName: DocumentModel.textDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self,
+                  self.isVisible,
+                  let doc = notification.object as? DocumentModel,
+                  doc.textStorage === self.editorRef?.textView.textStorage,
+                  doc.textRevision != self.matchesRevision else { return }
+            self.matchesRevision = doc.textRevision
+            // Rebuild without moving the caret: the user is mid-edit. Large
+            // buffers use the same debounce as FindBar so typing stays cheap.
+            self.performSearch(select: false, debounce: true)
+        }
+    }
+
+    private func stopObservingDocumentChanges() {
+        if let observer = documentChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        documentChangeObserver = nil
     }
 
     private func startObservingTabSelection() {

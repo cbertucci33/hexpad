@@ -95,10 +95,18 @@ public final class SearchEngine {
     /// `range` limits the search to a substring (the editor's selection) while
     /// returned match ranges stay absolute offsets into `text`. Passing nil
     /// searches the whole buffer.
+    ///
+    /// `limit` caps the number of matches collected and stops the scan once it
+    /// is reached. A one-character query over a large buffer can match hundreds
+    /// of thousands of times; callers that only paint or navigate a viewport
+    /// pass a cap so the full range list and its per-match substrings are never
+    /// built (mirroring how Find Characters in Range caps its carets).
     public static func search(_ text: String, pattern: String, options: SearchOptions,
-                              range: NSRange? = nil) -> [SearchMatch] {
+                              range: NSRange? = nil, limit: Int? = nil) -> [SearchMatch] {
         var matches: [SearchMatch] = []
         guard !pattern.isEmpty else { return matches }
+        let maxMatches = limit.map { max(0, $0) } ?? Int.max
+        guard maxMatches > 0 else { return matches }
         
         let nsText = text as NSString
         let searchRange = clampedRange(range, length: nsText.length)
@@ -106,18 +114,20 @@ public final class SearchEngine {
         
         do {
             let regex = try compiledRegex(pattern: pattern, options: options)
-            let results = regex.matches(in: text, options: [], range: searchRange)
-            
-            for result in results {
+            regex.enumerateMatches(in: text, options: [], range: searchRange) { result, _, stop in
+                guard let result else { return }
                 let matchedText = nsText.substring(with: result.range)
                 matches.append(SearchMatch(range: result.range, text: matchedText))
+                if matches.count >= maxMatches {
+                    stop.pointee = true
+                }
             }
         } catch {
             // Invalid regex pattern - treat as literal within the same range.
             let compareOptions: NSString.CompareOptions = options.contains(.caseSensitive) ? [] : [.caseInsensitive]
             var loc = searchRange.location
             let end = searchRange.upperBound
-            while loc < end {
+            while loc < end, matches.count < maxMatches {
                 let remaining = NSRange(location: loc, length: end - loc)
                 let found = nsText.range(of: pattern, options: compareOptions, range: remaining)
                 guard found.location != NSNotFound else { break }
