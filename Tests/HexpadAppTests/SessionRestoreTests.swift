@@ -155,7 +155,9 @@ final class SessionRestoreTests: XCTestCase {
         SessionStore.cancelScheduledSave()
         XCTAssertFalse(SessionStore.hasPendingChanges)
 
-        // The notice every save/command/conversion path posts.
+        // The notice every save/command/conversion path posts. The snapshot
+        // build is debounced, but the pending state is marked immediately so
+        // callers can still observe a write is coming.
         NotificationCenter.default.post(
             name: NSNotification.Name("DocumentModifiedDidChange"),
             object: nil
