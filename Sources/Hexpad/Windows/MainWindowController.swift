@@ -3463,12 +3463,25 @@ class MainWindowController: NSViewController {
             let attrs = try? FileManager.default.attributesOfItem(atPath: path)
             guard let modDate = attrs?[.modificationDate] as? Date else { continue }
 
-            // First sighting records the baseline, no reload.
-            guard let previous = seenModDates[doc.id] else {
+            // First sighting normally records the baseline, no reload. A
+            // restored document is the exception: it carries the modification
+            // date it was saved at, so comparing against that detects an edit
+            // another program made while the app was closed. Without this the
+            // current date became the baseline and the next save silently
+            // overwrote that edit. New documents and old sessions without the
+            // saved date keep the plain baseline behaviour.
+            let previous = seenModDates[doc.id] ?? doc.savedModificationDate
+            guard let previous else {
                 seenModDates[doc.id] = modDate
                 continue
             }
-            guard modDate > previous else { continue }
+            guard modDate > previous else {
+                // At (or behind) the baseline. Recording the current date
+                // gives a restored document a baseline after this first look;
+                // for an existing baseline it is the same date.
+                seenModDates[doc.id] = modDate
+                continue
+            }
 
             if doc.unsavedChanges {
                 // Dirty buffer: keep the user's edits. setModified(true) used
@@ -4863,19 +4876,32 @@ class MainWindowController: NSViewController {
     /// its line terminator, so the selection ends where the next line begins).
     /// Dragging from the gutter extends the selection across the lines it
     /// crossed, covering every full line in between. Line boundaries come from
-    /// GutterGeometry, the unit-tested source of truth for line<->character
-    /// math in this codebase.
+    /// the container's cached `LineIndex`, whose conventions match the
+    /// unit-tested `GutterGeometry` source of truth.
     private func selectCharacter(_ charIndex: Int, anchorCharIndex: Int? = nil) {
         guard let editor = editorContainer else { return }
-        let text = editor.textView.string
-        let textLength = (text as NSString).length
+        // The container caches one LineIndex per document revision, so a drag
+        // event converts offsets to lines in O(log lines) instead of scanning
+        // the whole buffer for the anchor, the target, and both line starts.
+        let index = editor.lineIndex
+        let textLength = index?.textLength ?? (editor.textView.string as NSString).length
         let clamped = min(max(0, charIndex), textLength)
 
         // A press on line L selects line L; dragging to line M widens the
         // selection to cover every full line from the earlier to the later one.
         let anchor = anchorCharIndex.map { min(max(0, $0), textLength) }
-        let anchorLine = anchor.flatMap { GutterGeometry.logicalLine(of: $0, in: text) }
-        let targetLine = GutterGeometry.logicalLine(of: clamped, in: text)
+        // Only the fallback (no storage) path reads the buffer.
+        let fallbackText = index == nil ? editor.textView.string : ""
+        func line(of offset: Int) -> Int {
+            if let index { return index.line(of: offset) }
+            return GutterGeometry.logicalLine(of: offset, in: fallbackText)
+        }
+        func firstCharIndex(of line: Int) -> Int {
+            if let index { return index.firstCharIndex(of: line) }
+            return GutterGeometry.firstCharIndex(of: line, in: fallbackText)
+        }
+        let anchorLine = anchor.map { line(of: $0) }
+        let targetLine = line(of: clamped)
         let firstLine: Int
         let lastLine: Int
         if let anchorLine, anchorLine != targetLine {
@@ -4888,8 +4914,8 @@ class MainWindowController: NSViewController {
 
         // Full logical lines: start of the first line through the start of the
         // line after the last one, which lands just past the final newline.
-        let selectionStart = GutterGeometry.firstCharIndex(of: firstLine, in: text)
-        let nextLineStart = GutterGeometry.firstCharIndex(of: lastLine + 1, in: text)
+        let selectionStart = firstCharIndex(of: firstLine)
+        let nextLineStart = firstCharIndex(of: lastLine + 1)
         let selectionEnd = min(nextLineStart, textLength)
         let selRange = NSRange(location: selectionStart, length: max(0, selectionEnd - selectionStart))
 

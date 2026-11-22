@@ -66,7 +66,10 @@ public final class DocumentModel: Identifiable, ObservableObject {
     /// against the baseline; session save gets a cheap repair check.
     private var _isDirty = false
     private var dirtyObservers: [NSObjectProtocol] = []
-    var savedModificationDate: Date?
+    /// Modification date of the on-disk version this buffer was last saved to
+    /// (or first loaded from). Persisted with the session so a restored tab can
+    /// tell whether the file moved on while the app was closed.
+    public private(set) var savedModificationDate: Date?
     private var _encoding: String = "UTF-8"
     /// The encoding the next save writes. `nil` means "same as `encoding`".
     /// "Convert to" sets this without changing the encoding the buffer was
@@ -514,6 +517,13 @@ public final class DocumentModel: Identifiable, ObservableObject {
         if let path = self.filePath?.path {
             data["filePath"] = path
         }
+        // The modification date of the version this buffer represents, so a
+        // restored tab can detect a file edited while the app was closed.
+        // Stored as epoch seconds: JSONSerialization has no Date type. Sessions
+        // written before this key existed simply omit it.
+        if let savedModificationDate = self.savedModificationDate {
+            data["savedModificationDate"] = savedModificationDate.timeIntervalSince1970
+        }
         if let tabColorIndex = self.tabColorIndex {
             data["tabColorIndex"] = tabColorIndex
         }
@@ -586,6 +596,20 @@ public final class DocumentModel: Identifiable, ObservableObject {
         } else {
             doc.setModified(false)
         }
+        // Restore the date of the version this buffer was saved at. The
+        // initializer above captured the CURRENT on-disk date; replacing it
+        // here is what lets the watcher's first sighting notice a file edited
+        // while the app was closed. Sessions written before this key existed
+        // keep the initializer's date and behave exactly as before. Numbers
+        // (JSON) and a native Date (tests/hand-built sessions) are accepted;
+        // anything else is ignored.
+        if let raw = data["savedModificationDate"] {
+            if let date = raw as? Date {
+                doc.savedModificationDate = date
+            } else if let seconds = doubleValue(raw), seconds > 0 {
+                doc.savedModificationDate = Date(timeIntervalSince1970: seconds)
+            }
+        }
         // Apply "Convert to" state after the baseline: setModified(false)
         // clears the pending flag, but an explicitly persisted conversion has
         // to survive the restore.
@@ -600,6 +624,12 @@ public final class DocumentModel: Identifiable, ObservableObject {
     private static func intValue(_ value: Any?) -> Int? {
         if let int = value as? Int { return int }
         return (value as? NSNumber)?.intValue
+    }
+
+    /// Same tolerant numeric decode as ``intValue(_:)``, for epoch seconds.
+    private static func doubleValue(_ value: Any?) -> Double? {
+        if let double = value as? Double { return double }
+        return (value as? NSNumber)?.doubleValue
     }
 }
 
