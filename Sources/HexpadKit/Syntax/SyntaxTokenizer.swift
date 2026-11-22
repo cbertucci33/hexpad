@@ -159,34 +159,70 @@ public enum Language: String, CaseIterable, Identifiable {
     }
 }
 
-/// Resolves the line-comment prefix a document's language uses.
+/// Resolves the comment tokens a document's language declares.
 ///
-/// The prefix is metadata, not a syntax rule: it is the `linePrefix` of the
-/// language's ``LexerDefinition/comments``. Keeping the lookup here (next to
-/// `Language`) lets both the editor and tests resolve it from one place.
-/// Languages with no line-comment metadata — plain text, JSON, Diff, or a
-/// language the app does not know — keep the `//` default.
+/// Comment tokens are metadata, not syntax rules: they are the
+/// ``LexerDefinition/comments`` fields of the language's grammar. Keeping the
+/// lookup here (next to `Language`) lets both the editor and tests resolve
+/// them from one place.
+///
+/// A language that does not declare a token has no valid way to be commented,
+/// so the resolvers return `nil` instead of guessing a C-family default. The
+/// app uses that `nil` to disable the corresponding menu item.
 public enum CommentPrefixResolver {
 
-    /// The prefix used when a document's language has no line-comment metadata.
-    public static let fallback = "//"
-
-    /// Resolves the prefix for a document's current language.
-    public static func lineCommentPrefix(for document: DocumentModel?) -> String {
+    /// The line-comment prefix a document's language declares, or `nil` when
+    /// the language has no line-comment metadata (plain text, JSON, Diff,
+    /// HTML, CSS, XML, Markdown, OCaml, or an unknown language).
+    public static func lineCommentPrefix(for document: DocumentModel?) -> String? {
         guard let document,
               let language = Language(rawValue: document.language) else {
-            return fallback
+            return nil
         }
         return lineCommentPrefix(for: language)
     }
 
-    /// Resolves the prefix directly from a language.
-    public static func lineCommentPrefix(for language: Language) -> String {
+    /// Resolves the line prefix directly from a language.
+    public static func lineCommentPrefix(for language: Language) -> String? {
         guard let prefix = LexerDefinitions.definition(for: language)?.comments?.linePrefix,
               !prefix.isEmpty else {
-            return fallback
+            return nil
         }
         return prefix
+    }
+
+    /// The block-comment delimiters a document's language declares, or `nil`
+    /// when the language has no complete block pair (for example Python,
+    /// Shell, YAML or JSON).
+    public static func blockCommentDelimiters(
+        for document: DocumentModel?
+    ) -> (open: String, close: String)? {
+        guard let document,
+              let language = Language(rawValue: document.language) else {
+            return nil
+        }
+        return blockCommentDelimiters(for: language)
+    }
+
+    /// Resolves the block delimiters directly from a language.
+    public static func blockCommentDelimiters(
+        for language: Language
+    ) -> (open: String, close: String)? {
+        guard let comments = LexerDefinitions.definition(for: language)?.comments,
+              let open = comments.blockStart, !open.isEmpty,
+              let close = comments.blockEnd, !close.isEmpty else {
+            return nil
+        }
+        return (open, close)
+    }
+
+    /// Encodes a language's block pair as the registry command's
+    /// `"open close"` macro parameter, or `nil` when there is no pair.
+    public static func blockCommentParameter(for document: DocumentModel?) -> String? {
+        guard let delimiters = blockCommentDelimiters(for: document) else {
+            return nil
+        }
+        return "\(delimiters.open) \(delimiters.close)"
     }
 }
 

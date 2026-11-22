@@ -1222,17 +1222,21 @@ public struct CommandRegistry {
     /// The Edit > Comment/Uncomment block-comment command.
     ///
     /// The delimiter pair travels as a macro-style parameter in `"open close"`
-    /// form so a language-aware caller can pass `<!-- -->` or `(* *)`; the
-    /// default stays `/* */` for headless callers.
+    /// form so the app can pass the focused language's pair (`<!-- -->`,
+    /// `(* *)`, ...). There is deliberately no default pair: a language that
+    /// declares no block comment must not be commented with guessed C-family
+    /// delimiters. Running the command without a parameter (or with a
+    /// malformed one) is therefore a no-op, and menu validation disables the
+    /// item for those languages.
     public static func defaultCommentCommands() -> [EditorCommand] {
         [EditorCommand(
             identifier: "toggle-block-comment",
             title: "Block Comment",
-            execute: { text, selection in
-                LineOps.toggleBlockComment(text, selection: selection)
-            },
+            execute: { text, selection in (text, selection) },
             parameterizedExecute: { parameter in
-                let delimiters = blockDelimiters(from: parameter)
+                guard let delimiters = blockDelimiters(from: parameter) else {
+                    return { text, selection in (text, selection) }
+                }
                 return { text, selection in
                     LineOps.toggleBlockComment(text,
                                                selection: selection,
@@ -1327,13 +1331,14 @@ public struct CommandRegistry {
     }
 
     /// Parses the `"open close"` macro parameter for the block-comment command.
-    /// A missing or malformed pair falls back to the C-family delimiters.
-    private static func blockDelimiters(from parameter: String) -> (open: String, close: String) {
+    /// A missing or malformed pair returns `nil`; callers treat that as a
+    /// no-op rather than guessing delimiters the language may not support.
+    private static func blockDelimiters(from parameter: String) -> (open: String, close: String)? {
         let parts = parameter.split(maxSplits: 1,
                                     omittingEmptySubsequences: false,
                                     whereSeparator: { $0 == " " || $0 == "\t" })
         guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else {
-            return ("/*", "*/")
+            return nil
         }
         return (String(parts[0]), String(parts[1]))
     }
@@ -1351,8 +1356,12 @@ public struct CommandRegistry {
     /// leaves every other command (and the lookup built from them) untouched.
     /// Menus, keybindings and macro steps therefore keep resolving the same
     /// commands they did before the document changed.
-    public mutating func updatedLineCommentPrefix(_ prefix: String) {
-        let replacement = CommandRegistry.toggleLineCommentCommand(prefix: prefix)
+    ///
+    /// A `nil` prefix means the focused language declares no line comment.
+    /// The command stays registered (so the menu/keybinding shape is stable)
+    /// but becomes a no-op; validation disables its menu item.
+    public mutating func updatedLineCommentPrefix(_ prefix: String?) {
+        let replacement = CommandRegistry.toggleLineCommentCommand(prefix: prefix ?? "")
         guard let index = commands.firstIndex(where: { $0.identifier == replacement.identifier }) else {
             return
         }

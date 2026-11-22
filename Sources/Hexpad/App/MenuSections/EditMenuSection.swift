@@ -158,18 +158,19 @@ extension HexpadAppDelegate {
         insertItem.submenu = insertMenu
 
         // Wave 3A: Notepad++ groups comment toggles, blank operations and the
-        // non-bookmarked-line removal under Edit. The blank/bookmark leaves are
-        // nil-targeted registry commands (like Convert Case), so recording,
-        // validation and the single undo path are shared with every other
-        // command. The block-comment leaf is delegate-targeted like Indent
-        // because it passes the focused document's block delimiters.
+        // non-bookmarked-line removal under Edit. The comment leaves are
+        // nil-targeted registry commands (like Convert Case and Blank
+        // Operations), so recording, validation and the single undo path are
+        // shared with every other command. The controller resolves the focused
+        // language's token and disables the item when the grammar declares
+        // none; no C-family default is ever guessed.
         let commentItem = NSMenuItem(title: "Comment/Uncomment", action: nil, keyEquivalent: "")
         let commentMenu = NSMenu(title: "Comment/Uncomment")
         for command in CommandRegistry.default.commentCommands {
             let item = NSMenuItem(title: command.title,
-                                  action: #selector(performBlockCommentCommand(_:)),
+                                  action: #selector(MainWindowController.performCommand(withIdentifier:)),
                                   keyEquivalent: "")
-            item.target = self
+            item.target = nil
             item.representedObject = command.identifier
             commentMenu.addItem(item)
         }
@@ -255,28 +256,6 @@ extension HexpadAppDelegate {
         let state: NSControl.StateValue = on ? .on : .off
         readOnlyMenuItem?.state = state
         readOnlyAllMenuItem?.state = state
-    }
-
-    /// Runs the Edit > Comment/Uncomment item with the focused document's block
-    /// delimiters. Languages without block-comment metadata fall back to `/* */`.
-    @objc private func performBlockCommentCommand(_ sender: NSMenuItem) {
-        guard let identifier = sender.representedObject as? String,
-              let controller = indentTargetController else { return }
-        controller.performCommand(identifier: identifier,
-                                  parameter: blockCommentParameter(for: controller.tabStore.selectedDocument))
-    }
-
-    /// Encodes the focused language's block delimiters as the command's
-    /// `"open close"` macro parameter.
-    private func blockCommentParameter(for document: DocumentModel?) -> String {
-        guard let name = document?.language,
-              let language = Language(rawValue: name),
-              let comments = LexerDefinitions.definition(for: language)?.comments,
-              let open = comments.blockStart, !open.isEmpty,
-              let close = comments.blockEnd, !close.isEmpty else {
-            return "/* */"
-        }
-        return "\(open) \(close)"
     }
 
     /// Runs an Edit > Indent item against the focused window with the user's

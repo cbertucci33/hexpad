@@ -1,10 +1,13 @@
 import XCTest
 @testable import HexpadKit
 
-/// P17f-1: the line-comment toggle's prefix is driven by each language's lexer
+/// P17f: the comment toggles' tokens are driven by each language's lexer
 /// comment metadata. These tests exercise the same resolver the app calls, with
-/// real `DocumentModel`s so the document-language-to-prefix mapping is covered
+/// real `DocumentModel`s so the document-language-to-token mapping is covered
 /// end to end (not just the underlying definition values).
+///
+/// A language without the matching metadata returns `nil`; the app disables
+/// that menu item rather than guessing a C-family token.
 final class CommentMetadataTests: XCTestCase {
 
     private func document(_ language: String) -> DocumentModel {
@@ -12,6 +15,8 @@ final class CommentMetadataTests: XCTestCase {
         document.setLanguage(language)
         return document
     }
+
+    // MARK: - Line comments
 
     func testSwiftDocumentUsesDoubleSlash() {
         let resolved = CommentPrefixResolver.lineCommentPrefix(
@@ -43,34 +48,72 @@ final class CommentMetadataTests: XCTestCase {
         XCTAssertEqual(resolved, comments.linePrefix)
     }
 
-    func testPlainTextDocumentFallsBackToDoubleSlash() {
-        let resolved = CommentPrefixResolver.lineCommentPrefix(
+    func testPlainTextDocumentHasNoLineComment() {
+        XCTAssertNil(CommentPrefixResolver.lineCommentPrefix(
             for: document(Language.plain.rawValue)
-        )
-        XCTAssertEqual(resolved, "//")
+        ))
     }
 
-    func testUnknownLanguageFallsBackToDoubleSlash() {
-        let resolved = CommentPrefixResolver.lineCommentPrefix(
+    func testUnknownLanguageHasNoLineComment() {
+        XCTAssertNil(CommentPrefixResolver.lineCommentPrefix(
             for: document("Not A Language")
-        )
-        XCTAssertEqual(resolved, "//")
+        ))
     }
 
-    func testNilDocumentFallsBackToDoubleSlash() {
-        XCTAssertEqual(CommentPrefixResolver.lineCommentPrefix(for: nil), "//")
+    func testNilDocumentHasNoLineComment() {
+        XCTAssertNil(CommentPrefixResolver.lineCommentPrefix(for: nil))
     }
 
     /// A language with block comments but no line prefix (HTML, CSS, Markdown,
-    /// XML, OCaml) must fall back instead of handing an empty prefix to
-    /// `LineOps`, which would make the toggle a no-op.
-    func testBlockOnlyLanguageFallsBackToDoubleSlash() throws {
+    /// XML, OCaml) must report no line token instead of handing a guessed `//`
+    /// to `LineOps`.
+    func testBlockOnlyLanguageHasNoLineComment() throws {
         let html = try XCTUnwrap(LexerDefinitions.definition(for: .html))
         XCTAssertNil(html.comments?.linePrefix)
 
-        let resolved = CommentPrefixResolver.lineCommentPrefix(
+        XCTAssertNil(CommentPrefixResolver.lineCommentPrefix(
             for: document(Language.html.rawValue)
-        )
-        XCTAssertEqual(resolved, "//")
+        ))
+    }
+
+    // MARK: - Block comments
+
+    func testBlockDelimitersComeFromLanguageMetadata() throws {
+        let html = try XCTUnwrap(CommentPrefixResolver.blockCommentDelimiters(for: .html))
+        XCTAssertEqual(html.open, "<!--")
+        XCTAssertEqual(html.close, "-->")
+
+        let swift = try XCTUnwrap(CommentPrefixResolver.blockCommentDelimiters(for: .swift))
+        XCTAssertEqual(swift.open, "/*")
+        XCTAssertEqual(swift.close, "*/")
+
+        let pascal = try XCTUnwrap(CommentPrefixResolver.blockCommentDelimiters(for: .pascal))
+        XCTAssertEqual(pascal.open, "(*")
+        XCTAssertEqual(pascal.close, "*)")
+    }
+
+    func testBlockDelimitersResolveThroughDocumentLanguage() throws {
+        let html = try XCTUnwrap(CommentPrefixResolver.blockCommentDelimiters(
+            for: document(Language.html.rawValue)
+        ))
+        XCTAssertEqual(html.open, "<!--")
+        XCTAssertEqual(html.close, "-->")
+    }
+
+    func testLanguagesWithoutBlockPairHaveNoBlockDelimiters() {
+        XCTAssertNil(CommentPrefixResolver.blockCommentDelimiters(for: .python))
+        XCTAssertNil(CommentPrefixResolver.blockCommentDelimiters(for: .shell))
+        XCTAssertNil(CommentPrefixResolver.blockCommentDelimiters(for: .plain))
+        XCTAssertNil(CommentPrefixResolver.blockCommentDelimiters(for: nil))
+        XCTAssertNil(CommentPrefixResolver.blockCommentDelimiters(for: document("Not A Language")))
+    }
+
+    func testBlockCommentParameterEncodesThePair() {
+        XCTAssertEqual(CommentPrefixResolver.blockCommentParameter(
+            for: document(Language.html.rawValue)
+        ), "<!-- -->")
+        XCTAssertNil(CommentPrefixResolver.blockCommentParameter(
+            for: document(Language.python.rawValue)
+        ))
     }
 }

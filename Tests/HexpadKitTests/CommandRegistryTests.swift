@@ -494,6 +494,19 @@ final class CommandRegistryTests: XCTestCase {
                        "--abc")
     }
 
+    /// A `nil` prefix means the focused language declares no line comment.
+    /// The command stays registered (stable menu/keybinding shape) but does
+    /// nothing instead of falling back to a guessed `//`.
+    func testUpdatedLineCommentPrefixWithNilMakesTheCommandANoOp() {
+        var registry = CommandRegistry.default
+        registry.updatedLineCommentPrefix(nil)
+
+        let result = registry.execute("toggle-line-comment",
+                                      text: "abc",
+                                      selection: NSRange(location: 0, length: 0))
+        XCTAssertEqual(result?.text, "abc")
+    }
+
     // MARK: - Uppercase / lowercase
 
     func testUppercaseSelection() {

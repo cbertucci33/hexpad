@@ -52,8 +52,9 @@ final class LineOpsWave3Tests: XCTestCase {
 
     func testBlockCommentRegistryCommandAcceptsLanguageDelimitersAsParameter() {
         let registry = CommandRegistry.default
+        // No guessed default: a caller without a language pair gets a no-op.
         XCTAssertEqual(registry.execute("toggle-block-comment", text: "abc", selection: caret)?.text,
-                       "/*abc*/")
+                       "abc")
         XCTAssertEqual(registry.execute("toggle-block-comment",
                                         parameter: "<!-- -->",
                                         text: "abc",
@@ -64,6 +65,12 @@ final class LineOpsWave3Tests: XCTestCase {
                                         text: "abc",
                                         selection: caret)?.text,
                        "(*abc*)")
+        // A malformed parameter is a no-op too, not a C-family fallback.
+        XCTAssertEqual(registry.execute("toggle-block-comment",
+                                        parameter: "<!--",
+                                        text: "abc",
+                                        selection: caret)?.text,
+                       "abc")
     }
 
     // MARK: - Remove Non-Bookmarked Lines
