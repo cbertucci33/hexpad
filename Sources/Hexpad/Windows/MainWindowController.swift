@@ -101,9 +101,10 @@ class MainWindowController: NSViewController {
     private var commandRegistry = CommandRegistry.default
 
     /// The line-comment prefix for `document`'s language, read from its lexer
-    /// definition's comment metadata. Unknown or metadata-less languages keep
-    /// the registry's `//` default.
-    private func commentPrefix(for document: DocumentModel?) -> String {
+    /// definition's comment metadata. `nil` (unknown or metadata-less language)
+    /// makes the registry's line-comment command a no-op - no guessed fallback
+    /// since P17f's no-fallback contract.
+    private func commentPrefix(for document: DocumentModel?) -> String? {
         CommentPrefixResolver.lineCommentPrefix(for: document)
     }
 
@@ -1358,6 +1359,9 @@ class MainWindowController: NSViewController {
     /// answers headlessly; otherwise the user gets Save Anyway / Reload / Cancel.
     func externalChangeResolution(for doc: DocumentModel) -> ExternalChangeResolution {
         guard doc.hasExternalChange else { return .saveAnyway }
+        // Tail mode owns the conflict: the watcher reloads the file and this
+        // path must never surprise the user with the "changed on disk" alert.
+        if isFileMonitoring(doc) { return .saveAnyway }
         if let externalChangeResolver {
             return externalChangeResolver(doc)
         }
@@ -1893,6 +1897,11 @@ class MainWindowController: NSViewController {
         else { return }
         changeHistories.removeValue(forKey: doc.id)
         monitoringDisabledIDs.remove(doc.id)
+        let wasTailMonitored = fileMonitoringIDs.remove(doc.id) != nil
+        if wasTailMonitored, watchTimer != nil, fileMonitoringIDs.isEmpty {
+            // Back to the ordinary poll cadence once the last tailed tab closes.
+            startFileWatching()
+        }
     }
 
     /// Closes `doc` in whichever group owns it. Focus follows the document so
@@ -3380,6 +3389,12 @@ class MainWindowController: NSViewController {
     /// a checkmarked View menu item.
     private var monitoringDisabledIDs: Set<UUID> = []
 
+    /// Documents explicitly in tail-follow mode (Tools > Monitor File). This is
+    /// opt-IN and separate from ``monitoringDisabledIDs``: the watcher still
+    /// detects changes for every open file, but a document in this set reloads
+    /// even while dirty and follows appended text to the bottom of the view.
+    private var fileMonitoringIDs: Set<UUID> = []
+
     /// Test seam for the external-change save prompt, which would block a
     /// headless test on `runModal()`. Production leaves this nil and answers
     /// through the NSAlert in ``externalChangeResolution(for:)``.
@@ -3407,12 +3422,54 @@ class MainWindowController: NSViewController {
         setMonitoring(!isMonitoring(doc), for: doc)
     }
 
+    /// True while `doc` is in tail-follow mode (Tools > Monitor File).
+    func isFileMonitoring(_ doc: DocumentModel) -> Bool {
+        fileMonitoringIDs.contains(doc.id)
+    }
+
+    /// Explicitly enables/disables tail-follow mode for one document.
+    ///
+    /// Enabling records the file's current mtime as the watcher baseline, so
+    /// switching tail mode on never immediately reloads an edit that happened
+    /// earlier. It also clears a View > Monitoring opt-out, because an explicit
+    /// "Monitor File" is a stronger request than the per-document watcher
+    /// toggle. The poll interval shortens while any document is tailed.
+    func setFileMonitoring(_ monitoring: Bool, for doc: DocumentModel) {
+        if monitoring {
+            fileMonitoringIDs.insert(doc.id)
+            monitoringDisabledIDs.remove(doc.id)
+            if let path = doc.filePath?.path,
+               let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+               let modDate = attrs[.modificationDate] as? Date {
+                seenModDates[doc.id] = modDate
+            }
+        } else {
+            fileMonitoringIDs.remove(doc.id)
+        }
+        if watchTimer != nil {
+            startFileWatching()
+        }
+    }
+
+    /// Tools > Monitor File. The menu item is nil-targeted so validation can
+    /// disable it for untitled buffers and draw the per-document checkmark.
+    @objc func toggleFileMonitoring(_ sender: Any?) {
+        guard let doc = tabStore.selectedDocument, doc.filePath != nil else { return }
+        setFileMonitoring(!isFileMonitoring(doc), for: doc)
+        refreshTabBar()
+        updateEditor()
+        updateStatusBar()
+    }
+
     private func startFileWatching() {
         stopFileWatching()
-        let timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+        // Tail mode needs a short poll to feel live; ordinary external-change
+        // detection keeps the cheaper shipped cadence.
+        let interval: TimeInterval = fileMonitoringIDs.isEmpty ? 2.0 : 0.5
+        let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             self?.checkExternalChanges()
         }
-        timer.tolerance = 0.5
+        timer.tolerance = interval / 4
         watchTimer = timer
     }
 
@@ -3531,6 +3588,43 @@ class MainWindowController: NSViewController {
                 continue
             }
 
+            if isFileMonitoring(doc) {
+                // Tools > Monitor File: tail -f semantics. Suppress the
+                // dirty-buffer conflict prompt and take the on-disk text
+                // instead. Reloading a dirty buffer is deliberate here, and
+                // reloadText keeps the replacement undoable.
+                let followsEnd = isViewportAtDocumentEnd(doc)
+                let previousLength = (doc.text as NSString).length
+                let previousSelection = tailSelection(of: doc)
+                guard FileManager.default.fileExists(atPath: path) else { continue }
+                switch reloadDocument(doc, from: URL(fileURLWithPath: path)) {
+                case .reloaded:
+                    seenModDates[doc.id] = modDate
+                    if previousSelection != nil {
+                        updateEditor(forceRebind: true)
+                    }
+                    if followsEnd {
+                        followDocumentEnd(doc,
+                                          previousLength: previousLength,
+                                          previousSelection: previousSelection)
+                    }
+                    // forceRebind resets the caret to the new end. Restore a
+                    // parked caret unless it was at the old end (tail rule:
+                    // the caret follows only when it sat at the tail),
+                    // independent of viewport pinning.
+                    let caretWasAtTail = previousSelection.map { $0.length == 0 && $0.location >= previousLength } ?? false
+                    if previousSelection != nil, !caretWasAtTail {
+                        restoreParkedCaret(doc, previousSelection: previousSelection)
+                    }
+                case .unchanged:
+                    seenModDates[doc.id] = modDate
+                case .failed:
+                    // As below: keep the old baseline so the next tick retries.
+                    continue
+                }
+                continue
+            }
+
             if doc.unsavedChanges {
                 // Dirty buffer: keep the user's edits. setModified(true) used
                 // to stand here, but it is a no-op once the document is
@@ -3559,6 +3653,55 @@ class MainWindowController: NSViewController {
                 continue
             }
         }
+    }
+
+    /// True when `doc` is selected in a pane whose viewport is at the bottom.
+    /// A missing or not-yet-laid-out editor counts as the end, so a headless
+    /// window still follows appends instead of silently doing nothing.
+    private func isViewportAtDocumentEnd(_ doc: DocumentModel) -> Bool {
+        guard let pane = allPanes.first(where: { $0.tabStore.selectedDocument === doc })
+        else { return false }
+        let textView = pane.editor.textView
+        let clip = pane.editor.scrollView.contentView
+        let contentBottom = textView.frame.maxY
+        guard contentBottom > clip.bounds.height else { return true }
+        return clip.bounds.maxY >= contentBottom - 4
+    }
+
+    /// The selected pane's selection before a tail reload, or nil when the
+    /// document is not the visible tab (nothing to follow).
+    private func tailSelection(of doc: DocumentModel) -> NSRange? {
+        guard let pane = allPanes.first(where: { $0.tabStore.selectedDocument === doc })
+        else { return nil }
+        return pane.editor.textView.selectedRange
+    }
+
+    /// After a tail reload, keep a bottom-pinned viewport at the new end. The
+    /// caret follows only when it sat at the old end, so a caret parked in the
+    /// middle of the buffer stays put. A user who scrolled up is untouched.
+    private func followDocumentEnd(_ doc: DocumentModel,
+                                   previousLength: Int,
+                                   previousSelection: NSRange?) {
+        guard let pane = allPanes.first(where: { $0.tabStore.selectedDocument === doc })
+        else { return }
+        let textView = pane.editor.textView
+        let length = (doc.text as NSString).length
+        if let previousSelection,
+           previousSelection.length == 0,
+           previousSelection.location >= previousLength {
+            textView.setSelectedRange(NSRange(location: length, length: 0))
+        }
+        textView.scrollRangeToVisible(NSRange(location: length, length: 0))
+    }
+
+    /// `updateEditor(forceRebind:)` resets the caret to the new end after a
+    /// tail reload; a parked caret that should NOT follow (viewport not
+    /// bottom-pinned) is put back here so a mid-buffer caret stays put.
+    private func restoreParkedCaret(_ doc: DocumentModel, previousSelection: NSRange?) {
+        guard let previousSelection, previousSelection.length == 0,
+              let pane = allPanes.first(where: { $0.tabStore.selectedDocument === doc })
+        else { return }
+        pane.editor.textView.setSelectedRange(previousSelection)
     }
 
     // MARK: - View
@@ -3753,27 +3896,36 @@ class MainWindowController: NSViewController {
         try? PreferencesStore.update { $0.showIndentGuide = visible }
     }
     
-    /// Applies `adjust` to the editors the View menu zoom command reaches: the
-    /// focused editor alone when zoom-sync is off, or every open editor (both
-    /// split groups) when it is on.
+    /// Applies `adjust` to the focused editor, then — when zoom-sync is on —
+    /// copies the *resulting absolute scale* to every other open editor (both
+    /// split groups) instead of stepping each pane by the same delta. Zoom is
+    /// persisted per document, so panes may already sit at different scales;
+    /// copying the focused scale is what leaves their text the same size.
+    /// With zoom-sync off only the focused editor changes, exactly as before.
     private func applyZoomAdjustment(_ adjust: (EditorContainer) -> Void) {
-        if synchronizeZoom {
-            for pane in allPanes {
-                adjust(pane.editor)
+        guard let focused = editorContainer else {
+            if synchronizeZoom {
+                for pane in allPanes { adjust(pane.editor) }
             }
-        } else {
-            if let editor = editorContainer {
-                adjust(editor)
-            }
+            return
+        }
+        adjust(focused)
+        guard synchronizeZoom else { return }
+
+        let scale = focused.zoomScale
+        for pane in allPanes where pane.editor !== focused {
+            pane.editor.setZoomScale(scale)
         }
     }
 
-    /// View > Zoom In. With Synchronize Across Views on, every editor steps.
+    /// View > Zoom In. With Synchronize Across Views on, every editor adopts
+    /// the focused editor's resulting scale.
     func zoomIn() {
         applyZoomAdjustment { $0.adjustZoom(byPoints: 1) }
     }
 
-    /// View > Zoom Out. With Synchronize Across Views on, every editor steps.
+    /// View > Zoom Out. With Synchronize Across Views on, every editor adopts
+    /// the focused editor's resulting scale.
     func zoomOut() {
         applyZoomAdjustment { $0.adjustZoom(byPoints: -1) }
     }
@@ -3783,11 +3935,12 @@ class MainWindowController: NSViewController {
         applyZoomAdjustment { $0.resetZoom() }
     }
 
-    // MARK: - View > Summary… (V19h)
+    // MARK: - Summary / Document Summary (V19h)
 
-    /// View > Summary…. The dialog itself is the pure `SummaryWindowController`
-    /// report generator over a copyable alert; the menu item is nil-targeted
-    /// and validated against a focused document.
+    /// Tools > Document Summary and View > Summary…. The dialog itself is the
+    /// pure `SummaryWindowController` report generator over a copyable sheet;
+    /// both menu items are nil-targeted and validated against a focused
+    /// document.
     @objc func showSummary(_ sender: Any?) {
         SummaryWindowController.showSummary(activeController: self)
     }
@@ -5167,6 +5320,11 @@ extension MainWindowController: NSMenuItemValidation {
             // Checkmark follows the focused document; only file-backed buffers
             // can be monitored (an untitled buffer has nothing to reload).
             menuItem.state = (tabStore.selectedDocument.map(isMonitoring) ?? false) ? .on : .off
+            return tabStore.selectedDocument?.filePath != nil
+        }
+        if menuItem.action == #selector(MainWindowController.toggleFileMonitoring(_:)) {
+            // Tail mode is per document and only meaningful for a real file.
+            menuItem.state = (tabStore.selectedDocument.map(isFileMonitoring) ?? false) ? .on : .off
             return tabStore.selectedDocument?.filePath != nil
         }
         if menuItem.action == #selector(MainWindowController.showSummary(_:)) {

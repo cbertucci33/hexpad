@@ -117,6 +117,101 @@ final class SessionRestoreTests: XCTestCase {
         XCTAssertTrue(doc.keepsBOM, "the reloaded BOM state is recorded")
     }
 
+    // MARK: - V19g: Monitoring mode (tail -f)
+
+    /// Tail mode owns external changes: a dirty buffer follows the file instead
+    /// of raising the save-time conflict alert.
+    func testTailMonitoringAutoReloadsDirtyBufferAndSuppressesPrompt() throws {
+        let file = testDir.appendingPathComponent("tail-dirty-\(UUID().uuidString).txt")
+        try "original line\n".write(to: file, atomically: true, encoding: .utf8)
+        let (controller, _) = makeController()
+        controller.openFile(atPath: file.path)
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+
+        controller.setFileMonitoring(true, for: doc)
+        doc.text = "local edit\n"
+        XCTAssertTrue(doc.unsavedChanges)
+
+        try "external line\n".write(to: file, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: 30)],
+            ofItemAtPath: file.path
+        )
+        controller.checkExternalChanges()
+
+        XCTAssertEqual(doc.text, "external line\n", "tail mode follows the file even while dirty")
+        XCTAssertFalse(doc.unsavedChanges, "the reload is the clean baseline")
+        XCTAssertFalse(doc.hasExternalChange, "tail mode never leaves a pending conflict")
+
+        var prompted = false
+        controller.externalChangeResolver = { _ in
+            prompted = true
+            return .cancel
+        }
+        doc.noteExternalChange()
+        let resolution = controller.externalChangeResolution(for: doc)
+        XCTAssertFalse(prompted, "the changed-on-disk alert is suppressed while tailing")
+        if case .saveAnyway = resolution {} else {
+            XCTFail("tail mode should bypass the prompt, got \(resolution)")
+        }
+    }
+
+    /// Turning tail mode on records the current mtime, so an edit that landed
+    /// before the toggle is not replayed as if it arrived while watching.
+    func testEnablingTailMonitoringRecordsFreshBaseline() throws {
+        let file = testDir.appendingPathComponent("tail-baseline-\(UUID().uuidString).txt")
+        try "before\n".write(to: file, atomically: true, encoding: .utf8)
+        let (controller, _) = makeController()
+        controller.openFile(atPath: file.path)
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+
+        try "arrived before monitoring\n".write(to: file, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: 30)],
+            ofItemAtPath: file.path
+        )
+        controller.setFileMonitoring(true, for: doc)
+        controller.checkExternalChanges()
+
+        XCTAssertEqual(doc.text, "before\n", "the enabling baseline absorbs the earlier edit")
+    }
+
+    /// A caret parked at the old end follows appended text; a caret elsewhere
+    /// is left alone even though the viewport may be bottom-pinned.
+    func testTailMonitoringFollowsEndOnlyWhenCaretWasAtTheEnd() throws {
+        let file = testDir.appendingPathComponent("tail-follow-\(UUID().uuidString).txt")
+        try "one\ntwo\n".write(to: file, atomically: true, encoding: .utf8)
+        let (controller, _) = makeController()
+        controller.openFile(atPath: file.path)
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        let textView = try XCTUnwrap(controller.editorTextView)
+
+        controller.setFileMonitoring(true, for: doc)
+
+        // Bottom-pinned caret: it should move to the new end after the append.
+        let oldLength = (doc.text as NSString).length
+        textView.setSelectedRange(NSRange(location: oldLength, length: 0))
+        try "one\ntwo\nthree\n".write(to: file, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: 30)],
+            ofItemAtPath: file.path
+        )
+        controller.checkExternalChanges()
+        XCTAssertEqual(doc.text, "one\ntwo\nthree\n")
+        XCTAssertEqual(textView.selectedRange.location, (doc.text as NSString).length)
+
+        // Caret moved back into the buffer: the next append must not move it.
+        textView.setSelectedRange(NSRange(location: 0, length: 0))
+        try "one\ntwo\nthree\nfour\n".write(to: file, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: 60)],
+            ofItemAtPath: file.path
+        )
+        controller.checkExternalChanges()
+        XCTAssertEqual(doc.text, "one\ntwo\nthree\nfour\n")
+        XCTAssertEqual(textView.selectedRange.location, 0, "a caret away from the tail stays put")
+    }
+
     // MARK: - P2-10: missing files and session scheduling
 
     func testMissingFileWithUnsavedChangesIsKeptAsDirtyTab() throws {

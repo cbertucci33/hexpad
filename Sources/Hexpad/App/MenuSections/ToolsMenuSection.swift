@@ -38,6 +38,24 @@ extension HexpadAppDelegate {
         let dateTimeItem = NSMenuItem(title: "Insert Date/Time", action: nil, keyEquivalent: "")
         dateTimeItem.submenu = dateTimeMenu
         toolsMenu.addItem(dateTimeItem)
+
+        toolsMenu.addItem(.separator())
+        // V19g: per-document tail -f. Checkmarked and nil-targeted so
+        // MainWindowController owns both the state and the untitled-file
+        // validation. Menu-only: no N++ macOS chord exists for this toggle.
+        let monitorFileItem = NSMenuItem(title: "Monitor File",
+                                         action: #selector(MainWindowController.toggleFileMonitoring(_:)),
+                                         keyEquivalent: "")
+        monitorFileItem.target = nil
+        toolsMenu.addItem(monitorFileItem)
+
+        // V19h: document statistics. The View menu keeps its Summary… entry;
+        // this mirrors it where N++ users look for document utilities.
+        let documentSummaryItem = NSMenuItem(title: "Document Summary",
+                                             action: #selector(MainWindowController.showSummary(_:)),
+                                             keyEquivalent: "")
+        documentSummaryItem.target = nil
+        toolsMenu.addItem(documentSummaryItem)
         return toolsMenu
     }
 }

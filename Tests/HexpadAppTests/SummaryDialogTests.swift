@@ -94,6 +94,40 @@ final class SummaryDialogTests: XCTestCase {
         XCTAssertTrue(report.contains("Words: 0"), report)
     }
 
+    // MARK: - Size on disk / menu placement
+
+    func testSummaryReportShowsActualSizeOnDisk() throws {
+        let doc = DocumentModel(text: "Hello\n")
+        controller.tabStore.addDocument(doc)
+        let file = try temporaryFileURL(named: "size-on-disk.txt")
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        try doc.saveAs(to: file)
+
+        XCTAssertEqual(try XCTUnwrap(SummaryWindowController.fileSizeOnDisk(of: doc)), 6)
+        let report = SummaryWindowController.summaryReport(activeController: controller)
+        XCTAssertTrue(report.contains("Size on disk: 6 bytes"), report)
+    }
+
+    func testSizeOnDiskIsNilForUntitledDocument() {
+        let doc = DocumentModel(text: "scratch")
+        XCTAssertNil(SummaryWindowController.fileSizeOnDisk(of: doc))
+    }
+
+    /// V19g/V19h: both utilities live in the Tools menu, nil-targeted so the
+    /// controller owns validation and the per-document checkmark.
+    func testToolsMenuHasMonitorFileAndDocumentSummary() throws {
+        let menu = HexpadAppDelegate().buildMainMenu()
+        let tools = try XCTUnwrap(menu.item(withTitle: "Tools")?.submenu)
+
+        let monitor = try XCTUnwrap(tools.items.first { $0.title == "Monitor File" })
+        XCTAssertTrue(monitor.action == #selector(MainWindowController.toggleFileMonitoring(_:)))
+        XCTAssertNil(monitor.target)
+
+        let summary = try XCTUnwrap(tools.items.first { $0.title == "Document Summary" })
+        XCTAssertTrue(summary.action == #selector(MainWindowController.showSummary(_:)))
+        XCTAssertNil(summary.target)
+    }
+
     // MARK: - Bytes
 
     /// Writes to a fresh temp file via the public save path and returns the
