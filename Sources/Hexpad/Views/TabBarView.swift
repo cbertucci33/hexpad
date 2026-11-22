@@ -29,8 +29,9 @@ class TabBarView: NSView {
     /// every later rebuild reuses the stored date, so a tab's tooltip
     /// "created" time does not drift with `reloadTabs()`. Sharing also means a
     /// document dragged to the other split pane keeps the moment it was first
-    /// shown instead of being re-stamped by its new bar. Entries are
-    /// process-lifetime because a `DocumentModel` id is never reused.
+    /// shown instead of being re-stamped by its new bar. `reloadTabs()` prunes
+    /// ids no longer present in either bar, so a long session cannot retain a
+    /// date for every document ever displayed.
     private static var creationDates: [UUID: Date] = [:]
 
     /// Test seam: the clock used to stamp a tab's first sight. Production uses
@@ -254,6 +255,16 @@ class TabBarView: NSView {
             addSubview(button)
             tabButtons.append(button)
         }
+
+        // Drop dates for documents that no longer appear in either bar. Closed
+        // tabs are the only source of stale ids, and this bar plus its sibling
+        // are the only places a tab can be displayed, so pruning here keeps the
+        // shared map bounded without changing any live tab's date.
+        var liveIDs = Set(tabStore.documents.map(\.id))
+        if let siblingTabBar {
+            liveIDs.formUnion(siblingTabBar.tabStore.documents.map(\.id))
+        }
+        Self.creationDates = Self.creationDates.filter { liveIDs.contains($0.key) }
         
         fitWidthToClip()
         updateOverflowState()

@@ -129,7 +129,10 @@ final class FindInFilesWindowController: NSWindowController {
 
     /// Accumulated Find All runs, oldest first. `documentGroups` is the flat
     /// view of every batch so existing callers keep seeing one group per file.
+    /// The list keeps only the most recent ``maximumBatchCount`` queries, so a
+    /// long session of distinct searches cannot grow without bound.
     private(set) var searchBatches: [DocumentSearchBatch] = []
+    private static let maximumBatchCount = 10
     private struct BatchLayout {
         let description: String
         let groupRange: Range<Int>
@@ -318,10 +321,18 @@ final class FindInFilesWindowController: NSWindowController {
         // Refresh in place when this query already exists anywhere in the
         // accumulated list (not just as the last batch), so an A->B->A sequence
         // reuses the existing batch instead of appending a duplicate.
+        var removedBatchCount = 0
         if let existingIndex = searchBatches.firstIndex(where: { $0.description == searchDescription }) {
             searchBatches[existingIndex] = batch
         } else {
             searchBatches.append(batch)
+            // Keep the list bounded by dropping the oldest queries. Batch fold
+            // indices shift left by the number removed (remapped below).
+            let overflow = searchBatches.count - Self.maximumBatchCount
+            if overflow > 0 {
+                searchBatches.removeFirst(overflow)
+                removedBatchCount = overflow
+            }
         }
         lastSearchDescription = searchDescription
         rebuildBatchLayouts()
@@ -336,10 +347,14 @@ final class FindInFilesWindowController: NSWindowController {
             }
         }
         foldedGroups = newFoldedGroups
-        // Keep batch folds that still point at a valid batch.
+        // Keep batch folds that still point at a valid batch. Indices shift when
+        // appending a new batch pushed the oldest ones past the cap.
         var newFoldedBatches: Set<Int> = []
-        for index in oldFoldedBatches where searchBatches.indices.contains(index) {
-            newFoldedBatches.insert(index)
+        for index in oldFoldedBatches {
+            let shifted = index - removedBatchCount
+            if searchBatches.indices.contains(shifted) {
+                newFoldedBatches.insert(shifted)
+            }
         }
         foldedBatches = newFoldedBatches
 

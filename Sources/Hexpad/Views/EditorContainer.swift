@@ -129,6 +129,14 @@ class EditorContainer: NSView {
     /// Keeps a burst of marker reads (redraws) from scheduling more than one.
     private var foldRebuildScheduled = false
 
+    /// Set while a fold/hidden-line layout invalidation waits for the next
+    /// run-loop turn. Character edits arrive inside `NSTextStorage`'s own
+    /// process-editing pass, where invalidating glyphs and layout for the whole
+    /// document is re-entrancy-sensitive. The edit path still remaps state
+    /// synchronously (so back-to-back edits compose), but the layout pass is
+    /// deferred; a burst of edits shares one full-document invalidation.
+    private var foldLayoutInvalidationScheduled = false
+
     /// Layout-only hider for collapsed fold content. It is retained here because
     /// `NSLayoutManager.delegate` does not own its delegate.
     private let foldHider = FoldGlyphHider()
@@ -1739,9 +1747,13 @@ class EditorContainer: NSView {
 
     /// Hands the hide-lines mask to the glyph hider and relayouts when the
     /// effective hidden set changed. Folds keep their own mask in parallel.
-    private func applyHiddenLineVisibility() {
+    private func applyHiddenLineVisibility(deferringLayout: Bool = false) {
         guard foldHider.setLineHiddenRanges(hiddenLineCharacterRanges) else { return }
-        invalidateFoldLayout()
+        if deferringLayout {
+            scheduleFoldLayoutInvalidation()
+        } else {
+            invalidateFoldLayout()
+        }
     }
 
     /// Selection-time visibility rules for hidden lines:
@@ -1840,10 +1852,11 @@ class EditorContainer: NSView {
 
         // Hidden lines are line-based, so their UTF-16 spans must be
         // recomputed against the edited text. With nothing hidden there is no
-        // mask to keep valid and no layout to invalidate.
+        // mask to keep valid and no layout to invalidate. The spans update now;
+        // the layout invalidation is deferred out of the storage notification.
         if hasHiddenLines {
             recomputeHiddenLineSpans(for: document)
-            applyHiddenLineVisibility()
+            applyHiddenLineVisibility(deferringLayout: true)
         }
 
         guard let model = cachedFoldModel else {
@@ -1870,7 +1883,9 @@ class EditorContainer: NSView {
         let state = foldStates[document.id] ?? document.foldState
         let remapped = state.remapped(for: edit)
         adoptFoldState(remapped, for: document)
-        applyFoldVisibility(for: remapped, in: document.text)
+        applyFoldVisibility(for: remapped,
+                            in: document.text,
+                            deferringLayout: true)
     }
 
     /// Hands the model's hidden ranges to the glyph hider and relayouts when
@@ -1888,11 +1903,36 @@ class EditorContainer: NSView {
     /// and the live text costs O(folds) and matches what a rebuilt model would
     /// report, without triggering the O(document) fold discovery that reading
     /// `foldModel` would on every keystroke.
-    private func applyFoldVisibility(for state: FoldState, in text: String) {
+    private func applyFoldVisibility(for state: FoldState,
+                                     in text: String,
+                                     deferringLayout: Bool = false) {
         let hidden = FoldVisibility(text: text,
                                     collapsedRanges: state.collapsedRanges).hiddenRanges
         guard foldHider.setHiddenRanges(hidden) else { return }
-        invalidateFoldLayout()
+        if deferringLayout {
+            scheduleFoldLayoutInvalidation()
+        } else {
+            invalidateFoldLayout()
+        }
+    }
+
+    /// Coalesces the edit path's layout invalidation to the next run-loop turn.
+    ///
+    /// `handleFoldEdit` runs from `NSTextStorage.didProcessEditing`, while the
+    /// storage is still inside its own editing pass. Invalidating glyphs and
+    /// layout for the whole document there re-enters TextKit at a sensitive
+    /// point; deferring moves the pass outside that notification. A burst of
+    /// edits in one turn shares one invalidation, and the visible fold/hidden
+    /// ranges settle on the next turn, which is what the editor displayed
+    /// before this change once the current frame finished.
+    private func scheduleFoldLayoutInvalidation() {
+        guard !foldLayoutInvalidationScheduled else { return }
+        foldLayoutInvalidationScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.foldLayoutInvalidationScheduled = false
+            self.invalidateFoldLayout()
+        }
     }
 
     /// Invalidates glyph generation for the whole document so hidden ranges take
