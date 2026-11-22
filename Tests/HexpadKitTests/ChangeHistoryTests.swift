@@ -244,4 +244,29 @@ final class ChangeHistoryTests: XCTestCase {
         XCTAssertEqual(model.editsSinceSave.last?.timestamp,
                        date(ChangeHistoryModel.editLimit + overflow - 1))
     }
+
+    /// P-11: the bounded log is a ring, so it keeps rotating correctly after
+    /// several wraps and still hands back newest-first order to callers. The
+    /// cap and the "oldest dropped" rule are unchanged.
+    func testSinceSaveRingKeepsNewestEntriesAfterSeveralWraps() {
+        let model = ChangeHistoryModel()
+        let total = ChangeHistoryModel.editLimit * 2 + 7
+        for index in 0..<total {
+            model.record(edit: ChangeHistoryEdit(timestamp: date(index)))
+        }
+
+        XCTAssertEqual(model.changesSinceSaveCount, ChangeHistoryModel.editLimit)
+        XCTAssertEqual(model.editsSinceSave.count, ChangeHistoryModel.editLimit)
+        XCTAssertEqual(model.editsSinceSave.first?.timestamp,
+                       date(total - ChangeHistoryModel.editLimit))
+        XCTAssertEqual(model.editsSinceSave.last?.timestamp, date(total - 1))
+
+        model.markSaved()
+        XCTAssertEqual(model.changesSinceSaveCount, 0)
+        XCTAssertTrue(model.editsSinceSave.isEmpty)
+
+        model.record(edit: ChangeHistoryEdit(timestamp: date(total + 1)))
+        XCTAssertEqual(model.editsSinceSave.map(\.timestamp), [date(total + 1)],
+                       "the ring restarts cleanly after a save")
+    }
 }

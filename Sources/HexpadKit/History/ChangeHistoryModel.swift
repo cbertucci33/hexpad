@@ -95,18 +95,36 @@ public final class ChangeHistoryModel {
     /// All recorded entries in the order they were appended (oldest first).
     public private(set) var entries: [ChangeHistoryEntry] = []
 
+    /// Ring storage for the bounded since-save log. A ring keeps `record` O(1)
+    /// on the typing path: the old `removeFirst(1)` at the cap shifted every
+    /// remaining element on each keystroke (Pilot P-11). Slots are allocated
+    /// lazily, so an unsaved document pays nothing.
+    private var editRing: [ChangeHistoryEdit?] = []
+    private var editRingStart = 0
+    private var editRingCount = 0
+
     /// Edits recorded since the last save, oldest first, bounded by
     /// ``editLimit``. Cleared by ``markSaved()`` (and therefore by
     /// ``recordSaved(snapshot:)``).
-    public private(set) var editsSinceSave: [ChangeHistoryEdit] = []
+    ///
+    /// Computed from the ring so callers keep the same oldest-first array they
+    /// always saw. Reads are rare (tests, menu construction) while ``record``
+    /// runs once per edit.
+    public var editsSinceSave: [ChangeHistoryEdit] {
+        guard editRingCount > 0 else { return [] }
+        let capacity = editRing.count
+        return (0..<editRingCount).compactMap {
+            editRing[(editRingStart + $0) % capacity]
+        }
+    }
 
     /// Number of edits retained since the last save. This saturates at
     /// ``editLimit`` instead of growing with every keystroke.
-    public var changesSinceSaveCount: Int { editsSinceSave.count }
+    public var changesSinceSaveCount: Int { editRingCount }
 
     /// The dirty view S18b-2 can ask without touching the document: true while
     /// at least one retained edit has not been followed by a save.
-    public var hasChangesSinceSave: Bool { !editsSinceSave.isEmpty }
+    public var hasChangesSinceSave: Bool { editRingCount > 0 }
 
     /// ID of the modified entry at the tail of the current edit burst.
     private var activeModificationID: UUID?
@@ -132,9 +150,18 @@ public final class ChangeHistoryModel {
     /// on" row for the whole burst.
     @discardableResult
     public func record(edit: ChangeHistoryEdit) -> ChangeHistoryEdit {
-        editsSinceSave.append(edit)
-        if editsSinceSave.count > Self.editLimit {
-            editsSinceSave.removeFirst(editsSinceSave.count - Self.editLimit)
+        if editRing.isEmpty {
+            editRing = Array(repeating: nil, count: Self.editLimit)
+        }
+        if editRingCount < Self.editLimit {
+            editRing[(editRingStart + editRingCount) % Self.editLimit] = edit
+            editRingCount += 1
+        } else {
+            // Full: overwrite the oldest slot and advance the start pointer.
+            // No memmove, so a saturated log costs the same per edit as an
+            // empty one.
+            editRing[editRingStart] = edit
+            editRingStart = (editRingStart + 1) % Self.editLimit
         }
         return edit
     }
@@ -144,7 +171,11 @@ public final class ChangeHistoryModel {
     /// write the buffer to disk should use ``recordSaved(snapshot:)`` instead
     /// so the menu also gets a save point.
     public func markSaved() {
-        editsSinceSave.removeAll(keepingCapacity: true)
+        if !editRing.isEmpty {
+            editRing = Array(repeating: nil, count: editRing.count)
+        }
+        editRingStart = 0
+        editRingCount = 0
         activeModificationID = nil
     }
 

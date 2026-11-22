@@ -313,7 +313,14 @@ public final class DocumentModel: Identifiable, ObservableObject {
     /// loader paths use, because they are not user edits. Only `reloadText(_:)`
     /// and the undo closure below may call this; user-facing mutations must go
     /// through the guarded `replaceCharacters`.
-    func replaceCharactersUnchecked(in range: NSRange, with replacement: String) {
+    /// - Parameter registersUndo: pass `false` for watcher-driven reloads that
+    ///   must not grow the undo stack (a tailed log would otherwise retain one
+    ///   full-buffer undo entry per append). User-initiated edits keep the
+    ///   default. The undo closure always re-registers through the default so
+    ///   undoing a reload is itself redoable.
+    func replaceCharactersUnchecked(in range: NSRange,
+                                    with replacement: String,
+                                    registersUndo: Bool = true) {
         let current = textStorage.string as NSString
         let length = current.length
         guard range.location != NSNotFound,
@@ -324,13 +331,16 @@ public final class DocumentModel: Identifiable, ObservableObject {
         let oldText = current.substring(with: range)
         guard oldText != replacement else { return }
 
-        undoManager.registerUndo(withTarget: self) { doc in
-            // Registering while undoing turns this call into the matching redo.
-            // The unchecked path is required: undo must still revert an edit
-            // after the user toggles read-only, while forward edits stay guarded.
-            doc.replaceCharactersUnchecked(in: NSRange(location: range.location,
-                                                       length: (replacement as NSString).length),
-                                           with: oldText)
+        if registersUndo {
+            undoManager.registerUndo(withTarget: self) { doc in
+                // Registering while undoing turns this call into the matching
+                // redo. The unchecked path is required: undo must still revert
+                // an edit after the user toggles read-only, while forward edits
+                // stay guarded.
+                doc.replaceCharactersUnchecked(in: NSRange(location: range.location,
+                                                           length: (replacement as NSString).length),
+                                               with: oldText)
+            }
         }
         textStorage.replaceCharacters(in: range, with: replacement)
         _isDirty = true
@@ -343,9 +353,8 @@ public final class DocumentModel: Identifiable, ObservableObject {
                           with: newText)
     }
 
-    /// Loads on-disk text as the new clean baseline. The replacement is still
-    /// undoable, but observers see the final baseline in the single notification
-    /// instead of a transient dirty state.
+    /// Loads on-disk text as the new clean baseline. Observers see the final
+    /// baseline in the single notification instead of a transient dirty state.
     ///
     /// The loader seam: this bypasses the read-only guard (via
     /// `replaceCharactersUnchecked`) because reloading the buffer from disk or
@@ -354,13 +363,20 @@ public final class DocumentModel: Identifiable, ObservableObject {
     /// Reloads the buffer from disk. Replaces text only; line-keyed state
     /// (bookmarks, fold state, token styles) is PRESERVED — reload is an
     /// explicit user action that refreshes content, not a reset of markings.
-    public func reloadText(_ newText: String) {
+    ///
+    /// - Parameter registersUndo: File > Reload and "Encode in" keep the
+    ///   default (`true`), so an explicit reload stays one undo step. The
+    ///   external-change watcher passes `false`: tail mode appends repeatedly
+    ///   and each full-buffer undo entry would retain the previous text
+    ///   forever (Pilot P-10). The buffer still becomes the clean baseline.
+    public func reloadText(_ newText: String, registersUndo: Bool = true) {
         _originalText = newText
         _saveConversionPending = false
         hasExternalChange = false
         replaceCharactersUnchecked(in: NSRange(location: 0,
                                                length: (textStorage.string as NSString).length),
-                                   with: newText)
+                                   with: newText,
+                                   registersUndo: registersUndo)
         // replaceCharactersUnchecked marks the buffer dirty through the
         // storage observer; the on-disk text it just loaded is the clean baseline.
         _isDirty = false

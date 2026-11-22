@@ -40,7 +40,9 @@ extension HexpadAppDelegate {
         toolsMenu.addItem(dateTimeItem)
 
         toolsMenu.addItem(.separator())
-        // V19g: per-document tail -f. Checkmarked and nil-targeted so
+        // V19g: per-document tail -f, the single monitoring surface. (The old
+        // View > Monitoring watcher opt-out was removed: it contradicted this
+        // toggle and could silently defeat it.) Checkmarked and nil-targeted so
         // MainWindowController owns both the state and the untitled-file
         // validation. Menu-only: no N++ macOS chord exists for this toggle.
         let monitorFileItem = NSMenuItem(title: "Monitor File",
@@ -49,9 +51,10 @@ extension HexpadAppDelegate {
         monitorFileItem.target = nil
         toolsMenu.addItem(monitorFileItem)
 
-        // V19h: document statistics. The View menu keeps its Summary… entry;
-        // this mirrors it where N++ users look for document utilities.
-        let documentSummaryItem = NSMenuItem(title: "Document Summary",
+        // V19h: document statistics, the single home for the dialog (Pilot
+        // P-08). The HIG ellipsis marks an item that opens a window; the
+        // dialog's own title is "Document Summary".
+        let documentSummaryItem = NSMenuItem(title: "Document Summary…",
                                              action: #selector(MainWindowController.showSummary(_:)),
                                              keyEquivalent: "")
         documentSummaryItem.target = nil

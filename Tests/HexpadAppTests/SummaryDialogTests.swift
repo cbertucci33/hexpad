@@ -3,7 +3,7 @@ import AppKit
 import HexpadKit
 @testable import Hexpad
 
-/// View > Summary… (V19h): the document-stats dialog's report generator.
+/// Tools > Document Summary… (V19h): the document-stats dialog's report generator.
 /// Mirrors the MacroUITests harness (real controller + editor over the
 /// fixture document); the report itself is the pure seam the panel displays.
 final class SummaryDialogTests: XCTestCase {
@@ -114,7 +114,9 @@ final class SummaryDialogTests: XCTestCase {
     }
 
     /// V19g/V19h: both utilities live in the Tools menu, nil-targeted so the
-    /// controller owns validation and the per-document checkmark.
+    /// controller owns validation and the per-document checkmark. P-08: the
+    /// Summary dialog has one home and one title, and the menu title carries
+    /// the HIG ellipsis because it opens a window.
     func testToolsMenuHasMonitorFileAndDocumentSummary() throws {
         let menu = HexpadAppDelegate().buildMainMenu()
         let tools = try XCTUnwrap(menu.item(withTitle: "Tools")?.submenu)
@@ -123,9 +125,35 @@ final class SummaryDialogTests: XCTestCase {
         XCTAssertTrue(monitor.action == #selector(MainWindowController.toggleFileMonitoring(_:)))
         XCTAssertNil(monitor.target)
 
-        let summary = try XCTUnwrap(tools.items.first { $0.title == "Document Summary" })
+        let summary = try XCTUnwrap(tools.items.first { $0.title == "Document Summary…" })
         XCTAssertTrue(summary.action == #selector(MainWindowController.showSummary(_:)))
         XCTAssertNil(summary.target)
+    }
+
+    /// P-08: View > Summary… duplicated the Tools item under a second title.
+    /// Tools is the one home, so the View menu must not grow the item back.
+    func testViewMenuDoesNotDuplicateTheDocumentSummaryItem() throws {
+        let menu = HexpadAppDelegate().buildMainMenu()
+        let view = try XCTUnwrap(menu.item(withTitle: "View")?.submenu)
+
+        let summaryItems = view.items.filter {
+            $0.action == #selector(MainWindowController.showSummary(_:))
+        }
+        XCTAssertTrue(summaryItems.isEmpty,
+                      "Tools > Document Summary… is the dialog's single home")
+        XCTAssertNil(view.item(withTitle: "Summary…"))
+        XCTAssertNil(view.item(withTitle: "Document Summary…"))
+    }
+
+    /// P-06: monitoring has one surface. Tools > Monitor File is the tail
+    /// toggle; the old View > Monitoring watcher opt-out must not reappear as a
+    /// second, contradictory item.
+    func testViewMenuHasNoSecondMonitoringToggle() throws {
+        let menu = HexpadAppDelegate().buildMainMenu()
+        let view = try XCTUnwrap(menu.item(withTitle: "View")?.submenu)
+
+        XCTAssertNil(view.items.first { $0.title == "Monitoring" },
+                     "View no longer exposes a watcher opt-out; Monitor File owns monitoring")
     }
 
     // MARK: - Bytes

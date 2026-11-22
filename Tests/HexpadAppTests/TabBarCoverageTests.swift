@@ -248,6 +248,31 @@ final class TabBarCoverageTests: XCTestCase {
         XCTAssertEqual(tabButtons(in: bar).map(\.frame.minX), [0, 142, 284])
     }
 
+    /// P-05: `moveTab` is the single reorder entry point, so it owns the lock
+    /// check. A direct call from a menu command must be a no-op while locked
+    /// even though it never goes through the drag preview.
+    func testLockedBarRefusesDirectMoveTab() throws {
+        let (bar, store, docs) = makeBar(["a", "b", "c"])
+        bar.lockTabBar = true
+        var notifications = 0
+        var changes = 0
+        let observer = NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("TabStoreSelectedIndexDidChange"),
+            object: nil, queue: nil
+        ) { _ in notifications += 1 }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        bar.onChange = { changes += 1 }
+
+        bar.moveTab(from: 0, to: 2)
+
+        XCTAssertEqual(store.documents.map(\.text), ["a", "b", "c"],
+                       "a locked bar refuses a direct reorder")
+        XCTAssertEqual(store.selectedIndex, 0)
+        XCTAssertTrue(store.selectedDocument === docs[0])
+        XCTAssertEqual(notifications, 0, "a refused move posts no selection notice")
+        XCTAssertEqual(changes, 0, "a refused move does not rebind the editor")
+    }
+
     func testCrossGroupTransferMovesDocumentAndRefreshesBothBars() throws {
         let (sourceBar, sourceStore, docs) = makeBar(["a", "b", "c"], selectedIndex: 0)
         let (targetBar, targetStore, _) = makeBar(["x", "y"], selectedIndex: 0)

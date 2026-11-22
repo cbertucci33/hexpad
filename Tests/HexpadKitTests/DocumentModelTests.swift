@@ -376,6 +376,22 @@ final class DocumentModelTests: XCTestCase {
         XCTAssertTrue(doc.isModified)
     }
 
+    /// P-10: the external-change watcher replaces the buffer repeatedly. Those
+    /// reloads must not retain a full-buffer undo entry each time, while the
+    /// explicit File > Reload path keeps the default (undoable).
+    func testReloadTextCanSkipUndoRegistrationForWatcherReloads() {
+        let doc = DocumentModel(text: "old")
+        let textView = makeTextView(for: doc)
+        XCTAssertFalse(doc.undoManager.canUndo)
+
+        doc.reloadText("from disk", registersUndo: false)
+
+        XCTAssertEqual(textView.string, "from disk")
+        XCTAssertFalse(doc.isModified, "the watcher reload is still the clean baseline")
+        XCTAssertFalse(doc.undoManager.canUndo,
+                       "a watcher reload must not push a full-buffer undo entry")
+    }
+
     // FindBar's live count/highlight path keys off this notification; a
     // programmatic replace must reach observers with the edited document.
     func testProgrammaticEditPostsTextDidChangeNotification() {
