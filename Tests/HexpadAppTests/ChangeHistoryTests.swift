@@ -41,3 +41,38 @@ final class ChangeHistoryRevertDirtyTests: XCTestCase {
                         + "so Close/quit must still prompt and the session must persist modified state")
     }
 }
+
+/// Card e9bca429 — the since-save edit log must be fed by the same real-text
+/// seam that drives the menu, and a save point must clear it.
+final class ChangeHistorySinceSaveWiringTests: XCTestCase {
+
+    private func makeController() -> MainWindowController {
+        let window = MainWindow()
+        let controller = MainWindowController(window: window)
+        window.contentViewController = controller
+        _ = controller.view
+        return controller
+    }
+
+    func testTextChangeAdvancesSinceSaveCountAndSavePointClearsIt() {
+        let controller = makeController()
+        let doc = DocumentModel(text: "original")
+        controller.tabStore.documents = [doc]
+        controller.tabStore.selectedIndex = 0
+
+        doc.text = "edited"
+
+        let history = controller.history(for: doc)
+        XCTAssertEqual(history.changesSinceSaveCount, 1,
+                       "a real text change is recorded at the controller seam")
+        XCTAssertTrue(history.hasChangesSinceSave)
+        XCTAssertTrue(doc.unsavedChanges)
+
+        controller.recordSavePoint(for: doc)
+        doc.setModified(false)
+
+        XCTAssertEqual(history.changesSinceSaveCount, 0, "a save point clears the since-save log")
+        XCTAssertFalse(history.hasChangesSinceSave)
+        XCTAssertFalse(doc.unsavedChanges)
+    }
+}

@@ -156,5 +156,92 @@ final class ChangeHistoryTests: XCTestCase {
         let model = ChangeHistoryModel()
         XCTAssertTrue(model.isEmpty)
         XCTAssertTrue(model.menuEntries.isEmpty)
+        XCTAssertFalse(model.hasChangesSinceSave)
+    }
+
+    // MARK: - Edits since save (S18b-1)
+
+    func testRecordEditTracksTimestampsAndRanges() {
+        let model = ChangeHistoryModel()
+        let range = NSRange(location: 4, length: 2)
+        model.record(edit: ChangeHistoryEdit(timestamp: date(100), range: range))
+        model.record(edit: ChangeHistoryEdit(timestamp: date(101)))
+
+        XCTAssertEqual(model.changesSinceSaveCount, 2)
+        XCTAssertTrue(model.hasChangesSinceSave)
+        XCTAssertEqual(model.editsSinceSave.map(\.timestamp), [date(100), date(101)])
+        XCTAssertEqual(model.editsSinceSave[0].range, range)
+        XCTAssertNil(model.editsSinceSave[1].range)
+        XCTAssertEqual(model.count, 0, "since-save edits are not menu rows")
+    }
+
+    func testEveryEditCountsEvenWhenMenuRowCoalesces() {
+        let model = ChangeHistoryModel()
+        _ = model.recordModified(at: date(10))
+        _ = model.recordModified(at: date(11))
+        _ = model.recordModified(at: date(12))
+
+        XCTAssertEqual(model.count, 1, "one coalesced menu row for the burst")
+        XCTAssertEqual(model.changesSinceSaveCount, 3, "every edit advances the count")
+        XCTAssertEqual(model.editsSinceSave.map(\.timestamp), [date(10), date(11), date(12)])
+    }
+
+    func testRecordModifiedCarriesRangeIntoSinceSaveLog() {
+        let model = ChangeHistoryModel()
+        let range = NSRange(location: 3, length: 5)
+        _ = model.recordModified(in: range, at: date(1))
+
+        XCTAssertEqual(model.editsSinceSave.first?.range, range)
+        XCTAssertEqual(model.changesSinceSaveCount, 1)
+    }
+
+    func testMarkSavedClearsSinceSaveButLeavesMenuHistory() {
+        let model = ChangeHistoryModel()
+        model.recordSaved(snapshot: "base", at: date(1))
+        _ = model.recordModified(at: date(2))
+        XCTAssertEqual(model.changesSinceSaveCount, 1)
+
+        model.markSaved()
+
+        XCTAssertEqual(model.changesSinceSaveCount, 0)
+        XCTAssertFalse(model.hasChangesSinceSave)
+        XCTAssertEqual(model.count, 2, "menu rows survive marking the baseline")
+        XCTAssertEqual(model.editsSinceSave, [])
+    }
+
+    func testSaveClearsPendingEditCount() {
+        let model = ChangeHistoryModel()
+        _ = model.recordModified(at: date(1))
+        _ = model.recordModified(at: date(2))
+        XCTAssertEqual(model.changesSinceSaveCount, 2)
+
+        let saved = model.recordSaved(snapshot: "saved", at: date(3))
+
+        XCTAssertEqual(model.changesSinceSaveCount, 0)
+        XCTAssertEqual(model.snapshot(for: saved), "saved")
+    }
+
+    func testSinceSaveDirtyViewMirrorsEditThenSave() {
+        let model = ChangeHistoryModel()
+        XCTAssertFalse(model.hasChangesSinceSave, "fresh document starts clean")
+
+        _ = model.recordModified(at: date(1))
+        XCTAssertTrue(model.hasChangesSinceSave, "an edit makes it dirty")
+
+        model.recordSaved(snapshot: "clean", at: date(2))
+        XCTAssertFalse(model.hasChangesSinceSave, "a save clears the dirty view again")
+    }
+
+    func testSinceSaveLogIsCappedAndDropsOldest() {
+        let model = ChangeHistoryModel()
+        let overflow = 5
+        for index in 0..<(ChangeHistoryModel.editLimit + overflow) {
+            model.record(edit: ChangeHistoryEdit(timestamp: date(index)))
+        }
+
+        XCTAssertEqual(model.changesSinceSaveCount, ChangeHistoryModel.editLimit)
+        XCTAssertEqual(model.editsSinceSave.first?.timestamp, date(overflow))
+        XCTAssertEqual(model.editsSinceSave.last?.timestamp,
+                       date(ChangeHistoryModel.editLimit + overflow - 1))
     }
 }

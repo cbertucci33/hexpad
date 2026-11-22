@@ -46,7 +46,24 @@ public struct ChangeHistoryEntry: Equatable, Identifiable {
     }
 }
 
-/// Per-document record of save points and edit bursts.
+/// One edit since the last save, kept separately from the menu rows.
+///
+/// The optional `range` is the edited character range when the caller knows it
+/// (a keystroke or a programmatic replace), and `nil` for notices that carry no
+/// range. Timestamps let S18b-2 navigate/order these without asking the
+/// document again.
+public struct ChangeHistoryEdit: Equatable {
+    public let timestamp: Date
+    public let range: NSRange?
+
+    public init(timestamp: Date = Date(), range: NSRange? = nil) {
+        self.timestamp = timestamp
+        self.range = range
+    }
+}
+
+/// Per-document record of save points and edit bursts, plus a bounded log of
+/// the edits made since the last save.
 ///
 /// This is a pure model: callers feed it text snapshots and timestamps, and it
 /// hands back entries. It knows nothing about documents, windows or menus, so
@@ -69,8 +86,27 @@ public final class ChangeHistoryModel {
     /// saved snapshot is a new baseline.
     public static let coalescingWindow: TimeInterval = 2.0
 
+    /// Since-save edits are capped independently of the 20-row menu cap. A
+    /// long typing session must not grow memory without bound; once the cap is
+    /// reached the oldest edit is dropped, so the count saturates rather than
+    /// wrapping.
+    public static let editLimit = 1_000
+
     /// All recorded entries in the order they were appended (oldest first).
     public private(set) var entries: [ChangeHistoryEntry] = []
+
+    /// Edits recorded since the last save, oldest first, bounded by
+    /// ``editLimit``. Cleared by ``markSaved()`` (and therefore by
+    /// ``recordSaved(snapshot:)``).
+    public private(set) var editsSinceSave: [ChangeHistoryEdit] = []
+
+    /// Number of edits retained since the last save. This saturates at
+    /// ``editLimit`` instead of growing with every keystroke.
+    public var changesSinceSaveCount: Int { editsSinceSave.count }
+
+    /// The dirty view S18b-2 can ask without touching the document: true while
+    /// at least one retained edit has not been followed by a save.
+    public var hasChangesSinceSave: Bool { !editsSinceSave.isEmpty }
 
     /// ID of the modified entry at the tail of the current edit burst.
     private var activeModificationID: UUID?
@@ -91,19 +127,44 @@ public final class ChangeHistoryModel {
         return delta > 0 && delta < window
     }
 
-    /// Records any entry. `snapshot` is kept for `.saved` only.
+    /// Records a since-save edit. Kept separate from the coalesced menu rows:
+    /// every edit advances the count, even when the menu shows one "Modified
+    /// on" row for the whole burst.
+    @discardableResult
+    public func record(edit: ChangeHistoryEdit) -> ChangeHistoryEdit {
+        editsSinceSave.append(edit)
+        if editsSinceSave.count > Self.editLimit {
+            editsSinceSave.removeFirst(editsSinceSave.count - Self.editLimit)
+        }
+        return edit
+    }
+
+    /// Marks the current buffer as the new saved baseline: clears the
+    /// since-save edit log and ends the active modified burst. Callers that
+    /// write the buffer to disk should use ``recordSaved(snapshot:)`` instead
+    /// so the menu also gets a save point.
+    public func markSaved() {
+        editsSinceSave.removeAll(keepingCapacity: true)
+        activeModificationID = nil
+    }
+
+    /// Records any entry. `snapshot` is kept for `.saved` only; `range` is
+    /// stored on the since-save edit for `.modified`.
     @discardableResult
     public func record(_ kind: ChangeHistoryEntry.Kind,
                        snapshot: String? = nil,
+                       range: NSRange? = nil,
                        at date: Date = Date()) -> ChangeHistoryEntry {
         switch kind {
         case .saved:
             let entry = ChangeHistoryEntry(timestamp: date, kind: .saved, snapshot: snapshot ?? "")
             entries.append(entry)
             // A saved snapshot is a new baseline: the next edit is its own
-            // "Modified on" burst even if it follows a keystroke immediately.
-            activeModificationID = nil
+            // "Modified on" burst even if it follows a keystroke immediately,
+            // and the edits since the previous save are no longer pending.
+            markSaved()
         case .modified:
+            record(edit: ChangeHistoryEdit(timestamp: date, range: range))
             if let id = activeModificationID,
                let index = entries.firstIndex(where: { $0.id == id }),
                Self.shouldCoalesce(last: entries[index].timestamp, current: date) {
@@ -127,8 +188,8 @@ public final class ChangeHistoryModel {
     }
 
     @discardableResult
-    public func recordModified(at date: Date = Date()) -> ChangeHistoryEntry {
-        record(.modified, at: date)
+    public func recordModified(in range: NSRange? = nil, at date: Date = Date()) -> ChangeHistoryEntry {
+        record(.modified, range: range, at: date)
     }
 
     /// The menu projection: saved rows first, then modified rows, each newest
