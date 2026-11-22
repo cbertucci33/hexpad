@@ -156,6 +156,66 @@ final class SessionRestoreTests: XCTestCase {
         }
     }
 
+    /// P-10: a tailed log is replaced on every append; each reload must not
+    /// push a whole-buffer undo entry (memory would grow with file size ×
+    /// appends). An explicit File > Reload stays undoable.
+    func testTailReloadsDoNotGrowTheUndoStackButExplicitReloadDoes() throws {
+        let file = testDir.appendingPathComponent("tail-undo-\(UUID().uuidString).txt")
+        try "one\n".write(to: file, atomically: true, encoding: .utf8)
+        let (controller, _) = makeController()
+        controller.openFile(atPath: file.path)
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        controller.setFileMonitoring(true, for: doc)
+        XCTAssertFalse(doc.undoManager.canUndo)
+
+        try "one\ntwo\n".write(to: file, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: 30)],
+            ofItemAtPath: file.path
+        )
+        controller.checkExternalChanges()
+
+        XCTAssertEqual(doc.text, "one\ntwo\n")
+        XCTAssertFalse(doc.undoManager.canUndo,
+                       "tail appends must not retain full-buffer undo entries")
+
+        try "one\ntwo\nthree\n".write(to: file, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: 60)],
+            ofItemAtPath: file.path
+        )
+        controller.reloadActiveDocument(nil)
+
+        XCTAssertEqual(doc.text, "one\ntwo\nthree\n")
+        XCTAssertTrue(doc.undoManager.canUndo, "File > Reload stays one undo step")
+    }
+
+    /// P-09: a tail append shares the editor's storage, so it must not run a
+    /// forced same-document rebind (fold/bookmark/hidden-line rebuilds plus an
+    /// editor-state capture/apply) on every 0.5 s tick. `bookmarkBindCount` is
+    /// the container's "full bookmark-model build" hook.
+    func testTailAppendDoesNotRebindTheVisibleEditor() throws {
+        let file = testDir.appendingPathComponent("tail-rebind-\(UUID().uuidString).txt")
+        try "one\n".write(to: file, atomically: true, encoding: .utf8)
+        let (controller, _) = makeController()
+        controller.openFile(atPath: file.path)
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+        let editor = try XCTUnwrap(controller.editorContainer)
+        controller.setFileMonitoring(true, for: doc)
+        let builds = editor.bookmarkBindCount
+
+        try "one\ntwo\n".write(to: file, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: 30)],
+            ofItemAtPath: file.path
+        )
+        controller.checkExternalChanges()
+
+        XCTAssertEqual(doc.text, "one\ntwo\n")
+        XCTAssertEqual(editor.bookmarkBindCount, builds,
+                       "a tail append must not force a same-document rebind")
+    }
+
     /// Turning tail mode on records the current mtime, so an edit that landed
     /// before the toggle is not replayed as if it arrived while watching.
     func testEnablingTailMonitoringRecordsFreshBaseline() throws {
@@ -264,50 +324,6 @@ final class SessionRestoreTests: XCTestCase {
         XCTAssertEqual(doc.text, "short\n")
         XCTAssertEqual(textView.selectedRange, NSRange(location: 6, length: 0),
                        "the parked caret clamps to the shrunken buffer")
-    }
-
-    /// P-03: Tools > Monitor File is the stronger per-document request. View >
-    /// Monitoring off must not strand a tailed document between a checkmarked
-    /// Monitor File and a watcher that refuses to reload it, which used to leave
-    /// the save path able to overwrite the external edit with no prompt.
-    func testTailMonitoringOutranksMonitoringOptOut() throws {
-        let file = testDir.appendingPathComponent("tail-optout-\(UUID().uuidString).txt")
-        try "one\n".write(to: file, atomically: true, encoding: .utf8)
-        let (controller, _) = makeController()
-        controller.openFile(atPath: file.path)
-        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
-
-        controller.setFileMonitoring(true, for: doc)
-        controller.setMonitoring(false, for: doc)
-        XCTAssertFalse(controller.isMonitoring(doc))
-        XCTAssertTrue(controller.isFileMonitoring(doc),
-                      "the Tools checkmark stays authoritative")
-
-        doc.text = "local edit\n"
-        try "external\n".write(to: file, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes(
-            [.modificationDate: Date(timeIntervalSinceNow: 30)],
-            ofItemAtPath: file.path
-        )
-        controller.checkExternalChanges()
-
-        XCTAssertEqual(doc.text, "external\n",
-                       "tail-follow keeps reloading while View > Monitoring is off")
-        XCTAssertFalse(doc.hasExternalChange,
-                       "tail mode never leaves a pending conflict behind")
-
-        var prompted = false
-        controller.externalChangeResolver = { _ in
-            prompted = true
-            return .cancel
-        }
-        doc.noteExternalChange()
-        let resolution = controller.externalChangeResolution(for: doc)
-        XCTAssertFalse(prompted,
-                       "a tailed document must not prompt when the watcher owns the reload")
-        if case .saveAnyway = resolution {} else {
-            XCTFail("tail mode should bypass the prompt, got \(resolution)")
-        }
     }
 
     // MARK: - P2-10: missing files and session scheduling

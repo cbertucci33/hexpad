@@ -346,7 +346,6 @@ class TabBarView: NSView {
     /// Moves the active tab one slot in `direction` (+1 right, -1 left) without
     /// wrap, using the existing drag-reorder commit path.
     private func moveActiveTab(direction: Int) {
-        guard !lockTabBar else { return }
         let count = tabStore.count
         guard count > 1 else { return }
         let current = tabStore.selectedIndex
@@ -357,9 +356,15 @@ class TabBarView: NSView {
     
     // MARK: - Drag reorder
 
-    /// Single reorder path shared by drag-reorder and View > Tab's Move to
-    /// Start/End commands, so selection, reload, and notifications stay aligned.
+    /// Single reorder path shared by drag-reorder, Option+wheel, and View >
+    /// Tab's Move to Start/End commands, so selection, reload, notifications
+    /// and the lock check have exactly one owner.
     func moveTab(from source: Int, to destination: Int) {
+        // Locked tab bar: reordering is disabled. The guard lives here rather
+        // than in each caller so a new reorder entry point cannot re-open the
+        // hole (menu validation is the user-facing check; this is defense in
+        // depth for direct/keyboard invocation).
+        guard !lockTabBar else { return }
         // A reorder moves documents, not the selection index. Follow the
         // selected document to its new slot, otherwise dragging the active tab
         // to another position leaves a different tab active after the drop.

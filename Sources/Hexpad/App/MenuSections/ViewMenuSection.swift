@@ -212,15 +212,6 @@ extension HexpadAppDelegate {
                                          keyEquivalent: "")
         unhideLinesItem.target = nil
         viewMenu.addItem(unhideLinesItem)
-        // View > Monitoring: N++'s per-document tail -f toggle. Checkmarked;
-        // nil-targeted so MainWindowController owns both the action and the
-        // checkmark, and disabled for untitled buffers (nothing to reload).
-        // Menu-only: no Windows-only or F-key chord is invented for it.
-        let monitoringItem = NSMenuItem(title: "Monitoring",
-                                        action: #selector(MainWindowController.toggleMonitoring(_:)),
-                                        keyEquivalent: "")
-        monitoringItem.target = nil
-        viewMenu.addItem(monitoringItem)
         viewMenu.addItem(.separator())
         viewMenu.addItem(zoomInItem)
         viewMenu.addItem(zoomOutItem)
@@ -359,14 +350,10 @@ extension HexpadAppDelegate {
         viewMenu.addItem(viewCurrentFileInItem)
         viewMenu.addItem(.separator())
         viewMenu.addItem(appearanceItem)
-        // V19h: document stats. Nil-targeted like the fold items; the
-        // controller validates it against a focused document, so it greys
-        // out while a window is on the last untitled tab.
-        let summaryItem = NSMenuItem(title: "Summary…",
-                                     action: #selector(MainWindowController.showSummary(_:)),
-                                     keyEquivalent: "")
-        summaryItem.target = nil
-        viewMenu.addItem(summaryItem)
+        // V19h document stats live in Tools > Document Summary… only. The
+        // duplicate View > Summary… item was removed: two homes for one
+        // dialog with different titles left the menu shape ambiguous (Pilot
+        // P-08). Tools is where N++ users look for document utilities.
         return viewMenu
     }
 

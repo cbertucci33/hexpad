@@ -938,6 +938,30 @@ extension MenuWiringTests {
                        [docs[0], docs[1], docs[2]].map(ObjectIdentifier.init))
     }
 
+    /// P-05: the menu reorder delegates to the bar's drag-reorder path, so it
+    /// posts exactly one selection notice (the same contract the drag test
+    /// pins) instead of running a parallel move/select/refresh sequence.
+    func testMoveTabCommandPostsOneSelectionNoticeAndKeepsDocumentSelected() throws {
+        let (controller, _) = makeController()
+        controller.addNewTab()
+        controller.addNewTab()
+        controller.selectNthTab(2)
+        let moved = try XCTUnwrap(controller.tabStore.selectedDocument)
+
+        var notifications = 0
+        let observer = NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("TabStoreSelectedIndexDidChange"),
+            object: nil, queue: nil
+        ) { _ in notifications += 1 }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        controller.moveTabToStart(nil)
+
+        XCTAssertEqual(notifications, 1, "one selection notice for the whole reorder")
+        XCTAssertEqual(controller.tabStore.selectedIndex, 0)
+        XCTAssertTrue(controller.tabStore.selectedDocument === moved)
+    }
+
     func testViewTabMenuValidationTracksTabCount() throws {
         let (controller, _) = makeController()
 

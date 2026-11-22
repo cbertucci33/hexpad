@@ -1370,10 +1370,9 @@ class MainWindowController: NSViewController {
         guard doc.hasExternalChange else { return .saveAnyway }
         // Tail mode owns the conflict: the watcher reloads the file and this
         // path must never surprise the user with the "changed on disk" alert.
-        // Tail-follow is authoritative over the View > Monitoring opt-out (see
-        // the guard in ``checkExternalChanges``), so the watcher replaces the
-        // buffer even when Monitoring is off: skipping the prompt can never
-        // silently write over an unseen disk edit.
+        // The watcher always runs (there is only the Tools > Monitor File tail
+        // toggle now), so skipping the prompt can never silently write over an
+        // unseen disk edit on a tailed document.
         if isFileMonitoring(doc) { return .saveAnyway }
         if let externalChangeResolver {
             return externalChangeResolver(doc)
@@ -1884,7 +1883,7 @@ class MainWindowController: NSViewController {
             seenModDates.removeValue(forKey: closed.id)
         }
 
-        // Change histories and Monitoring opt-outs are keyed by document id,
+        // Change histories and tail-monitoring flags are keyed by document id,
         // not by tab object, so they get their own "last one out" check. A
         // document restored from a session can reuse an id with a fresh
         // object, so only clear these once no group holds that id.
@@ -1901,15 +1900,14 @@ class MainWindowController: NSViewController {
         }
     }
 
-    /// Drops the id-keyed per-document caches — change histories and Monitoring
-    /// opt-outs — once no group still holds a document with that id. Shared by
+    /// Drops the id-keyed per-document caches — change histories and tail
+    /// monitoring — once no group still holds a document with that id. Shared by
     /// the close sweep and session load so both paths agree on when the state is
     /// really gone; a document that is still open anywhere keeps its history.
     private func pruneIDKeyedCaches(for doc: DocumentModel) {
         guard !allPanes.contains(where: { $0.tabStore.documents.contains { $0.id == doc.id } })
         else { return }
         changeHistories.removeValue(forKey: doc.id)
-        monitoringDisabledIDs.remove(doc.id)
         let wasTailMonitored = fileMonitoringIDs.remove(doc.id) != nil
         if wasTailMonitored, watchTimer != nil, fileMonitoringIDs.isEmpty {
             // Back to the ordinary poll cadence once the last tailed tab closes.
@@ -2141,22 +2139,15 @@ class MainWindowController: NSViewController {
     }
 
     /// Reorders the focused group's tabs, keeping the moved document selected.
-    /// `TabStore.moveDocument` preserves the order array only; the selection is
-    /// an index, so it must follow the document to its new slot or the next
-    /// command would act on whichever tab slid into the old index.
+    /// Delegates to the bar's single reorder path (the same one drag-reorder
+    /// and Option+wheel use), which follows the selected document to its new
+    /// slot, reloads the bar, posts the selection notice and calls `onChange`
+    /// for the editor rebind. The bar owns the `lockTabBar` guard, so a locked
+    /// bar refuses this direct/keyboard invocation too.
     private func moveSelectedTab(to destination: Int) {
-        // Locked tab bar: reordering is drag-disabled in the bar; block the
-        // move commands here too so a direct/keyboard invocation is a no-op.
-        guard !preferences.lockTabBar else { return }
-        guard tabStore.count > 1 else { return }
         let source = tabStore.selectedIndex
-        guard source >= 0, source != destination else { return }
-        tabStore.moveDocument(from: source, to: destination)
-        tabStore.selectDocument(at: destination)
-        refreshTabBar()
-        // The selected document is unchanged but its index moved, so the
-        // FindBar and both tab bars still need the notice the drag path posts.
-        postTabSelectionDidChange()
+        guard tabStore.count > 1, source >= 0, source != destination else { return }
+        activePane.tabBar.moveTab(from: source, to: destination)
     }
 
     /// Window > Sort By. The menu item's `representedObject` is the sort key's
@@ -3398,45 +3389,17 @@ class MainWindowController: NSViewController {
     /// reloads silently, a dirty buffer keeps its edits and flags the tab.
     private var watchTimer: Timer?
     private var seenModDates: [UUID: Date] = [:]
-    /// Documents the user turned Monitoring off for. The watcher has always
-    /// followed every open file, so Monitoring is opt-OUT: the default stays
-    /// on (preserving the shipped auto-reload behaviour) and this set records
-    /// only the exceptions. N++'s per-document Monitoring toggle, expressed as
-    /// a checkmarked View menu item.
-    private var monitoringDisabledIDs: Set<UUID> = []
 
     /// Documents explicitly in tail-follow mode (Tools > Monitor File). This is
-    /// opt-IN and separate from ``monitoringDisabledIDs``: the watcher still
-    /// detects changes for every open file, but a document in this set reloads
-    /// even while dirty and follows appended text to the bottom of the view.
+    /// the single monitoring surface: the watcher still detects changes for
+    /// every open file, but a document in this set reloads even while dirty and
+    /// follows appended text to the bottom of the view.
     private var fileMonitoringIDs: Set<UUID> = []
 
     /// Test seam for the external-change save prompt, which would block a
     /// headless test on `runModal()`. Production leaves this nil and answers
     /// through the NSAlert in ``externalChangeResolution(for:)``.
     var externalChangeResolver: ((DocumentModel) -> ExternalChangeResolution)?
-
-    /// Whether external changes currently reload `doc`. Default on.
-    func isMonitoring(_ doc: DocumentModel) -> Bool {
-        !monitoringDisabledIDs.contains(doc.id)
-    }
-
-    /// Explicitly enables/disables Monitoring for one document.
-    func setMonitoring(_ monitoring: Bool, for doc: DocumentModel) {
-        if monitoring {
-            monitoringDisabledIDs.remove(doc.id)
-        } else {
-            monitoringDisabledIDs.insert(doc.id)
-        }
-    }
-
-    /// View > Monitoring. Flips only the focused document; a clean buffer keeps
-    /// reloading from disk while monitored, a dirty one keeps its edits either
-    /// way (the watcher never discards unsaved work).
-    @objc func toggleMonitoring(_ sender: Any?) {
-        guard let doc = tabStore.selectedDocument else { return }
-        setMonitoring(!isMonitoring(doc), for: doc)
-    }
 
     /// True while `doc` is in tail-follow mode (Tools > Monitor File).
     func isFileMonitoring(_ doc: DocumentModel) -> Bool {
@@ -3447,13 +3410,10 @@ class MainWindowController: NSViewController {
     ///
     /// Enabling records the file's current mtime as the watcher baseline, so
     /// switching tail mode on never immediately reloads an edit that happened
-    /// earlier. It also clears a View > Monitoring opt-out, because an explicit
-    /// "Monitor File" is a stronger request than the per-document watcher
-    /// toggle. The poll interval shortens while any document is tailed.
+    /// earlier. The poll interval shortens while any document is tailed.
     func setFileMonitoring(_ monitoring: Bool, for doc: DocumentModel) {
         if monitoring {
             fileMonitoringIDs.insert(doc.id)
-            monitoringDisabledIDs.remove(doc.id)
             if let path = doc.filePath?.path,
                let attrs = try? FileManager.default.attributesOfItem(atPath: path),
                let modDate = attrs[.modificationDate] as? Date {
@@ -3505,12 +3465,19 @@ class MainWindowController: NSViewController {
     }
 
     /// Reloads a clean file-backed document's buffer from disk through the
-    /// shared storage, making the on-disk text the clean undoable baseline.
-    /// The result distinguishes "already matches the buffer" from "could not
-    /// read/decode the file": only `.reloaded` replaced the buffer and only
-    /// `.unchanged` proves it already equals disk. On `.failed` the buffer is
-    /// left exactly as it was, dirty state included.
-    private func reloadDocument(_ doc: DocumentModel, from url: URL) -> DiskReloadResult {
+    /// shared storage, making the on-disk text the clean baseline. The result
+    /// distinguishes "already matches the buffer" from "could not read/decode
+    /// the file": only `.reloaded` replaced the buffer and only `.unchanged`
+    /// proves it already equals disk. On `.failed` the buffer is left exactly
+    /// as it was, dirty state included.
+    ///
+    /// `registersUndo` is `true` for explicit reloads (File > Reload, opening
+    /// an already-open clean file) and `false` for watcher-driven reloads: a
+    /// tailed log is replaced many times a second, and each undo entry retains
+    /// a full copy of the previous buffer (Pilot P-10).
+    private func reloadDocument(_ doc: DocumentModel,
+                                from url: URL,
+                                registersUndo: Bool = true) -> DiskReloadResult {
         let data: Data
         do {
             data = try Data(contentsOf: url)
@@ -3525,13 +3492,13 @@ class MainWindowController: NSViewController {
         guard text != doc.text else { return .unchanged }
         doc.keepsBOM = EncodingDetective.detectBOM(of: data) != nil
         // Reload through the shared buffer: the visible editor updates
-        // immediately and the reload stays undoable. reloadText also makes
-        // the on-disk text the clean baseline in the same notification.
-        // The notice is synchronous, so the flag hides this non-user edit from
-        // the change-history seam; clearing the since-save log keeps the
-        // history's dirty view consistent with the now-clean document.
+        // immediately and reloadText makes the on-disk text the clean
+        // baseline in the same notification. The notice is synchronous, so
+        // the flag hides this non-user edit from the change-history seam;
+        // clearing the since-save log keeps the history's dirty view
+        // consistent with the now-clean document.
         isReloadingDocument = true
-        doc.reloadText(text)
+        doc.reloadText(text, registersUndo: registersUndo)
         isReloadingDocument = false
         changeHistories[doc.id]?.markSaved()
         return .reloaded
@@ -3584,14 +3551,11 @@ class MainWindowController: NSViewController {
     func checkExternalChanges() {
         for doc in allPanes.flatMap({ $0.tabStore.documents }) {
             guard let path = doc.filePath?.path else { continue }
-            // View > Monitoring off leaves the buffer (and its dirty flag)
-            // completely alone, exactly as if the file had not changed — with
-            // one exception: Tools > Monitor File is the stronger per-document
-            // request and keeps tail-follow running. That keeps the Tools
-            // checkmark honest while Monitoring is off and guarantees a save
-            // can never silently overwrite an unseen disk edit on a tailed
-            // document (``externalChangeResolution(for:)`` relies on this).
-            guard isMonitoring(doc) || isFileMonitoring(doc) else { continue }
+            // One monitoring surface: the watcher follows every open file.
+            // Tools > Monitor File only adds tail-follow semantics below; there
+            // is no per-document opt-out that could strand a checkmarked toggle
+            // between a watcher that refuses to reload and a save path that
+            // silently overwrites an unseen disk edit.
             let attrs = try? FileManager.default.attributesOfItem(atPath: path)
             guard let modDate = attrs?[.modificationDate] as? Date else { continue }
 
@@ -3618,34 +3582,40 @@ class MainWindowController: NSViewController {
             if isFileMonitoring(doc) {
                 // Tools > Monitor File: tail -f semantics. Suppress the
                 // dirty-buffer conflict prompt and take the on-disk text
-                // instead. Reloading a dirty buffer is deliberate here, and
-                // reloadText keeps the replacement undoable.
+                // instead. Reloading a dirty buffer is deliberate here; the
+                // reload is not an undo step (P-10) because appends repeat.
                 let followsEnd = isViewportAtDocumentEnd(doc)
                 let previousLength = (doc.text as NSString).length
                 let previousSelection = tailSelection(of: doc)
                 guard FileManager.default.fileExists(atPath: path) else { continue }
-                switch reloadDocument(doc, from: URL(fileURLWithPath: path)) {
+                switch reloadDocument(doc, from: URL(fileURLWithPath: path),
+                                      registersUndo: false) {
                 case .reloaded:
                     seenModDates[doc.id] = modDate
-                    if previousSelection != nil {
-                        updateEditor(forceRebind: true)
-                    }
-                    if followsEnd {
-                        followDocumentEnd(doc,
-                                          previousLength: previousLength,
-                                          previousSelection: previousSelection)
-                    }
-                    // forceRebind resets the caret to the new end. Restore a
-                    // parked selection unless it was a lone caret at the old
-                    // end (tail rule: the caret follows only when it sat at
-                    // the tail), independent of viewport pinning.
-                    let caretWasAtTail = previousSelection.map { selection -> Bool in
-                        guard selection.count == 1, let caret = selection.primaryCaret
-                        else { return false }
-                        return caret.length == 0 && caret.location >= previousLength
-                    } ?? false
-                    if previousSelection != nil, !caretWasAtTail {
+                    // P-09: an append must NOT force a rebind. The document
+                    // owns the storage the bound editor is already showing, so
+                    // the text is live; a forced bind rebuilt folds, bookmarks
+                    // and hidden lines and recaptured/reapplied editor state on
+                    // every 0.5 s tick. The model's change notice already
+                    // re-highlights the active buffer, updates the function
+                    // list, tab dots and window title, so only the parked
+                    // caret/scroll needs correction here.
+                    //
+                    // `previousSelection` is nil when no pane has this document
+                    // selected: nothing is on screen, so no editor is bound to
+                    // it and there is nothing to rebind. The shared storage is
+                    // current and the next bind adopts it.
+                    if let previousSelection {
+                        // Put the whole parked state back first (the setter
+                        // clamps a shrunk buffer and keeps non-empty and
+                        // multi-caret selections), then let the tail rule move
+                        // a lone end-of-buffer caret forward.
                         restoreParkedCaret(doc, previousSelection: previousSelection)
+                        if followsEnd {
+                            followDocumentEnd(doc,
+                                              previousLength: previousLength,
+                                              previousSelection: previousSelection)
+                        }
                     }
                 case .unchanged:
                     seenModDates[doc.id] = modDate
@@ -3669,7 +3639,10 @@ class MainWindowController: NSViewController {
                 continue
             }
             guard FileManager.default.fileExists(atPath: path) else { continue }
-            switch reloadDocument(doc, from: URL(fileURLWithPath: path)) {
+            // Watcher-driven, not user-initiated: do not add a full-buffer
+            // undo entry for a change the user did not make (P-10).
+            switch reloadDocument(doc, from: URL(fileURLWithPath: path),
+                                  registersUndo: false) {
             case .reloaded:
                 seenModDates[doc.id] = modDate
                 if allPanes.contains(where: { $0.tabStore.selectedDocument === doc }) {
@@ -3706,7 +3679,8 @@ class MainWindowController: NSViewController {
     /// live range because a programmatic `setSelectedRange` is authoritative
     /// even before the selection notification reaches the container.
     private func tailSelection(of doc: DocumentModel) -> MultiCaretState? {
-        guard let pane = allPanes.first(where: { $0.tabStore.selectedDocument === doc })
+        guard let pane = allPanes.first(where: { $0.tabStore.selectedDocument === doc }),
+              pane.boundDocument === doc
         else { return nil }
         let state = pane.editor.multiCaretState
         guard state.count > 1 else {
@@ -3721,7 +3695,8 @@ class MainWindowController: NSViewController {
     private func followDocumentEnd(_ doc: DocumentModel,
                                    previousLength: Int,
                                    previousSelection: MultiCaretState?) {
-        guard let pane = allPanes.first(where: { $0.tabStore.selectedDocument === doc })
+        guard let pane = allPanes.first(where: { $0.tabStore.selectedDocument === doc }),
+              pane.boundDocument === doc
         else { return }
         let textView = pane.editor.textView
         let length = (doc.text as NSString).length
@@ -3735,16 +3710,18 @@ class MainWindowController: NSViewController {
         textView.scrollRangeToVisible(NSRange(location: length, length: 0))
     }
 
-    /// `updateEditor(forceRebind:)` collapses the selection to the new end after
-    /// a tail reload; a parked selection that should NOT follow is put back here
-    /// so a mid-buffer caret — or a non-empty selection, or a multi-caret state
-    /// — stays put. `setMultiCaretState` normalizes every caret to the current
-    /// buffer, so a file that shrank (log rotation) can never leave a range past
-    /// the end: the long-running 30 KB-caret-on-a-2 KB-buffer crash is clamped
-    /// here exactly like `applyEditorState` clamps a restored caret.
+    /// Puts the parked caret state back after a tail reload. The buffer is
+    /// shared, but AppKit may still move the selection when the whole text is
+    /// replaced, so a mid-buffer caret — or a non-empty selection, or a
+    /// multi-caret state — is restored explicitly. `setMultiCaretState`
+    /// normalizes every caret to the current buffer, so a file that shrank (log
+    /// rotation) can never leave a range past the end: the long-running
+    /// 30 KB-caret-on-a-2 KB-buffer crash is clamped here exactly like
+    /// `applyEditorState` clamps a restored caret.
     private func restoreParkedCaret(_ doc: DocumentModel, previousSelection: MultiCaretState?) {
         guard let previousSelection,
-              let pane = allPanes.first(where: { $0.tabStore.selectedDocument === doc })
+              let pane = allPanes.first(where: { $0.tabStore.selectedDocument === doc }),
+              pane.boundDocument === doc
         else { return }
         pane.editor.setMultiCaretState(previousSelection)
     }
@@ -3982,10 +3959,10 @@ class MainWindowController: NSViewController {
 
     // MARK: - Summary / Document Summary (V19h)
 
-    /// Tools > Document Summary and View > Summary…. The dialog itself is the
-    /// pure `SummaryWindowController` report generator over a copyable sheet;
-    /// both menu items are nil-targeted and validated against a focused
-    /// document.
+    /// Tools > Document Summary… (the dialog's single home as of P-08). The
+    /// dialog itself is the pure `SummaryWindowController` report generator
+    /// over a copyable sheet; the menu item is nil-targeted and validated
+    /// against a focused document.
     @objc func showSummary(_ sender: Any?) {
         SummaryWindowController.showSummary(activeController: self)
     }
@@ -5393,12 +5370,6 @@ extension MainWindowController: NSMenuItemValidation {
         if menuItem.action == #selector(MainWindowController.toggleZoomSynchronize(_:)) {
             menuItem.state = synchronizeZoom ? .on : .off
             return canSynchronizeScrolling()
-        }
-        if menuItem.action == #selector(MainWindowController.toggleMonitoring(_:)) {
-            // Checkmark follows the focused document; only file-backed buffers
-            // can be monitored (an untitled buffer has nothing to reload).
-            menuItem.state = (tabStore.selectedDocument.map(isMonitoring) ?? false) ? .on : .off
-            return tabStore.selectedDocument?.filePath != nil
         }
         if menuItem.action == #selector(MainWindowController.toggleFileMonitoring(_:)) {
             // Tail mode is per document and only meaningful for a real file.
