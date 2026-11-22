@@ -204,11 +204,13 @@ final class MenuWiringTests: XCTestCase {
         doc.replaceAllText(with: "one\ntwo")
         textView.setSelectedRange(NSRange(location: 0, length: 0))
 
-        // A caret on the first line can duplicate/delete/comment, but cannot
-        // move up or change case.
+        // A caret on the first line can duplicate/delete, but cannot
+        // move up or change case. The default document has no language
+        // metadata, and since the no-fallback resolver (P17f) there is no
+        // guessed token: *** must be disabled.
         XCTAssertTrue(controller.validateMenuItem(commandValidationItem("duplicate-line")))
         XCTAssertTrue(controller.validateMenuItem(commandValidationItem("delete-line")))
-        XCTAssertTrue(controller.validateMenuItem(commandValidationItem("toggle-line-comment")))
+        XCTAssertFalse(controller.validateMenuItem(commandValidationItem("toggle-line-comment")))
         XCTAssertFalse(controller.validateMenuItem(commandValidationItem("move-line-up")))
         XCTAssertFalse(controller.validateMenuItem(commandValidationItem("uppercase")))
         XCTAssertFalse(controller.validateMenuItem(commandValidationItem("lowercase")))

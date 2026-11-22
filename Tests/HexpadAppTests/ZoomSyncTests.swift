@@ -124,4 +124,70 @@ final class ZoomSyncTests: XCTestCase {
         XCTAssertGreaterThan(primary.zoomScale, 1.0)
         XCTAssertEqual(secondary.zoomScale, 1.0, accuracy: 0.0001)
     }
+
+    // MARK: - Uniform scale from divergent per-document zooms
+
+    /// Per-document persistence can leave the panes at different scales before
+    /// sync is switched on. Copying the focused editor's resulting scale (not
+    /// stepping each pane by one point) must unify them.
+    func testSynchronizeOnUnifiesPanesThatStartAtDifferentZooms() throws {
+        UserDefaults.standard.set(true, forKey: "synchronizeZoom")
+        let (controller, _) = makeController()
+        XCTAssertTrue(controller.synchronizeZoom)
+        controller.openSplitView()
+        let primary = controller.allPanes[0].editor
+        let secondary = controller.allPanes[1].editor
+        secondary.setZoomScale(1.5)
+        XCTAssertEqual(primary.zoomScale, 1.0, accuracy: 0.0001)
+        XCTAssertEqual(secondary.zoomScale, 1.5, accuracy: 0.0001)
+
+        controller.zoomIn()
+
+        let focusedScale = primary.zoomScale
+        XCTAssertGreaterThan(focusedScale, 1.0)
+        XCTAssertEqual(secondary.zoomScale, focusedScale, accuracy: 0.0001,
+                       "the focused pane's resulting scale is copied, not stepped")
+
+        controller.zoomOut()
+
+        XCTAssertEqual(secondary.zoomScale, primary.zoomScale, accuracy: 0.0001,
+                       "zoom-out keeps the panes uniform too")
+    }
+
+    func testSynchronizeOnResetZoomUnifiesDivergentPanes() throws {
+        UserDefaults.standard.set(true, forKey: "synchronizeZoom")
+        let (controller, _) = makeController()
+        controller.openSplitView()
+        let primary = controller.allPanes[0].editor
+        let secondary = controller.allPanes[1].editor
+        primary.setZoomScale(1.5)
+        secondary.setZoomScale(0.8)
+
+        controller.resetZoom()
+
+        XCTAssertEqual(primary.zoomScale, 1.0, accuracy: 0.0001)
+        XCTAssertEqual(secondary.zoomScale, 1.0, accuracy: 0.0001)
+    }
+
+    /// The command comes from the focused editor, so the secondary pane drives
+    /// the shared target when it has focus.
+    func testFocusedSecondaryPaneDrivesTheSharedScale() throws {
+        UserDefaults.standard.set(true, forKey: "synchronizeZoom")
+        let (controller, _) = makeController()
+        controller.openSplitView()
+        let primary = controller.allPanes[0].editor
+        let secondary = controller.allPanes[1].editor
+        // Focus first: focusing an as-yet-unbound empty pane rebinds it and
+        // resets its zoom, so set the divergent scales afterwards.
+        controller.focusGroup(.secondary)
+        primary.setZoomScale(1.0)
+        secondary.setZoomScale(1.5)
+
+        controller.zoomIn()
+
+        let focusedScale = secondary.zoomScale
+        XCTAssertGreaterThan(focusedScale, 1.5)
+        XCTAssertEqual(primary.zoomScale, focusedScale, accuracy: 0.0001,
+                       "the focused secondary editor sets the target")
+    }
 }
