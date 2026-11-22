@@ -10,6 +10,10 @@ class MainWindow: NSWindow {
         title = "Hexpad"
         isReleasedWhenClosed = false
         minSize = NSSize(width: 800, height: 500)
+        // Hexpad tabs documents in its own TabBarView. Native window tabs would
+        // merge Cmd+N windows into a macOS tab group and draw their own titlebar
+        // chrome, so this window never participates in automatic tabbing.
+        tabbingMode = .disallowed
         
         let toolbar = NSToolbar(identifier: "MainWindowToolbar")
         toolbar.delegate = self

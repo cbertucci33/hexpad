@@ -57,6 +57,10 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     var readOnlyAllMenuItem: NSMenuItem?
     
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Hexpad has one tab system (TabBarView). Native window tabbing is off
+        // app-wide so helper windows created outside MainWindow (function list,
+        // find in files, preferences) cannot join a document window's tab group.
+        NSWindow.allowsAutomaticWindowTabbing = false
         restoreAppearance()
         // Keybinding edits rebuild the whole menu: one code path applies the
         // overrides, and the rebuilt Keybindings submenu shows the new chords.

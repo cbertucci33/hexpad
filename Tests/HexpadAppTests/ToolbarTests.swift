@@ -167,6 +167,17 @@ final class ToolbarTests: XCTestCase {
         }
     }
     
+    // MARK: - Native window tabbing
+
+    /// Hexpad tabs documents in its own TabBarView. A MainWindow that kept the
+    /// automatic default would let macOS merge Cmd+N windows into a native tab
+    /// group and draw tab tiles in the titlebar leading edge.
+    func testWindowDisallowsNativeWindowTabbing() {
+        XCTAssertEqual(window.tabbingMode, .disallowed)
+        XCTAssertEqual(MainWindow().tabbingMode, .disallowed,
+                       "every MainWindow, not just the test fixture, opts out")
+    }
+
     // MARK: - Saved chrome restore
     
     /// The Post-It path captures `window.toolbar` and restores the same instance.
