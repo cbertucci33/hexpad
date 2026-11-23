@@ -124,8 +124,10 @@ public final class TabStore: ObservableObject {
                     $0.localizedCaseInsensitiveCompare($1)
                 }
             case .length:
-                let left = lhs.textStorage.length
-                let right = rhs.textStorage.length
+                // Non-materializing for a lazily restored tab: sorting must not
+                // build every buffer just to measure it.
+                let left = lhs.contentLength
+                let right = rhs.contentLength
                 if left == right { return false }
                 return ascending ? left < right : left > right
             case .modified:

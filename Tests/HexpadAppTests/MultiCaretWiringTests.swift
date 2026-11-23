@@ -599,6 +599,59 @@ final class FoldGutterTests: XCTestCase {
         XCTAssertFalse(hider.setHiddenRanges([NSRange(location: 3, length: 4)]),
                        "unchanged ranges report no change")
     }
+
+    /// The glyph delegate calls `isHidden` once per generated glyph. With Fold
+    /// All the hidden set is large, so the lookup must binary-search the sorted
+    /// ranges instead of scanning them all.
+    func testGlyphHiderFindsBoundariesAcrossManyRanges() {
+        let hider = FoldGlyphHider()
+        let ranges = (0..<2_000).map { NSRange(location: $0 * 8, length: 4) }
+        hider.setHiddenRanges(ranges)
+        XCTAssertEqual(hider.hiddenRanges.count, ranges.count)
+
+        for (index, range) in hider.hiddenRanges.enumerated() where index % 97 == 0 {
+            XCTAssertTrue(hider.isHidden(characterIndex: range.location))
+            XCTAssertTrue(hider.isHidden(characterIndex: NSMaxRange(range) - 1))
+            XCTAssertFalse(hider.isHidden(characterIndex: NSMaxRange(range)),
+                           "first visible index after range \(index)")
+            if range.location > 0 {
+                XCTAssertFalse(hider.isHidden(characterIndex: range.location - 1),
+                               "last visible index before range \(index)")
+            }
+        }
+    }
+
+    /// Hiding many separate lines (the Fold All-shaped worst case for the
+    /// gutter) must still renumber the visible rows consecutively.
+    func testGutterNumbersCorrectlyWithManyHiddenRanges() {
+        let lineCount = 400
+        let text = (1...lineCount).map { "line \($0)" }.joined(separator: "\n")
+        let document = DocumentModel(text: text)
+        document.editorState.hiddenLinesState = HideLinesState(
+            lineRanges: stride(from: 2, through: lineCount, by: 2).map { $0...$0 }
+        )
+        let editor = EditorContainer()
+        editor.frame = NSRect(x: 0, y: 0, width: 800, height: 500)
+        editor.layout()
+        editor.bind(to: document)
+
+        XCTAssertEqual(editor.hiddenLineCharacterSpans.count, lineCount / 2)
+
+        let rows = LineNumberGutter.rows(
+            in: editor.textView,
+            characterRange: NSRange(location: 0, length: (text as NSString).length)
+        )
+        XCTAssertEqual(rows.count, lineCount / 2, "only visible lines produce rows")
+        XCTAssertEqual(Array(rows.prefix(5).map(\.line)), [1, 3, 5, 7, 9])
+
+        let state = document.editorState.hiddenLinesState
+        XCTAssertEqual(rows.first.flatMap {
+            state.displayNumber(forLine: $0.line, lineCount: lineCount)
+        }, 1, "first visible row keeps number 1")
+        XCTAssertEqual(rows.last.flatMap {
+            state.displayNumber(forLine: $0.line, lineCount: lineCount)
+        }, lineCount / 2, "last visible row closes the gap")
+    }
 }
 
 // MARK: - Fold persistence

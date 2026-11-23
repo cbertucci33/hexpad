@@ -58,11 +58,12 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
     static let highlightAttribute = NSAttributedString.Key("HexpadIncrementalSearchHighlight")
     private var lastQuery = ""
     /// Debounce for live full-buffer searches in large documents, matching
-    /// FindBar's policy so both search surfaces behave the same: documents
-    /// over 1MB wait for a 150ms pause, smaller ones search immediately.
+    /// FindBar's policy through ``SearchBarTiming`` so both search surfaces
+    /// behave the same: documents over 256 KB wait for a 150 ms pause, smaller
+    /// ones search immediately.
     private var pendingSearchWorkItem: DispatchWorkItem?
-    private static let debounceSearchLength = 1_000_000
-    private static let debounceInterval: TimeInterval = 0.15
+    static let debounceSearchLength = SearchBarTiming.debounceThreshold
+    private static let debounceInterval = SearchBarTiming.debounceInterval
     /// Set while handling a field-editor command; Return must not be mistaken
     /// for a focus loss and tear the bar down.
     private var isHandlingCommand = false
@@ -262,7 +263,7 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
         if let textView = editorRef?.textView {
             length = textView.textStorage?.length ?? 0
         }
-        if debounce, !query.isEmpty, length > Self.debounceSearchLength {
+        if debounce, !query.isEmpty, SearchBarTiming.shouldDebounce(length: length) {
             let work = DispatchWorkItem { [weak self] in
                 guard let self else { return }
                 self.pendingSearchWorkItem = nil

@@ -114,10 +114,25 @@ final class FoldGlyphHider: NSObject, NSLayoutManagerDelegate {
 
     /// Whether the character at `characterIndex` is hidden by a collapsed fold
     /// or by a hidden line.
+    ///
+    /// `hiddenRanges` is sorted and non-overlapping, so this is a binary search:
+    /// the glyph-generation delegate calls it once per generated glyph, and a
+    /// linear scan made Fold All on a large file O(glyphs × hidden ranges).
     func isHidden(characterIndex: Int) -> Bool {
-        hiddenRanges.contains { range in
-            range.location <= characterIndex && characterIndex < NSMaxRange(range)
+        var low = 0
+        var high = hiddenRanges.count - 1
+        while low <= high {
+            let mid = (low + high) / 2
+            let range = hiddenRanges[mid]
+            if characterIndex < range.location {
+                high = mid - 1
+            } else if characterIndex >= NSMaxRange(range) {
+                low = mid + 1
+            } else {
+                return true
+            }
         }
+        return false
     }
 
     private func rebuildEffectiveRanges() -> Bool {

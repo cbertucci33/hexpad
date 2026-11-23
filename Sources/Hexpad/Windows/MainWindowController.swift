@@ -20,6 +20,113 @@ enum ExternalChangeResolution {
     case cancel
 }
 
+/// Bounded per-document syntax-highlighting state for split view.
+///
+/// The token cache and the painted viewport belong to one buffer, not to the
+/// window. With two different documents in a split and sync scrolling, a single
+/// shared store saw an alternating document on every wheel event: it reset its
+/// tokens, cleared the other pane's band and re-tokenized the viewport each
+/// time. Keeping a small LRU per document makes both panes stay warm while
+/// bounding memory to `capacity` stores.
+final class SyntaxHighlightCache {
+
+    struct Entry {
+        weak var document: DocumentModel?
+        var lastHighlightedRange: NSRange
+        let store: TokenStore
+    }
+
+    /// Documents kept warm. Split view shows two; two extra slots absorb the
+    /// usual tab back-and-forth without holding a store for every open tab.
+    static let defaultCapacity = 4
+
+    let capacity: Int
+    private var entries: [UUID: Entry] = [:]
+    /// Least-recently-used first.
+    private var order: [UUID] = []
+
+    init(capacity: Int = SyntaxHighlightCache.defaultCapacity) {
+        self.capacity = max(1, capacity)
+    }
+
+    /// Number of live entries (test seam).
+    var count: Int {
+        purgeDeallocated()
+        return entries.count
+    }
+
+    func contains(_ document: DocumentModel) -> Bool {
+        entries[document.id]?.document === document
+    }
+
+    /// Existing entry marked most-recently-used, or `nil` when this document
+    /// has no cache yet.
+    func existingEntry(for document: DocumentModel) -> Entry? {
+        guard let entry = entries[document.id], entry.document === document else {
+            return nil
+        }
+        touch(document.id)
+        return entry
+    }
+
+    /// The document's entry, creating and evicting as needed.
+    ///
+    /// `isNew` is true only when the document was not already cached. Callers
+    /// use it the way the old single-document pipeline used "document changed":
+    /// a new entry starts with no painted range and a fresh token store.
+    func entry(for document: DocumentModel) -> (entry: Entry, isNew: Bool) {
+        if let entry = existingEntry(for: document) {
+            return (entry, false)
+        }
+
+        let entry = Entry(document: document,
+                          lastHighlightedRange: NSRange(location: 0, length: 0),
+                          store: TokenStore(language: .plain))
+        entries[document.id] = entry
+        order.removeAll { $0 == document.id }
+        order.append(document.id)
+        evictIfNeeded()
+        return (entry, true)
+    }
+
+    func setLastHighlightedRange(_ range: NSRange, for document: DocumentModel) {
+        guard var entry = entries[document.id], entry.document === document else { return }
+        entry.lastHighlightedRange = range
+        entries[document.id] = entry
+    }
+
+    func removeAll() {
+        entries.removeAll()
+        order.removeAll()
+    }
+
+    private func touch(_ id: UUID) {
+        order.removeAll { $0 == id }
+        order.append(id)
+    }
+
+    private func evictIfNeeded() {
+        purgeDeallocated()
+        while entries.count > capacity, let oldest = order.first {
+            order.removeFirst()
+            entries.removeValue(forKey: oldest)
+        }
+    }
+
+    /// Drops entries whose document was closed. The entry also keeps its store
+    /// alive, so pruning here is what bounds memory after tabs close.
+    private func purgeDeallocated() {
+        order.removeAll { id in
+            guard let entry = entries[id] else { return true }
+            if entry.document == nil {
+                entries.removeValue(forKey: id)
+                return true
+            }
+            return false
+        }
+    }
+}
+
 class MainWindowController: NSViewController {
     
     /// The two tab groups. Two independent TabStore instances (rather than one
@@ -228,9 +335,9 @@ class MainWindowController: NSViewController {
     private var pendingTokenStyleDocuments: Set<UUID> = []
     private var tokenStyleApplyScheduled = false
 
-    private let syntaxStore = TokenStore(language: .plain)
-    private var lastHighlightedRange = NSRange(location: 0, length: 0)
-    private weak var highlightedDoc: DocumentModel?
+    /// Harness-visible so tests can assert per-document retention; the
+    /// controller is its only production writer.
+    let syntaxHighlightCache = SyntaxHighlightCache()
     private var docThemeNames: [UUID: String] = [:]
     private var pendingEditRange: NSRange?
 
@@ -515,7 +622,10 @@ class MainWindowController: NSViewController {
               storage.editedMask.contains(.editedCharacters) else { return }
 
         let documents = allPanes.flatMap { $0.tabStore.documents }
-        guard let doc = documents.first(where: { $0.textStorage === storage }),
+        // Identity check only: a lazily restored tab has no storage yet, and
+        // this notification fires for the bound buffer. Reading `textStorage`
+        // here would materialize every open tab on the first keystroke.
+        guard let doc = documents.first(where: { $0.textStorageIfLoaded === storage }),
               !doc.editorState.tokenStyleState.isEmpty else { return }
 
         let insertedLength = storage.editedRange.length
@@ -2262,16 +2372,15 @@ class MainWindowController: NSViewController {
 
         if let doc = pane.tabStore.selectedDocument {
             // This runs on every focus change, including a click between split
-            // panes showing the same document. Only a different document or
-            // language invalidates the token store; a same-document refresh
+            // panes showing the same document. Only a language change
+            // invalidates that document's token store; a same-document refresh
             // reuses it instead of re-tokenizing the visible band.
             let language = Language(rawValue: doc.language) ?? .plain
-            let needsReset = highlightedDoc !== doc || syntaxStore.language != language
+            let cachedLanguage = syntaxHighlightCache.existingEntry(for: doc)?.store.language
+            let needsReset = cachedLanguage == nil || cachedLanguage != language
             applySyntaxHighlighting(to: pane.editor, for: doc, forceReset: needsReset)
         } else {
-            highlightedDoc = nil
-            syntaxStore.reset()
-            lastHighlightedRange = NSRange(location: 0, length: 0)
+            syntaxHighlightCache.removeAll()
         }
 
         updateStatusBar()
@@ -2719,9 +2828,14 @@ class MainWindowController: NSViewController {
             editor.textView.applyTokenStyles(doc.editorState.tokenStyleState, theme: theme)
         }
 
-        let docChanged = highlightedDoc !== doc
+        // Per-document state: alternating split panes (or tabs) each keep their
+        // own token store and painted band. A document entering the cache for
+        // the first time is the equivalent of the old "document changed" path.
+        let cached = syntaxHighlightCache.entry(for: doc)
+        let syntaxStore = cached.entry.store
+        let docChanged = cached.isNew
+        var lastHighlightedRange = cached.entry.lastHighlightedRange
         if docChanged {
-            highlightedDoc = doc
             lastHighlightedRange = NSRange(location: 0, length: 0)
         }
 
@@ -2738,6 +2852,7 @@ class MainWindowController: NSViewController {
             textStorage.endEditing()
             docThemeNames[doc.id] = theme.name
             lastHighlightedRange = NSRange(location: 0, length: 0)
+            syntaxHighlightCache.setLastHighlightedRange(lastHighlightedRange, for: doc)
             needsReset = true
         }
 
@@ -2747,6 +2862,8 @@ class MainWindowController: NSViewController {
               language != .plain else {
             clearHighlighting(in: textStorage, range: lastHighlightedRange,
                               theme: theme, font: editor.bodyFont, textLength: textLength)
+            lastHighlightedRange = NSRange(location: 0, length: 0)
+            syntaxHighlightCache.setLastHighlightedRange(lastHighlightedRange, for: doc)
             syntaxStore.reset(language: .plain)
             return
         }
@@ -2755,6 +2872,8 @@ class MainWindowController: NSViewController {
             syntaxStore.reset(language: language)
             clearHighlighting(in: textStorage, range: lastHighlightedRange,
                               theme: theme, font: editor.bodyFont, textLength: textLength)
+            lastHighlightedRange = NSRange(location: 0, length: 0)
+            syntaxHighlightCache.setLastHighlightedRange(lastHighlightedRange, for: doc)
         } else if needsReset || docChanged {
             syntaxStore.reset(language: language)
         }
@@ -2798,6 +2917,7 @@ class MainWindowController: NSViewController {
         }
         textStorage.endEditing()
         lastHighlightedRange = target
+        syntaxHighlightCache.setLastHighlightedRange(target, for: doc)
     }
 
     private func pane(for group: TabGroup) -> TabGroupPane? {
@@ -2867,10 +2987,10 @@ class MainWindowController: NSViewController {
 
         let textLength = doc.textStorage.length
         let visible = clipped(editor.visibleCharacterRange(), to: textLength)
-        if highlightedDoc === doc,
-           lastHighlightedRange.length > 0,
-           visible.location >= lastHighlightedRange.location,
-           NSMaxRange(visible) <= NSMaxRange(lastHighlightedRange) {
+        if let cached = syntaxHighlightCache.existingEntry(for: doc),
+           cached.lastHighlightedRange.length > 0,
+           visible.location >= cached.lastHighlightedRange.location,
+           NSMaxRange(visible) <= NSMaxRange(cached.lastHighlightedRange) {
             return
         }
         applySyntaxHighlighting(to: editor, for: doc)
@@ -2901,11 +3021,10 @@ class MainWindowController: NSViewController {
 
     /// Repaints every token in the bound document with the current theme.
     /// Theme is global, not per document, so all cached theme records are
-    /// invalidated and the visible band is re-tokenized once.
+    /// invalidated and the visible band is re-tokenized once. Other documents'
+    /// token caches survive: tokens describe grammar, not colours.
     private func rehighlightAll(in editor: EditorContainer, document: DocumentModel) {
         docThemeNames.removeAll()
-        lastHighlightedRange = NSRange(location: 0, length: 0)
-        syntaxStore.reset()
         applySyntaxHighlighting(to: editor, for: document, forceReset: true)
     }
 
@@ -2919,7 +3038,6 @@ class MainWindowController: NSViewController {
         textStorage.beginEditing()
         textStorage.setAttributes([.font: font, .foregroundColor: theme.foreground], range: safe)
         textStorage.endEditing()
-        lastHighlightedRange = NSRange(location: 0, length: 0)
     }
 
     private func clipped(_ range: NSRange, to length: Int) -> NSRange {
@@ -4958,6 +5076,11 @@ class MainWindowController: NSViewController {
     ///
     /// Serialized here, on the main thread, so `SessionStore`'s write queue only
     /// ever sees finished dictionaries and never reads a live `NSTextStorage`.
+    /// `toSessionData` captures cheaply: a clean tab references its existing
+    /// immutable baseline (no whole-buffer copy), a lazily restored tab reuses
+    /// its pending session text (no materialization), and only a dirty tab pays
+    /// the one String copy that correctness requires. JSON serialization still
+    /// happens on the store's queue.
     ///
     /// TODO: persist the split state itself (whether group 2 is open and which
     /// documents belong to which group). That needs a schema addition in

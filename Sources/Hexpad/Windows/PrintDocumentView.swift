@@ -45,19 +45,29 @@ final class PrintDocumentView: NSView {
 
     // MARK: - Layout
 
-    private let storage: NSTextStorage
-    private let layoutManager: NSLayoutManager
-    private let textContainer: NSTextContainer
-    private var lineStarts: [Int] = []
-    private var pageCount = 1
+    // The text system is built on the first page-range/draw request, not in
+    // `init`. Constructing the view is cheap; pagination (the expensive part)
+    // runs only once the print operation actually asks for the page count.
+    private var storage: NSTextStorage?
+    private var layoutManager: NSLayoutManager?
+    private var textContainer: NSTextContainer?
 
-    private struct PageLine {
+    /// Source line start offsets, built on the first page that prints numbers.
+    /// Deferred because the page index itself does not need them.
+    private var lineStarts: [Int] = []
+    private var hasBuiltLineStarts = false
+
+    /// One printable page: the union of its line-fragment glyph ranges and the
+    /// document-space Y of its first fragment. Per-line bookkeeping (Y offsets,
+    /// numbers) is re-derived from the layout manager when that page draws, so
+    /// the index stays O(pages) instead of O(lines).
+    private struct Page {
         let glyphRange: NSRange
-        let y: CGFloat
-        let page: Int
-        let lineNumber: String?
+        let originY: CGFloat
     }
-    private var pageLines: [PageLine] = []
+    private var pages: [Page] = []
+    private var pageCount = 1
+    private var hasPaginated = false
 
     init(text: String,
          font: NSFont,
@@ -72,24 +82,7 @@ final class PrintDocumentView: NSView {
         self.showsLineNumbers = showsLineNumbers
         self.firstLineNumber = max(1, firstLineNumber)
 
-        storage = NSTextStorage(string: text, attributes: [
-            .font: font,
-            .foregroundColor: NSColor.black
-        ])
-        layoutManager = NSLayoutManager()
-        textContainer = NSTextContainer(size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
-        textContainer.lineFragmentPadding = 0
-        textContainer.widthTracksTextView = false
-        textContainer.heightTracksTextView = false
-
         super.init(frame: NSRect(x: 0, y: 0, width: Self.pageSize.width, height: Self.pageSize.height))
-
-        storage.addLayoutManager(layoutManager)
-        layoutManager.addTextContainer(textContainer)
-        textContainer.containerSize = NSSize(width: contentWidth,
-                                             height: CGFloat.greatestFiniteMagnitude)
-        buildLineStarts()
-        paginate()
     }
 
     required init?(coder: NSCoder) {
@@ -102,7 +95,37 @@ final class PrintDocumentView: NSView {
 
     // MARK: - Measurement
 
-    private func buildLineStarts() {
+    /// Creates the text system once, on first use. Mirrors the old init-time
+    /// setup exactly (unlimited-height container, fixed content width).
+    private func ensureTextSystem() -> NSLayoutManager {
+        if let layoutManager { return layoutManager }
+
+        let storage = NSTextStorage(string: text, attributes: [
+            .font: font,
+            .foregroundColor: NSColor.black
+        ])
+        let layoutManager = NSLayoutManager()
+        let textContainer = NSTextContainer(size: NSSize(width: 0,
+                                                         height: CGFloat.greatestFiniteMagnitude))
+        textContainer.lineFragmentPadding = 0
+        textContainer.widthTracksTextView = false
+        textContainer.heightTracksTextView = false
+
+        storage.addLayoutManager(layoutManager)
+        layoutManager.addTextContainer(textContainer)
+        textContainer.containerSize = NSSize(width: contentWidth,
+                                             height: CGFloat.greatestFiniteMagnitude)
+
+        self.storage = storage
+        self.layoutManager = layoutManager
+        self.textContainer = textContainer
+        return layoutManager
+    }
+
+    /// Builds the source-line table used for printed line numbers.
+    private func ensureLineStarts() {
+        guard !hasBuiltLineStarts else { return }
+        hasBuiltLineStarts = true
         lineStarts = [0]
         let nsText = text as NSString
         guard nsText.length > 0 else { return }
@@ -144,17 +167,28 @@ final class PrintDocumentView: NSView {
         return false
     }
 
-    private func paginate() {
-        layoutManager.ensureLayout(for: textContainer)
+    /// Builds the page index on first demand (page range or drawing).
+    ///
+    /// The exact page count requires measuring every line fragment, so this
+    /// runs once, lazily, rather than in `init` before the print panel opens.
+    /// Only page boundaries are retained; each page's lines are laid out and
+    /// numbered when `NSPrintOperation` draws that page.
+    private func ensurePaginated() {
+        guard !hasPaginated else { return }
+        hasPaginated = true
+
+        let layoutManager = ensureTextSystem()
+        layoutManager.ensureLayout(for: textContainer!)
         let glyphCount = layoutManager.numberOfGlyphs
         guard glyphCount > 0 else {
             pageCount = 1
-            pageLines = []
+            pages = []
             return
         }
 
-        var lines: [PageLine] = []
-        var page = 0
+        var builtPages: [Page] = []
+        var pageStartGlyph = 0
+        var pageEndGlyph = 0
         var pageStartY: CGFloat = 0
 
         layoutManager.enumerateLineFragments(
@@ -168,28 +202,28 @@ final class PrintDocumentView: NSView {
             // itself taller than the body (pathological huge font).
             if rect.minY > pageStartY,
                rect.minY - pageStartY + fragmentHeight > self.contentHeight {
-                page += 1
+                builtPages.append(Page(
+                    glyphRange: NSRange(location: pageStartGlyph,
+                                        length: pageEndGlyph - pageStartGlyph),
+                    originY: pageStartY
+                ))
                 pageStartY = rect.minY
+                pageStartGlyph = glyphRange.location
             }
 
-            let charRange = self.layoutManager.characterRange(forGlyphRange: glyphRange,
-                                                              actualGlyphRange: nil)
-            let number: String?
-            if self.showsLineNumbers, self.isLineStart(charRange.location),
-               let logical = self.documentLineNumber(at: charRange.location) {
-                number = "\(logical)"
-            } else {
-                number = nil
-            }
-
-            lines.append(PageLine(glyphRange: glyphRange,
-                                  y: rect.minY - pageStartY,
-                                  page: page,
-                                  lineNumber: number))
+            pageEndGlyph = NSMaxRange(glyphRange)
         }
 
-        pageLines = lines
-        pageCount = max(1, page + 1)
+        if pageEndGlyph > pageStartGlyph {
+            builtPages.append(Page(
+                glyphRange: NSRange(location: pageStartGlyph,
+                                    length: pageEndGlyph - pageStartGlyph),
+                originY: pageStartY
+            ))
+        }
+
+        pages = builtPages
+        pageCount = max(1, builtPages.count)
         frame = NSRect(x: 0,
                        y: 0,
                        width: Self.pageSize.width,
@@ -199,6 +233,7 @@ final class PrintDocumentView: NSView {
     // MARK: - Pagination hooks
 
     override func knowsPageRange(_ range: NSRangePointer) -> Bool {
+        ensurePaginated()
         range.pointee = NSRange(location: 1, length: pageCount)
         return true
     }
@@ -213,6 +248,7 @@ final class PrintDocumentView: NSView {
     // MARK: - Drawing
 
     override func draw(_ dirtyRect: NSRect) {
+        ensurePaginated()
         // The page rect NSPrintOperation hands us starts at a multiple of the
         // page height (the view is flipped).
         let pageIndex = max(0, Int(floor(dirtyRect.minY / Self.pageSize.height)))
@@ -255,6 +291,10 @@ final class PrintDocumentView: NSView {
     }
 
     private func drawPageLines(pageIndex: Int, pageOriginY: CGFloat) {
+        guard let layoutManager, pageIndex < pages.count else { return }
+        let page = pages[pageIndex]
+        ensureLineStarts()
+
         let contentRect = NSRect(x: Self.margin,
                                  y: pageOriginY + Self.contentTop,
                                  width: Self.pageSize.width - Self.margin * 2,
@@ -265,20 +305,36 @@ final class PrintDocumentView: NSView {
         let textX = Self.margin + (showsLineNumbers ? Self.lineNumberGutter : 0)
         let baseY = pageOriginY + Self.contentTop
 
-        for line in pageLines where line.page == pageIndex {
-            let lineY = baseY + line.y
-            if let number = line.lineNumber {
-                let numberAttributes: [NSAttributedString.Key: Any] = [
-                    .font: NSFont.monospacedDigitSystemFont(ofSize: max(7, font.pointSize - 2),
-                                                            weight: .regular),
-                    .foregroundColor: NSColor.gray
-                ]
-                let numberText = NSAttributedString(string: number, attributes: numberAttributes)
-                let numberWidth = numberText.size().width
-                numberText.draw(at: NSPoint(x: Self.margin + Self.lineNumberGutter - 4 - numberWidth,
-                                            y: lineY))
+        // Only this page's fragments are visited. The numbers and Y offsets are
+        // the same ones the old whole-document pass recorded up front.
+        layoutManager.enumerateLineFragments(forGlyphRange: page.glyphRange) {
+            rect, _, _, glyphRange, _ in
+            guard glyphRange.length > 0 else { return }
+            let lineY = baseY + (rect.minY - page.originY)
+
+            if self.showsLineNumbers {
+                let charRange = layoutManager.characterRange(forGlyphRange: glyphRange,
+                                                             actualGlyphRange: nil)
+                if self.isLineStart(charRange.location),
+                   let logical = self.documentLineNumber(at: charRange.location) {
+                    let numberAttributes: [NSAttributedString.Key: Any] = [
+                        .font: NSFont.monospacedDigitSystemFont(
+                            ofSize: max(7, self.font.pointSize - 2),
+                            weight: .regular
+                        ),
+                        .foregroundColor: NSColor.gray
+                    ]
+                    let numberText = NSAttributedString(string: "\(logical)",
+                                                        attributes: numberAttributes)
+                    let numberWidth = numberText.size().width
+                    numberText.draw(at: NSPoint(
+                        x: Self.margin + Self.lineNumberGutter - 4 - numberWidth,
+                        y: lineY
+                    ))
+                }
             }
-            layoutManager.drawGlyphs(forGlyphRange: line.glyphRange,
+
+            layoutManager.drawGlyphs(forGlyphRange: glyphRange,
                                      at: NSPoint(x: textX, y: lineY))
         }
 
@@ -291,7 +347,13 @@ final class PrintDocumentView: NSView {
     }
 
     /// Test seam: the paginated page count (valid after knowsPageRange).
-    var pageCountForTest: Int { pageCount }
+    var pageCountForTest: Int {
+        ensurePaginated()
+        return pageCount
+    }
+
+    /// Test seam: whether the lazy page index has been built yet.
+    var hasPaginatedForTest: Bool { hasPaginated }
 
     private func drawFooter(pageIndex: Int, pageOriginY: CGFloat) {
         let attributes: [NSAttributedString.Key: Any] = [

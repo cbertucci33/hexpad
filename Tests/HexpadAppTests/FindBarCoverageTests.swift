@@ -503,4 +503,21 @@ final class FindBarCoverageTests: XCTestCase {
                        "only the two named notifications may re-run find")
         XCTAssertEqual(bar.matchCountLabel.stringValue, "1 of 2")
     }
+
+    /// Find and Incremental Search must share one live-search threshold, and it
+    /// must be 256 KB rather than the old 1 MB (a 300–900 KB buffer still spent
+    /// ~10–50 ms scanning per typed character).
+    func testLiveSearchDebounceThresholdIsSharedAndLowered() {
+        XCTAssertEqual(SearchBarTiming.debounceThreshold, 256 * 1024)
+        XCTAssertEqual(FindBar.debounceSearchLength, SearchBarTiming.debounceThreshold,
+                       "FindBar uses the shared threshold")
+        XCTAssertEqual(IncrementalSearchBar.debounceSearchLength,
+                       SearchBarTiming.debounceThreshold,
+                       "IncrementalSearchBar uses the shared threshold")
+
+        XCTAssertFalse(SearchBarTiming.shouldDebounce(length: 256 * 1024),
+                       "at the threshold still searches immediately")
+        XCTAssertTrue(SearchBarTiming.shouldDebounce(length: 256 * 1024 + 1),
+                      "above the threshold debounces")
+    }
 }

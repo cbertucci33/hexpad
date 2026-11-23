@@ -266,7 +266,9 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         
         // Keep untitled buffers and file-backed tabs whose file still exists.
         // A missing file is only dropped when there is nothing to lose; see
-        // `restorableDocuments(from:)`.
+        // `restorableDocuments(from:)`. This filter reads metadata only: the
+        // restored DocumentModels hold their text lazily, so no tab's storage
+        // is built here.
         let validDocs = Self.restorableDocuments(from: tabs.documents)
         
         // Restore tab store with filtered documents
@@ -282,7 +284,18 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         windowController?.tabStore.documents = restoredTabs.documents
         windowController?.tabStore.selectedIndex = restoredIndex
         windowController?.refreshTabBar()
+        // Binding the selected tab is what materializes its buffer; the other
+        // restored tabs stay as metadata until the user first displays them.
         windowController?.updateEditor()
+    }
+
+    /// Test seam: runs the same launch restore path against an already-built
+    /// controller so a headless test can observe which restored tabs were
+    /// materialized eagerly. Production calls `restoreSession()` from
+    /// `applicationDidFinishLaunching`.
+    func restoreSessionForTest(into controller: MainWindowController) {
+        windowController = controller
+        restoreSession()
     }
 
     /// Chooses which documents from a saved session are worth restoring.

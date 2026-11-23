@@ -304,4 +304,58 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertEqual(restored.tabs.documents.first?.text, "snapshot text")
         XCTAssertEqual(restored.selectedIndex, 0)
     }
+
+    // MARK: - D2: lazy restore
+
+    /// PERF D2: restore hands back metadata immediately and defers every
+    /// NSTextStorage. Persisting the restored workspace must not force that
+    /// deferred work either.
+    func testRestoreDefersStorageAndSessionSaveDoesNotMaterialize() throws {
+        let store = TabStore()
+        store.addDocument(DocumentModel(text: "first"))
+        store.addDocument(DocumentModel(text: "second"))
+        try SessionStore.save(store)
+
+        let restored = try XCTUnwrap(SessionStore.restore())
+        let first = restored.tabs.documents[0]
+        let second = restored.tabs.documents[1]
+        XCTAssertFalse(first.isContentLoaded)
+        XCTAssertFalse(second.isContentLoaded)
+
+        // A session save after restore must reuse the pending text instead of
+        // building the storage it was deliberately deferring.
+        XCTAssertEqual(first.toSessionData()["text"] as? String, "first")
+        XCTAssertFalse(first.isContentLoaded, "snapshotting materialized the buffer")
+        XCTAssertFalse(second.isContentLoaded)
+
+        XCTAssertEqual(first.text, "first")
+        XCTAssertTrue(first.isContentLoaded, "reading text is the materialization point")
+        XCTAssertFalse(second.isContentLoaded,
+                       "one tab must not drag the rest of the session in with it")
+    }
+
+    /// A lazy restored dirty tab reports and preserves its dirty state without
+    /// touching the file or building storage; the saved baseline is resolved on
+    /// first use, exactly as the eager path did.
+    func testRestoredDirtyBufferStaysDirtyBeforeMaterialization() throws {
+        let file = testDir.appendingPathComponent("lazy-dirty-\(UUID().uuidString).txt")
+        try "on disk\n".write(to: file, atomically: true, encoding: .utf8)
+
+        let doc = DocumentModel(text: "on disk\n", filePath: file)
+        doc.text = "unsaved edit\n"
+        XCTAssertTrue(doc.unsavedChanges)
+        let store = TabStore()
+        store.addDocument(doc)
+        try SessionStore.save(store)
+
+        let restored = try XCTUnwrap(SessionStore.restore()?.tabs.documents.first)
+        XCTAssertFalse(restored.isContentLoaded)
+        XCTAssertTrue(restored.unsavedChanges,
+                      "the persisted dirty flag is authoritative before hydration")
+
+        XCTAssertEqual(restored.text, "unsaved edit\n")
+        XCTAssertTrue(restored.isContentLoaded)
+        XCTAssertTrue(restored.unsavedChanges,
+                      "hydration must establish the disk baseline without clearing dirty")
+    }
 }

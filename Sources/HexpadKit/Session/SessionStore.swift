@@ -59,8 +59,11 @@ public final class SessionStore {
 
         /// Serializes `tabs` immediately, on the calling thread.
         ///
-        /// Must be called on the main thread: it reads every document's shared
-        /// text storage.
+        /// Must be called on the main thread: it captures each document's
+        /// session text. Clean tabs and not-yet-materialized restored tabs are
+        /// referenced without a whole-buffer copy; only a dirty buffer is
+        /// copied, because reading its `NSTextStorage` from the write queue
+        /// would race the editor.
         public static func make(from tabs: TabStore) -> Snapshot {
             Snapshot(tabs: tabs.toSessionData(), selectedIndex: tabs.selectedIndex)
         }
@@ -205,9 +208,11 @@ public final class SessionStore {
         try save(Snapshot.make(from: tabs))
     }
 
-    /// Restore session state. Parsing happens on the write queue (plain JSON),
-    /// but the `DocumentModel`s — and their `NSTextStorage`s — are built on the
-    /// calling (main) thread.
+    /// Restore session state. Parsing happens on the write queue (plain JSON);
+    /// tab metadata is restored on the calling (main) thread. Each restored
+    /// document materializes its `NSTextStorage` (and, for a dirty file-backed
+    /// tab, reads its saved baseline) on first display, so startup pays for the
+    /// selected tab rather than for every tab.
     public static func restore() -> (tabs: TabStore, selectedIndex: Int)? {
         // Parsing uses loadSnapshot(from:) so startup restore and explicit
         // session loading can never disagree about the file format.

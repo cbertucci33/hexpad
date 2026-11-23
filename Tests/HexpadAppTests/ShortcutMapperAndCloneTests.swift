@@ -343,4 +343,26 @@ final class PrintHeaderFooterTests: XCTestCase {
         XCTAssertEqual(view.footerText(pageIndex: 0), "Page 1 of \(pages)")
         XCTAssertEqual(view.footerText(pageIndex: pages - 1), "Page \(pages) of \(pages)")
     }
+
+    /// O6: constructing the view must not lay out the document. Pagination is
+    /// deferred until the print operation asks for the page range, and the
+    /// returned range must agree with the footer's page count.
+    func testPaginationIsDeferredUntilPageRangeRequest() {
+        let view = PrintDocumentView(text: String(repeating: "line\n", count: 2_000),
+                                     font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+                                     fileName: "large.txt",
+                                     filePath: nil)
+        XCTAssertFalse(view.hasPaginatedForTest,
+                       "init only stores input; it must not measure the document")
+
+        var range = NSRange(location: 0, length: 0)
+        XCTAssertTrue(view.knowsPageRange(&range))
+        XCTAssertTrue(view.hasPaginatedForTest)
+        XCTAssertEqual(range.location, 1)
+        XCTAssertEqual(range.length, view.pageCountForTest)
+        XCTAssertGreaterThanOrEqual(range.length, 2)
+        XCTAssertEqual(view.footerText(pageIndex: 0), "Page 1 of \(range.length)")
+        XCTAssertEqual(view.footerText(pageIndex: range.length - 1),
+                       "Page \(range.length) of \(range.length)")
+    }
 }

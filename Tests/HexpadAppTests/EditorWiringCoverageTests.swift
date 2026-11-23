@@ -445,3 +445,71 @@ final class EditorWiringCoverageTests: XCTestCase {
         XCTAssertGreaterThan(updated?.lastUpdateScannedLineCount ?? 0, 0)
     }
 }
+
+// MARK: - Per-document syntax-highlight cache (Lane B D3)
+
+/// The split-view scroll-sync regression: alternating between two panes must
+/// keep each document's token store and painted band, not reset the shared one.
+final class SyntaxHighlightCacheTests: XCTestCase {
+
+    func testAlternatingDocumentsKeepIndependentEntries() {
+        let first = DocumentModel(text: "let a = 1\n")
+        let second = DocumentModel(text: "SELECT 1;\n")
+        let cache = SyntaxHighlightCache(capacity: 4)
+
+        let firstEntry = cache.entry(for: first)
+        XCTAssertTrue(firstEntry.isNew)
+        let firstStore = firstEntry.entry.store
+        cache.setLastHighlightedRange(NSRange(location: 0, length: 10), for: first)
+
+        let secondEntry = cache.entry(for: second)
+        XCTAssertTrue(secondEntry.isNew)
+        XCTAssertFalse(secondEntry.entry.store === firstStore,
+                       "each document owns its token cache")
+        cache.setLastHighlightedRange(NSRange(location: 0, length: 9), for: second)
+
+        // What a wheel event in the other pane does: touch both, recreate none.
+        for _ in 0..<10 {
+            let againFirst = cache.entry(for: first)
+            XCTAssertFalse(againFirst.isNew)
+            XCTAssertTrue(againFirst.entry.store === firstStore)
+            XCTAssertEqual(againFirst.entry.lastHighlightedRange,
+                           NSRange(location: 0, length: 10))
+
+            let againSecond = cache.entry(for: second)
+            XCTAssertFalse(againSecond.isNew)
+            XCTAssertEqual(againSecond.entry.lastHighlightedRange,
+                           NSRange(location: 0, length: 9))
+        }
+
+        XCTAssertEqual(cache.count, 2)
+        XCTAssertTrue(cache.contains(first))
+        XCTAssertTrue(cache.contains(second))
+    }
+
+    func testCapacityEvictsLeastRecentlyUsedDocument() {
+        let documents = (0..<5).map { DocumentModel(text: "doc \($0)") }
+        let cache = SyntaxHighlightCache(capacity: 2)
+
+        _ = cache.entry(for: documents[0])
+        _ = cache.entry(for: documents[1])
+        _ = cache.entry(for: documents[2])
+
+        XCTAssertEqual(cache.count, 2, "memory stays bounded")
+        XCTAssertFalse(cache.contains(documents[0]), "oldest entry evicted")
+        XCTAssertTrue(cache.contains(documents[1]))
+        XCTAssertTrue(cache.contains(documents[2]))
+    }
+
+    func testRemoveAllDropsEveryDocument() {
+        let cache = SyntaxHighlightCache(capacity: 4)
+        let first = DocumentModel(text: "one")
+        let second = DocumentModel(text: "two")
+        _ = cache.entry(for: first)
+        _ = cache.entry(for: second)
+        XCTAssertEqual(cache.count, 2)
+
+        cache.removeAll()
+        XCTAssertEqual(cache.count, 0)
+    }
+}

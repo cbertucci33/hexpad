@@ -6,12 +6,94 @@ import AppKit
 /// NSTextView is attached to this storage through its layout manager, so there
 /// is no second copy to keep in sync: typing and programmatic edits (find,
 /// replace, line ops, reloads) all mutate the same characters.
+///
+/// A document restored from a session starts with metadata only; its storage is
+/// built on first access to `textStorage`/`text` (see `hydrateIfNeeded()`), so
+/// restoring a large session does not block startup on every tab.
 public final class DocumentModel: Identifiable, ObservableObject {
     public let id: UUID
     public private(set) var filePath: URL?
 
+    /// Backing storage for the buffer. `nil` only for a document restored from
+    /// a session that has not been displayed yet: the session text is held as a
+    /// plain `String` until the tab first needs a buffer (see
+    /// ``hydrateIfNeeded()``). Everything outside this class goes through the
+    /// computed ``textStorage`` below, which materializes on first access.
+    private var backingTextStorage: NSTextStorage?
+
+    /// Session text and the baseline work it still owes, for a document that
+    /// was restored lazily. Cleared by ``hydrateIfNeeded()``.
+    private var pendingContent: PendingSessionContent?
+
+    private struct PendingSessionContent {
+        let text: String
+        /// A restored dirty buffer must re-read its saved baseline from disk
+        /// when it materializes, exactly as `fromSessionData` used to do
+        /// eagerly. A clean buffer's baseline is simply its own text.
+        let restoresDiskBaseline: Bool
+    }
+
     /// The single source of truth for this document's text.
-    public let textStorage: NSTextStorage
+    ///
+    /// For a restored tab this constructs the `NSTextStorage` on first access,
+    /// so a large session does not pay for every tab up front. Main thread only,
+    /// like the rest of the model.
+    public var textStorage: NSTextStorage {
+        if let backingTextStorage { return backingTextStorage }
+        hydrateIfNeeded()
+        guard let storage = backingTextStorage else {
+            preconditionFailure("DocumentModel has no backing storage")
+        }
+        return storage
+    }
+
+    /// The buffer if it has already been materialized, without triggering lazy
+    /// restore construction. Used by identity lookups that scan every open tab:
+    /// comparing a storage notification must not materialize the whole session.
+    public var textStorageIfLoaded: NSTextStorage? { backingTextStorage }
+
+    /// False for a session-restored tab whose buffer has not been built yet.
+    /// The tab's metadata (name, path, dirty flag, states, order) is always
+    /// available immediately; only the characters wait for first display.
+    public var isContentLoaded: Bool { pendingContent == nil }
+
+    /// Length the buffer will have once materialized. Equal to
+    /// `textStorage.length` for a loaded document, and stays O(1) for a lazy
+    /// one so tab sorting by length need not materialize every tab.
+    var contentLength: Int {
+        if let pendingContent { return (pendingContent.text as NSString).length }
+        return textStorage.length
+    }
+
+    /// Builds the `NSTextStorage` for a lazily restored document. Returns false
+    /// when the content was already loaded, so callers can use it as a cheap
+    /// idempotent "make sure this tab is ready" step.
+    @discardableResult
+    public func hydrateIfNeeded() -> Bool {
+        guard let pending = pendingContent else { return false }
+        pendingContent = nil
+        backingTextStorage = NSTextStorage(string: pending.text)
+        // Register the dirty/undo observers on the real storage, after its
+        // initial fill: the fill is restoration, not a user edit.
+        startDirtyObservation()
+        if pending.restoresDiskBaseline {
+            if let filePath, FileManager.default.fileExists(atPath: filePath.path),
+               let onDisk = try? Data(contentsOf: filePath),
+               // Decode with the document's own encoding (and strip its BOM):
+               // reading UTF-16/CP1252 as UTF-8 used to fail, silently making
+               // a restored dirty buffer look clean.
+               let savedText = EncodingDetective.decodeForEditing(onDisk, as: encoding) {
+                _originalText = savedText
+            } else {
+                // Untitled restored buffer (or a file that vanished): there is
+                // no readable baseline, so treat the whole buffer as unsaved.
+                _originalText = ""
+            }
+        } else {
+            _originalText = pending.text
+        }
+        return true
+    }
 
     /// Convenience view of the shared buffer. Assigning routes through
     /// `textStorage` and registers undo like any other edit.
@@ -194,7 +276,7 @@ public final class DocumentModel: Identifiable, ObservableObject {
     public init(text: String = "", filePath: URL? = nil, encoding: String = "UTF-8", eolType: String? = nil) {
         self.id = UUID()
         self.filePath = filePath
-        self.textStorage = NSTextStorage(string: text)
+        self.backingTextStorage = NSTextStorage(string: text)
         self.name = filePath?.lastPathComponent ?? "Untitled"
         self._encoding = encoding
         self._saveEncoding = encoding
@@ -211,6 +293,35 @@ public final class DocumentModel: Identifiable, ObservableObject {
             } catch {}
         }
         startDirtyObservation()
+    }
+
+    /// Builds a restored document without its `NSTextStorage`. The session's
+    /// text is held until the tab is first displayed (or its text/history is
+    /// read), which is what keeps startup restore proportional to the selected
+    /// tab rather than to every open tab. `fromSessionData` fills in the
+    /// remaining metadata; the dirty/baseline flags it assigns are preserved
+    /// until hydration.
+    private init(lazySessionText text: String,
+                 restoringDiskBaseline: Bool,
+                 filePath: URL?,
+                 name: String,
+                 encoding: String,
+                 eolType: String) {
+        self.id = UUID()
+        self.filePath = filePath
+        self.name = name
+        self._encoding = encoding
+        self._saveEncoding = encoding
+        self._eolType = eolType
+        self.editorState = DocumentEditorState()
+        self.foldState = FoldState()
+        self.bookmarkState = BookmarkState()
+        self.pendingContent = PendingSessionContent(text: text,
+                                                    restoresDiskBaseline: restoringDiskBaseline)
+        if let filePath {
+            self.savedModificationDate = try? FileManager.default
+                .attributesOfItem(atPath: filePath.path)[.modificationDate] as? Date
+        }
     }
 
     /// Independent copy for View > Clone to Other View. Shares the file path and
@@ -248,15 +359,16 @@ public final class DocumentModel: Identifiable, ObservableObject {
     /// Undo/redo are the one case where the flag can become stale in the clean
     /// direction, so they reconcile against the baseline (user-paced, rare).
     private func startDirtyObservation() {
+        guard let storage = backingTextStorage else { return }
         let center = NotificationCenter.default
         dirtyObservers.append(center.addObserver(
             forName: NSTextStorage.didProcessEditingNotification,
-            object: textStorage,
+            object: storage,
             queue: nil
         ) { [weak self] notification in
             guard let self,
                   let storage = notification.object as? NSTextStorage,
-                  storage === self.textStorage,
+                  storage === self.backingTextStorage,
                   storage.editedMask.contains(.editedCharacters) else { return }
             self._isDirty = true
             self.textRevision &+= 1
@@ -507,13 +619,38 @@ public final class DocumentModel: Identifiable, ObservableObject {
         _saveConversionPending = true
     }
     
+    /// The text a session snapshot should persist, captured without paying the
+    /// whole-buffer copy when that copy is avoidable.
+    ///
+    /// - A lazily restored tab still holds its session text as a plain String;
+    ///   reuse it, so saving a workspace never forces the whole session to
+    ///   materialize.
+    /// - A clean buffer's `_originalText` *is* the buffer, and it is already an
+    ///   immutable String. Referencing it here is O(1); the main thread never
+    ///   copies a clean tab's characters again. `JSONSerialization` still walks
+    ///   the text later, off-main, where a snapshot is allowed to be.
+    /// - A dirty buffer has no such baseline, so its characters are copied once,
+    ///   on main, into an immutable String. Reading `NSTextStorage` from the
+    ///   session queue would race the user's typing; this copy is the price of
+    ///   a consistent snapshot. It is still only a String copy — no dictionary
+    ///   or JSON work rides along on main.
+    private var sessionText: String {
+        if let pendingContent { return pendingContent.text }
+        if !_isDirty { return _originalText }
+        return textStorage.string
+    }
+
     public func toSessionData() -> [String: Any] {
         // Cheap repair before persisting: length-vs-baseline catches a missed
         // dirty transition without the old full-text comparison on every key.
-        reconcileDirtyState()
+        // A lazily restored buffer has not been editable yet, so its persisted
+        // dirty flag is already authoritative and there is nothing to repair.
+        if isContentLoaded {
+            reconcileDirtyState()
+        }
         var data: [String: Any] = [
             "id": self.id.uuidString,
-            "text": self.text,
+            "text": sessionText,
             "name": self.name,
             "encoding": self.encoding,
             // The decode encoding and the next save's encoding can differ
@@ -566,8 +703,16 @@ public final class DocumentModel: Identifiable, ObservableObject {
         let saveEncoding = data["saveEncoding"] as? String ?? encoding
         let pendingConversion = data["saveConversionPending"] as? Bool ?? false
         let keepsBOM = data["keepsBOM"] as? Bool ?? false
-        let doc = DocumentModel(text: text, filePath: filePath, encoding: encoding, eolType: eolType)
-        doc.name = name
+        // Restored tabs start without an NSTextStorage: the window becomes
+        // interactive after materializing only the selected tab. The dirty
+        // baseline work (a disk read for a dirty file-backed buffer) is owed
+        // until hydration too; see `hydrateIfNeeded()`.
+        let doc = DocumentModel(lazySessionText: text,
+                                restoringDiskBaseline: isModified,
+                                filePath: filePath,
+                                name: name,
+                                encoding: encoding,
+                                eolType: eolType)
         doc._language = language
         doc.keepsBOM = keepsBOM
         // Sessions written before Edit > Read-Only existed have no key; a
@@ -591,27 +736,13 @@ public final class DocumentModel: Identifiable, ObservableObject {
            tabColor >= 1, tabColor <= TabColorPalette.colorCount {
             doc.tabColorIndex = tabColor
         }
-        // Restore dirty state: if marked modified, diff against the real saved baseline.
-        // File-backed docs diff against their on-disk content; untitled buffers have no
-        // file, so their baseline is the empty (never-saved) buffer.
-        if isModified {
-            if let filePath, FileManager.default.fileExists(atPath: filePath.path),
-               let onDisk = try? Data(contentsOf: filePath),
-               // Decode with the document's own encoding (and strip its BOM):
-               // reading UTF-16/CP1252 as UTF-8 used to fail, silently making
-               // a restored dirty buffer look clean.
-               let savedText = EncodingDetective.decodeForEditing(onDisk, as: encoding) {
-                // Document was modified and file exists — read the on-disk content as
-                // the saved original so the in-memory diff reflects unsaved changes.
-                doc._originalText = savedText
-            } else {
-                // Untitled restored buffer (or a file that vanished): there is
-                // no readable baseline, so treat the whole buffer as unsaved.
-                doc._originalText = ""
-            }
-        } else {
-            doc.setModified(false)
-        }
+        // Restore dirty state: a dirty restored buffer keeps its saved baseline
+        // in mind, but the disk read that establishes it is deferred to
+        // `hydrateIfNeeded()`. The flag below is authoritative until then, so
+        // startup can filter/keep dirty tabs without opening a single file.
+        // File-backed docs diff against their on-disk content; untitled buffers
+        // have no file, so their baseline is the empty (never-saved) buffer.
+        //
         // Restore the date of the version this buffer was saved at. The
         // initializer above captured the CURRENT on-disk date; replacing it
         // here is what lets the watcher's first sighting notice a file edited
@@ -628,7 +759,8 @@ public final class DocumentModel: Identifiable, ObservableObject {
         }
         // Apply "Convert to" state after the baseline: setModified(false)
         // clears the pending flag, but an explicitly persisted conversion has
-        // to survive the restore.
+        // to survive the restore. Hydration preserves these values (it only
+        // establishes `_originalText`).
         doc._saveEncoding = saveEncoding
         doc._saveConversionPending = pendingConversion
         doc._isDirty = isModified

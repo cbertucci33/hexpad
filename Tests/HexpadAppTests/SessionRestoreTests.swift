@@ -604,4 +604,40 @@ final class SessionRestoreTests: XCTestCase {
         XCTAssertFalse(primaryDoc.unsavedChanges)
         XCTAssertFalse(secondaryDoc.unsavedChanges)
     }
+
+    // MARK: - D2: lazy session restore
+
+    /// PERF D2: startup restore must materialize the selected tab and nothing
+    /// else. Every restored tab already has its metadata (name, path, dirty
+    /// flag, order), which is all the tab bar and `restorableDocuments` read.
+    func testStartupRestoreMaterializesOnlyTheSelectedTab() throws {
+        let store = TabStore()
+        for index in 0..<5 {
+            store.addDocument(DocumentModel(text: "tab \(index)\n"))
+        }
+        store.selectDocument(at: 3)
+        try SessionStore.save(store)
+
+        let (controller, _) = makeController()
+        let delegate = HexpadAppDelegate()
+        delegate.restoreSessionForTest(into: controller)
+
+        XCTAssertEqual(controller.tabStore.count, 5, "order and count survive the restore")
+        XCTAssertEqual(controller.tabStore.selectedIndex, 3)
+        let documents = controller.tabStore.documents
+        XCTAssertTrue(documents[3].isContentLoaded,
+                      "the selected tab must be ready for the first frame")
+        for index in [0, 1, 2, 4] {
+            XCTAssertFalse(documents[index].isContentLoaded,
+                           "tab \(index) must wait until it is first displayed")
+        }
+
+        // Displaying another tab materializes exactly that tab.
+        controller.selectTab(at: 1)
+        XCTAssertTrue(documents[1].isContentLoaded)
+        XCTAssertFalse(documents[0].isContentLoaded,
+                       "a tab switch must not materialize unrelated tabs")
+        XCTAssertEqual(documents[1].text, "tab 1\n")
+        XCTAssertEqual(controller.editorTextView?.string, "tab 1\n")
+    }
 }

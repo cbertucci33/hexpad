@@ -1,6 +1,24 @@
 import AppKit
 import HexpadKit
 
+/// Shared live-search pacing for Find and Incremental Search.
+///
+/// Both bars run a full-buffer scan on each keystroke. Above
+/// `debounceThreshold` that scan is deferred to a trailing edge so typing stays
+/// responsive; below it the immediate result is cheap enough to keep counts
+/// feeling instant.
+enum SearchBarTiming {
+    /// 256 KB. Lowered from the old per-bar 1 MB value: a 300–900 KB buffer
+    /// still costs roughly 10–50 ms per typed character, which is visible.
+    static let debounceThreshold = 256 * 1024
+
+    static let debounceInterval: TimeInterval = 0.15
+
+    static func shouldDebounce(length: Int) -> Bool {
+        length > debounceThreshold
+    }
+}
+
 class FindBar: NSView, NSSearchFieldDelegate {
     
     var isVisible = false
@@ -83,10 +101,11 @@ class FindBar: NSView, NSSearchFieldDelegate {
     private var tabSelectionObserver: NSObjectProtocol?
 
     /// Debounce for live full-buffer searches in large documents. Small docs
-    /// stay immediate so counts remain instant.
+    /// stay immediate so counts remain instant. Shared with Incremental Search
+    /// through ``SearchBarTiming``.
     private var pendingFindWorkItem: DispatchWorkItem?
-    private static let debounceSearchLength = 1_000_000
-    private static let debounceInterval: TimeInterval = 0.15
+    static let debounceSearchLength = SearchBarTiming.debounceThreshold
+    private static let debounceInterval = SearchBarTiming.debounceInterval
     
     override init(frame frameRect: NSRect) {
         searchField = NSSearchField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
@@ -623,7 +642,7 @@ class FindBar: NSView, NSSearchFieldDelegate {
         pendingFindWorkItem = nil
 
         let length = tabStore?.selectedDocument?.textStorage.length ?? 0
-        if debounce, length > Self.debounceSearchLength {
+        if debounce, SearchBarTiming.shouldDebounce(length: length) {
             let work = DispatchWorkItem { [weak self] in
                 guard let self else { return }
                 self.pendingFindWorkItem = nil
