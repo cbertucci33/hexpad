@@ -400,4 +400,48 @@ final class EditorWiringCoverageTests: XCTestCase {
         XCTAssertTrue(doc.editorState.tokenStyleState.isEmpty)
         XCTAssertTrue(textView.tokenStyleState.isEmpty)
     }
+
+    // MARK: - Incremental line index
+
+    /// The container's cached line index is spliced from the storage edit
+    /// notification, not rebuilt with a full-buffer scan. `LineIndex.updating`
+    /// reports how many line starts it rescanned, so a positive, small count is
+    /// the seam proving the fast path ran (a full `LineIndex(_:)` leaves it 0).
+    func testLineIndexSplicesEditsInsteadOfRescanningTheDocument() {
+        let text = (1...2_000).map { "line \($0)" }.joined(separator: "\n")
+        let document = DocumentModel(text: text)
+        let editor = EditorContainer()
+        editor.bind(to: document)
+
+        let initial = editor.lineIndex
+        XCTAssertEqual(initial?.lastUpdateScannedLineCount, 0,
+                       "the first request builds the index with a full scan")
+
+        // Insert a line ahead of everything; the cached offsets and line starts
+        // both move, so a stale index would report the wrong line.
+        document.replaceCharacters(in: NSRange(location: 0, length: 0), with: "zero\n")
+
+        let updated = editor.lineIndex
+        XCTAssertEqual(updated?.lineStarts, LineIndex(document.text).lineStarts,
+                       "the spliced index must agree with a fresh scan")
+        XCTAssertGreaterThan(updated?.lastUpdateScannedLineCount ?? 0, 0,
+                            "the edit was spliced, not rescanned")
+        XCTAssertLessThan(updated?.lastUpdateScannedLineCount ?? Int.max, 10,
+                          "only the edited line band should be rescanned")
+    }
+
+    func testLineIndexSplicesSameLengthEditThatMovesALineBoundary() {
+        let document = DocumentModel(text: "abcd")
+        let editor = EditorContainer()
+        editor.bind(to: document)
+        _ = editor.lineIndex
+
+        // Same UTF-16 length, but the LF moves the line boundary one slot left.
+        // A length-only cache guard could not catch this; the recorded edit does.
+        document.replaceCharacters(in: NSRange(location: 2, length: 1), with: "\n")
+
+        let updated = editor.lineIndex
+        XCTAssertEqual(updated?.lineStarts, LineIndex("ab\nd").lineStarts)
+        XCTAssertGreaterThan(updated?.lastUpdateScannedLineCount ?? 0, 0)
+    }
 }

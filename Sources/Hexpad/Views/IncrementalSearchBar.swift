@@ -260,7 +260,7 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
         // a pending debounce must not resurrect results after the field empties.
         var length = 0
         if let textView = editorRef?.textView {
-            length = (textView.string as NSString).length
+            length = textView.textStorage?.length ?? 0
         }
         if debounce, !query.isEmpty, length > Self.debounceSearchLength {
             let work = DispatchWorkItem { [weak self] in
@@ -359,7 +359,7 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
 
     private func revealCurrentMatch(in textView: NSTextView) {
         guard matches.indices.contains(currentMatchIndex) else { return }
-        let length = (textView.string as NSString).length
+        let length = textView.textStorage?.length ?? 0
         let match = matches[currentMatchIndex].range
         let location = min(max(0, match.location == NSNotFound ? 0 : match.location), length)
         let range = NSRange(location: location, length: min(match.length, length - location))
@@ -374,7 +374,7 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
     private func applyHighlights(in textView: NSTextView) {
         guard let layoutManager = textView.layoutManager,
               let container = textView.textContainer else { return }
-        let length = (textView.string as NSString).length
+        let length = textView.textStorage?.length ?? 0
         guard length > 0 else {
             highlightedRange = nil
             return
@@ -461,7 +461,7 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
               let textView = editorRef?.textView,
               let layoutManager = textView.layoutManager,
               let container = textView.textContainer else { return }
-        let length = (textView.string as NSString).length
+        let length = textView.textStorage?.length ?? 0
         guard length > 0 else {
             clearHighlights()
             return

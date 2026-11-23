@@ -224,6 +224,21 @@ public struct FoldModel {
     /// on every gutter draw.
     private let foldStartLines: [FoldRange: Int]
 
+    /// Reverse of ``foldStartLines``: the first fold in model order that starts
+    /// on each 1-based logical line.
+    ///
+    /// `foldableRanges` sorts outer ranges before nested ones at the same
+    /// offset, so the first entry per line is the outermost fold, matching what
+    /// the gutter marker represents. Built in the same pass as
+    /// ``foldStartLines`` so ``foldableRange(startingAtLine:)`` is O(1).
+    private let foldStartByLine: [Int: FoldRange]
+
+    /// 1-based logical line each foldable range ends on (the line containing its
+    /// last UTF-16 unit). Derived in the same pass as ``foldStartLines`` so
+    /// ``innermostFoldableRange(containing:)`` never rescans the document per
+    /// fold.
+    private let foldEndLines: [FoldRange: Int]
+
     /// Collapsed ranges, persisted independently of `foldableRanges`.
     public private(set) var foldState: FoldState
 
@@ -240,8 +255,10 @@ public struct FoldModel {
             configuration: configuration
         )
         self.foldDepths = FoldModel.computeFoldDepths(for: self.foldableRanges)
-        self.foldStartLines = FoldModel.computeFoldStartLines(for: self.foldableRanges,
-                                                              in: text)
+        let lineMaps = FoldModel.computeFoldLineMaps(for: self.foldableRanges, in: text)
+        self.foldStartLines = lineMaps.startLines
+        self.foldStartByLine = lineMaps.startByLine
+        self.foldEndLines = lineMaps.endLines
         self.foldState = foldState
     }
 
@@ -266,7 +283,7 @@ public struct FoldModel {
     /// line (for example two braces on one line), the outermost fold wins,
     /// which is the one a gutter marker normally represents.
     public func foldableRange(startingAtLine line: Int) -> FoldRange? {
-        foldableRanges.first { lineNumber(of: $0.location) == line }
+        foldStartByLine[line]
     }
 
     /// Nesting depth of `fold`: 1 for a top-level fold, 2 when directly inside
@@ -300,8 +317,9 @@ public struct FoldModel {
         let caretLine = lineNumber(of: max(0, selection.location))
         return foldableRanges
             .filter { fold in
-                let firstLine = lineNumber(of: fold.location)
-                let lastLine = lineNumber(of: max(fold.location, fold.upperBound - 1))
+                let firstLine = startingLine(of: fold)
+                let lastLine = foldEndLines[fold]
+                    ?? lineNumber(of: max(fold.location, fold.upperBound - 1))
                 return firstLine <= caretLine && caretLine <= lastLine
             }
             .max { lhs, rhs in
@@ -591,35 +609,62 @@ public struct FoldModel {
         return depths
     }
 
-    /// Starting 1-based logical line of every foldable range, computed in a
-    /// single pass over the text.
+    /// Logical-line maps for every foldable range, computed in a single pass
+    /// over the text.
     ///
     /// `ranges` is sorted by location, so one scan maps each start to its line
     /// without the O(document) `logicalLine` call the marker layer used to make
-    /// per fold on every gutter draw.
-    private static func computeFoldStartLines(for ranges: [FoldRange],
-                                              in text: String) -> [FoldRange: Int] {
-        var lines: [FoldRange: Int] = [:]
-        lines.reserveCapacity(ranges.count)
-        guard !ranges.isEmpty else { return lines }
+    /// per fold on every gutter draw. The same pass records each range's end
+    /// line (its last UTF-16 unit) and the first range per start line, so both
+    /// fold commands are lookup-only afterwards.
+    private static func computeFoldLineMaps(
+        for ranges: [FoldRange],
+        in text: String
+    ) -> (startLines: [FoldRange: Int],
+          startByLine: [Int: FoldRange],
+          endLines: [FoldRange: Int]) {
+        var startLines: [FoldRange: Int] = [:]
+        var startByLine: [Int: FoldRange] = [:]
+        var endLines: [FoldRange: Int] = [:]
+        startLines.reserveCapacity(ranges.count)
+        startByLine.reserveCapacity(ranges.count)
+        endLines.reserveCapacity(ranges.count)
+        guard !ranges.isEmpty else { return (startLines, startByLine, endLines) }
+
+        // Map each fold's last UTF-16 unit to the fold(s) ending there so the
+        // single text pass below can record end lines without a second scan.
+        // Folds are not sorted by end, so a plain pointer would not work.
+        var endsByOffset: [Int: [FoldRange]] = [:]
+        endsByOffset.reserveCapacity(ranges.count)
+        for fold in ranges {
+            guard fold.length > 0 else { continue }
+            endsByOffset[fold.upperBound - 1, default: []].append(fold)
+        }
 
         var foldIndex = 0
         var line = 1
         var offset = 0
         for unit in text.utf16 {
             while foldIndex < ranges.count, ranges[foldIndex].location == offset {
-                lines[ranges[foldIndex]] = line
+                let fold = ranges[foldIndex]
+                startLines[fold] = line
+                if startByLine[line] == nil { startByLine[line] = fold }
                 foldIndex += 1
+            }
+            if let ending = endsByOffset[offset] {
+                for fold in ending { endLines[fold] = line }
             }
             offset += 1
             if unit == 10 { line += 1 } // "\n"
         }
         // A fold starting exactly at the text length sits on the final line.
         while foldIndex < ranges.count {
-            lines[ranges[foldIndex]] = line
+            let fold = ranges[foldIndex]
+            startLines[fold] = line
+            if startByLine[line] == nil { startByLine[line] = fold }
             foldIndex += 1
         }
-        return lines
+        return (startLines, startByLine, endLines)
     }
 
     private static func computeFoldableRanges(in text: String,

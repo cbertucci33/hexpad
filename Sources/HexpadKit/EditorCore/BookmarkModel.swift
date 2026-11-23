@@ -168,19 +168,26 @@ public struct BookmarkState: Equatable, Codable {
     ///   the surviving line.
     /// - Bookmarks whose remapped line falls outside `newText` are dropped.
     public func remapped(from oldText: String, for edit: FoldTextEdit, to newText: String) -> BookmarkState {
-        let oldLineCount = GutterGeometry.lineCount(in: oldText)
-        let newLength = newText.utf16.count
-        let newLineCount = GutterGeometry.lineCount(in: newText)
+        guard !bookmarks.isEmpty else { return BookmarkState() }
+
+        // One index per text instead of a full-buffer scan per bookmark and
+        // per line lookup. LineIndex reproduces GutterGeometry's line math
+        // exactly, so every mapping below keeps its old result.
+        let oldIndex = LineIndex(oldText)
+        let newIndex = LineIndex(newText)
+        let oldLineCount = oldIndex.count
+        let newLength = newIndex.textLength
+        let newLineCount = newIndex.count
         let editEnd = edit.location + edit.replacedLength
-        let oldLength = oldText.utf16.count
+        let oldLength = oldIndex.textLength
 
         var result: [Bookmark] = []
         for bookmark in bookmarks {
             guard bookmark.line >= 1, bookmark.line <= oldLineCount else { continue }
 
-            let start = GutterGeometry.firstCharIndex(of: bookmark.line, in: oldText)
+            let start = oldIndex.firstCharIndex(of: bookmark.line)
             let spanEnd = bookmark.line < oldLineCount
-                ? GutterGeometry.firstCharIndex(of: bookmark.line + 1, in: oldText)
+                ? oldIndex.firstCharIndex(of: bookmark.line + 1)
                 : oldLength
 
             // A replacement or deletion that covers the complete line,
@@ -210,7 +217,7 @@ public struct BookmarkState: Equatable, Codable {
             }
 
             let clamped = min(max(mappedStart, 0), newLength)
-            let line = GutterGeometry.logicalLine(of: clamped, in: newText)
+            let line = newIndex.line(of: clamped)
             guard line >= 1, line <= newLineCount else { continue }
             result.append(Bookmark(line: line, note: bookmark.note))
         }
@@ -271,6 +278,12 @@ public struct BookmarkModel {
     /// silently jump to an unrelated line.
     public init(text: String, bookmarkState: BookmarkState = BookmarkState()) {
         self.text = text
+        // Nothing to validate: skip the document-wide line-count scan. This is
+        // the common case on tab bind for documents the user never bookmarked.
+        guard !bookmarkState.isEmpty else {
+            self.bookmarkState = bookmarkState
+            return
+        }
         let lineCount = GutterGeometry.lineCount(in: text)
         self.bookmarkState = BookmarkState(
             bookmarks: bookmarkState.bookmarks.filter { $0.line <= lineCount }

@@ -236,6 +236,31 @@ final class MinimapTests: XCTestCase {
         XCTAssertEqual(editor.minimap.lineModel?.lines.count, 3)
     }
 
+    func testHiddenMinimapDefersModelBuildAndPerEditRebuildsUntilShown() {
+        let document = DocumentModel(text: "let a = 1\nlet b = 2")
+        document.setLanguage(Language.swift.rawValue)
+        let editor = EditorContainer()
+        editor.bind(to: document)
+
+        XCTAssertTrue(editor.minimap.isHidden, "document map defaults off")
+        XCTAssertFalse(editor.minimap.hasBuiltLineModel,
+                       "a hidden map must not build the model on bind")
+
+        document.replaceCharacters(in: NSRange(location: 0, length: 0), with: "x\n")
+
+        XCTAssertTrue(editor.minimap.modelNeedsRebuild,
+                      "the hidden map records that its model is stale")
+        XCTAssertFalse(editor.minimap.hasBuiltLineModel,
+                       "a hidden map must not rebuild on every text change")
+
+        // Showing it builds exactly once and clears the dirty flag.
+        editor.setMinimapVisible(true)
+        XCTAssertFalse(editor.minimap.isHidden)
+        XCTAssertFalse(editor.minimap.modelNeedsRebuild)
+        XCTAssertTrue(editor.minimap.hasBuiltLineModel)
+        XCTAssertEqual(editor.minimap.lineModel?.lines.count, 3)
+    }
+
     func testSingleLineEditRecomputesOnlyThatRow() throws {
         let text = "let a = 1\nlet b = 2\nlet c = 3\nlet d = 4\nlet e = 5"
         let document = DocumentModel(text: text)
@@ -298,5 +323,70 @@ final class MinimapTests: XCTestCase {
 
         XCTAssertEqual(editor.minimap.lineModel?.lines.first?.type, .comment,
                        "rebinding after a language change re-tokenizes the minimap")
+    }
+
+    // MARK: - Overlay geometry is scan-free
+
+    /// The cached line ranges are the only source of overlay line numbers, so
+    /// they must agree with `GutterGeometry` at every offset (including LF
+    /// positions, CRs, astral characters and out-of-range probes).
+    func testCachedLineRangesMatchGutterGeometryAtEveryOffset() {
+        let cases = [
+            "",
+            "a",
+            "a\n",
+            "\n\n\n",
+            "one\ntwo\nthree",
+            "a😀b\ncafé\r\n𝄞x",
+            "// note\n\nlet a = 1\n"
+        ]
+
+        for text in cases {
+            let model = MinimapLineModel.compute(text: text, language: .plain)
+            let length = (text as NSString).length
+            for offset in -2...(length + 2) {
+                XCTAssertEqual(
+                    MinimapGeometry.logicalLine(of: offset,
+                                                lineRanges: model.lineRanges,
+                                                textLength: model.textLength),
+                    GutterGeometry.logicalLine(of: offset, in: text),
+                    "text=\(String(reflecting: text)) offset=\(offset)"
+                )
+            }
+        }
+    }
+
+    /// A visible map resolves the viewport and caret overlays from its cached
+    /// line ranges. Scroll, resize and caret frames must not fall back to a
+    /// whole-buffer line scan (`overlayFullTextScanCount` is the seam).
+    func testVisibleMapOverlayFramesDoNotRescanTheDocument() {
+        let text = (1...400).map { "let value\($0) = \($0)" }.joined(separator: "\n")
+        let document = DocumentModel(text: text)
+        document.setLanguage(Language.swift.rawValue)
+
+        let editor = EditorContainer()
+        editor.frame = NSRect(x: 0, y: 0, width: 900, height: 600)
+        editor.bind(to: document)
+        editor.setMinimapVisible(true)
+        editor.layout()
+
+        let minimap = editor.minimap
+        XCTAssertFalse(minimap.isHidden)
+
+        // One overlay frame to let any lazy model build happen, then sample.
+        minimap.setFrameSize(NSSize(width: MinimapView.width, height: 400))
+        let scans = minimap.overlayFullTextScanCount
+        XCTAssertEqual(scans, 0, "a bound model must answer overlay line math without a scan")
+
+        let length = (text as NSString).length
+        for step in 0..<20 {
+            let caret = (step * 97) % max(1, length)
+            editor.textView.setSelectedRange(NSRange(location: caret, length: 0))
+            minimap.setFrameSize(NSSize(width: MinimapView.width,
+                                        height: 400 + CGFloat(step % 5)))
+        }
+
+        XCTAssertEqual(minimap.overlayFullTextScanCount, scans,
+                       "scroll/resize/caret frames must stay binary-search only")
     }
 }

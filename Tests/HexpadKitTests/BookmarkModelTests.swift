@@ -192,6 +192,20 @@ final class BookmarkModelTests: XCTestCase {
         XCTAssertEqual(model.bookmarks.map(\.line), [2])
     }
 
+    func testRemapTracksABookmarkOnTheTrailingEmptyLine() {
+        // The final LF opens an empty line, which must be counted by the
+        // line index exactly like GutterGeometry does.
+        let text = "a\nb\n"
+        var model = makeModel(text, bookmarked: [3])
+        let edit = FoldTextEdit.insertion(at: 0, length: 3)
+        let newText = "zz\n" + text
+
+        model.remap(for: edit, in: newText)
+
+        XCTAssertEqual(model.bookmarks.map(\.line), [4])
+        XCTAssertEqual(model.lineCount, 4)
+    }
+
     func testRemapInsertionInsideBookmarkedLineKeepsLine() {
         var model = makeModel(bookmarked: [3])
         let inside = GutterGeometry.firstCharIndex(of: 3, in: fixture) + 2

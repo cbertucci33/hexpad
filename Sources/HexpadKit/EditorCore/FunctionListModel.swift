@@ -104,6 +104,10 @@ public struct FunctionListModel {
             return []
         }
 
+        // One line index for the whole pass: every symbol's line is a binary
+        // search instead of another full-buffer scan.
+        let lineIndex = LineIndex(text)
+
         let blockSpans = blockCommentSpans(in: nsText, comments: definition.comments)
         let commentSpans = mergedSpans(
             blockSpans
@@ -146,8 +150,7 @@ public struct FunctionListModel {
                             continue
                         }
 
-                        let line = GutterGeometry.logicalLine(of: nameRange.location,
-                                                              in: text)
+                        let line = lineIndex.line(of: nameRange.location)
                         candidates.append(Candidate(
                             symbol: FunctionSymbol(name: name,
                                                    kind: symbolRule.kind,

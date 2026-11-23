@@ -753,4 +753,71 @@ final class FoldModelTests: XCTestCase {
         XCTAssertEqual(model.foldableRanges[0].range, NSRange(location: 3, length: 10))
         XCTAssertEqual(model.foldableRanges[0].upperBound, text.utf16.count)
     }
+
+    // MARK: - Precomputed reverse/end line maps
+
+    /// `foldableRange(startingAtLine:)` now reads a reverse map built with the
+    /// start lines. It must return exactly what the old scan did: the first
+    /// fold in model order (outermost at a shared offset) starting on the line.
+    func testFoldableRangeByLineMatchesDirectLineMathForEveryLine() {
+        // Both the outer brace and the `if (` open on line 1, and the region
+        // markers add a second kind of start, exercising shared-line folds.
+        let text = """
+        function outer() { if (flag) {
+            work();
+        } }
+        // region one
+        a
+        // endregion
+        """
+        let configuration = FoldConfiguration(regionMarkers: [
+            FoldRegionMarker(start: "// region", end: "// endregion")
+        ])
+        let model = FoldModel(text: text,
+                              definition: definition(
+                                  comments: LexerDefinition.CommentSyntax(linePrefix: "//"),
+                                  brackets: allBrackets),
+                              configuration: configuration)
+
+        XCTAssertGreaterThan(model.foldableRanges.count, 2)
+        for line in -1...(GutterGeometry.lineCount(in: text) + 2) {
+            let expected = model.foldableRanges.first {
+                GutterGeometry.logicalLine(of: $0.location, in: text) == line
+            }
+            XCTAssertEqual(model.foldableRange(startingAtLine: line), expected,
+                           "line \(line)")
+        }
+    }
+
+    /// `innermostFoldableRange` uses precomputed start/end lines. Pin it against
+    /// the original per-fold `GutterGeometry` math at every caret offset.
+    func testInnermostFoldableRangeMatchesDirectLineMathAtEveryCaret() {
+        let text = nestedText
+        let model = FoldModel(text: text, definition: definition(brackets: allBrackets))
+        let length = (text as NSString).length
+
+        for caret in -2...(length + 2) {
+            let caretLine = GutterGeometry.logicalLine(of: max(0, caret), in: text)
+            let expected = model.foldableRanges
+                .filter { fold in
+                    let firstLine = GutterGeometry.logicalLine(of: fold.location, in: text)
+                    let lastLine = GutterGeometry.logicalLine(
+                        of: max(fold.location, fold.upperBound - 1),
+                        in: text
+                    )
+                    return firstLine <= caretLine && caretLine <= lastLine
+                }
+                .max { lhs, rhs in
+                    let lhsDepth = model.depth(of: lhs) ?? 0
+                    let rhsDepth = model.depth(of: rhs) ?? 0
+                    if lhsDepth != rhsDepth { return lhsDepth < rhsDepth }
+                    return lhs.length > rhs.length
+                }
+
+            XCTAssertEqual(model.innermostFoldableRange(containing: NSRange(location: max(0, caret),
+                                                                          length: 0)),
+                           expected,
+                           "caret \(caret)")
+        }
+    }
 }

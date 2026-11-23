@@ -368,15 +368,41 @@ enum MinimapGeometry {
     ///
     /// `rowHeightOverride` lets the view pass the capped row height it paints
     /// with, so the band always lines up with the rows actually drawn.
+    ///
+    /// This convenience overload builds one line index from `text`. The live
+    /// view uses the `lineRanges` overload with its cached minimap model so a
+    /// scroll/caret frame never scans the document.
     static func viewportRect(visibleCharacterRange: NSRange,
                              text: String,
                              lineCount: Int,
                              width: CGFloat,
                              height: CGFloat,
                              rowHeightOverride: CGFloat? = nil) -> NSRect? {
+        let index = LineIndex(text)
+        return viewportRect(visibleCharacterRange: visibleCharacterRange,
+                            lineRanges: lineRanges(from: index),
+                            textLength: index.textLength,
+                            lineCount: lineCount,
+                            width: width,
+                            height: height,
+                            rowHeightOverride: rowHeightOverride)
+    }
+
+    /// Overlay rectangle resolved against cached line ranges.
+    ///
+    /// `lineRanges` and `textLength` come from ``MinimapLineModel``; line
+    /// numbers are found by binary search, so this is O(log lines) per call
+    /// instead of the O(document) scan ``GutterGeometry/logicalLine(of:in:)``
+    /// performs.
+    static func viewportRect(visibleCharacterRange: NSRange,
+                             lineRanges: [NSRange],
+                             textLength: Int,
+                             lineCount: Int,
+                             width: CGFloat,
+                             height: CGFloat,
+                             rowHeightOverride: CGFloat? = nil) -> NSRect? {
         guard lineCount > 0, height > 0 else { return nil }
 
-        let textLength = (text as NSString).length
         let hasVisibleText = visibleCharacterRange.length > 0 && textLength > 0
         let firstChar = hasVisibleText
             ? min(max(0, visibleCharacterRange.location), textLength - 1)
@@ -385,9 +411,11 @@ enum MinimapGeometry {
             ? min(max(firstChar, NSMaxRange(visibleCharacterRange) - 1), textLength - 1)
             : 0
 
-        let firstLine = GutterGeometry.logicalLine(of: firstChar, in: text)
+        let firstLine = logicalLine(of: firstChar,
+                                    lineRanges: lineRanges,
+                                    textLength: textLength)
         let lastLine = hasVisibleText
-            ? GutterGeometry.logicalLine(of: lastChar, in: text)
+            ? logicalLine(of: lastChar, lineRanges: lineRanges, textLength: textLength)
             : firstLine
 
         let rowHeight = rowHeightOverride
@@ -397,6 +425,48 @@ enum MinimapGeometry {
         let rawY = CGFloat(max(0, firstLine - 1)) * rowHeight
         let y = min(max(0, rawY), max(0, height - overlayHeight))
         return NSRect(x: 0, y: y, width: width, height: overlayHeight)
+    }
+
+    /// 1-based logical line containing `charIndex`, using cached line ranges.
+    ///
+    /// `lineRanges` holds one content range per line, excluding the LF
+    /// terminator (the same representation ``MinimapLineModel`` caches). The
+    /// last range starting at or before the offset is that offset's line,
+    /// which reproduces `GutterGeometry.logicalLine` exactly:
+    ///
+    /// - a caret on an LF still belongs to the line the LF terminates;
+    /// - a caret one past the LF belongs to the next line;
+    /// - positions past the end clamp to the final line.
+    static func logicalLine(of charIndex: Int,
+                            lineRanges: [NSRange],
+                            textLength: Int) -> Int {
+        guard !lineRanges.isEmpty, charIndex > 0 else { return 1 }
+        let offset = min(charIndex, textLength)
+        var low = 0
+        var high = lineRanges.count
+        while low < high {
+            let mid = (low + high) / 2
+            if lineRanges[mid].location <= offset {
+                low = mid + 1
+            } else {
+                high = mid
+            }
+        }
+        return max(1, low)
+    }
+
+    /// Content ranges for every logical line, derived from a full index.
+    /// Mirrors ``MinimapLineModel``'s ranges (LF excluded).
+    private static func lineRanges(from index: LineIndex) -> [NSRange] {
+        var ranges: [NSRange] = []
+        ranges.reserveCapacity(index.lineStarts.count)
+        for (line, start) in index.lineStarts.enumerated() {
+            let end = line + 1 < index.lineStarts.count
+                ? index.lineStarts[line + 1] - 1
+                : index.textLength
+            ranges.append(NSRange(location: start, length: max(0, end - start)))
+        }
+        return ranges
     }
 
     /// Scroll origin that centres `fraction` of the document in the viewport.
@@ -436,11 +506,32 @@ final class MinimapView: NSView {
     private weak var scrollView: NSScrollView?
     private weak var document: DocumentModel?
 
+    /// Cached line-colour model, or `nil` before the first build.
+    private var cachedLineModel: MinimapLineModel?
+
     /// Cached line-colour model. Tests and diagnostics can inspect it.
-    private(set) var lineModel: MinimapLineModel?
+    ///
+    /// Reading this while the map is hidden builds the model on demand
+    /// (tests do this); normal production reads happen only from ``draw``,
+    /// which is gated on visibility, so a hidden map costs nothing.
+    var lineModel: MinimapLineModel? {
+        ensureModelBuilt()
+        return cachedLineModel
+    }
+
+    /// Test/diagnostic hook: whether a model has been built for the bound
+    /// document. A hidden map leaves this `false` until shown or inspected.
+    var hasBuiltLineModel: Bool { cachedLineModel != nil }
 
     /// True between a text-change notification and the coalesced rebuild.
     private(set) var modelNeedsRebuild = false
+
+    /// Test/diagnostic hook: whole-buffer line scans performed by overlay
+    /// geometry. With a bound model the viewport/caret rectangles are resolved
+    /// from the cached line ranges by binary search, so scroll, resize and
+    /// caret frames must leave this unchanged. It only grows before a model is
+    /// available (or for an unbound buffer).
+    private(set) var overlayFullTextScanCount = 0
 
     /// Line-aligned band in the current text that the next rebuild must
     /// recompute. `nil` asks for a full rebuild, which is reserved for bind and
@@ -454,8 +545,27 @@ final class MinimapView: NSView {
 
     /// Whether the document map preference is on. The view still stays hidden
     /// while no document is bound, so an empty pane never shows an empty rail.
+    ///
+    /// The model is only maintained while the map is visible (or has been
+    /// inspected). Showing it builds once, folding in any edits recorded since
+    /// it was last visible; hiding it cancels pending work.
     var isDocumentMapVisible = false {
-        didSet { updateVisibility() }
+        didSet {
+            updateVisibility()
+            if isDocumentMapVisible {
+                let needsFullBuild = cachedLineModel == nil
+                if needsFullBuild || modelNeedsRebuild {
+                    rebuildModelNow(full: needsFullBuild)
+                }
+                needsDisplay = true
+            } else {
+                pendingRebuild?.cancel()
+                pendingRebuild = nil
+                lastViewportRect = .zero
+                lastCaretRect = .zero
+                overlayRectsAreCurrent = false
+            }
+        }
     }
 
     /// Set once the window controller supplies an explicit theme, so a system
@@ -469,6 +579,12 @@ final class MinimapView: NSView {
 
     private var lastViewportRect = NSRect.zero
     private var lastCaretRect = NSRect.zero
+
+    /// Set while ``lastViewportRect``/``lastCaretRect`` describe the current
+    /// scroll position and text. ``invalidateOverlay`` refreshes them once per
+    /// event; the following draw reuses them instead of recomputing. Any model
+    /// change (line count or offsets) clears the flag so draw recomputes.
+    private var overlayRectsAreCurrent = false
 
     /// The minimap draws top-down like the text view, so Y values and line
     /// order share one direction.
@@ -518,7 +634,10 @@ final class MinimapView: NSView {
         guard current === document else { return false }
         guard !modelNeedsRebuild, pendingEditBand == nil else { return false }
         let language = Language(rawValue: document.language) ?? .plain
-        return lineModel?.language == language
+        // With no cached model (the normal hidden state) there is nothing to
+        // invalidate; a later build reads the document's language directly.
+        guard let cachedLineModel else { return true }
+        return cachedLineModel.language == language
     }
 
     /// Points the minimap at a document. Passing `nil` hides the view, which is
@@ -544,7 +663,14 @@ final class MinimapView: NSView {
         guard let document else {
             updateVisibility()
             pendingEditBand = nil
-            rebuildModelNow(full: true)
+            pendingRebuild?.cancel()
+            pendingRebuild = nil
+            modelNeedsRebuild = false
+            if cachedLineModel != nil {
+                cachedLineModel = nil
+                overlayRectsAreCurrent = false
+                needsDisplay = true
+            }
             return
         }
 
@@ -568,9 +694,20 @@ final class MinimapView: NSView {
         }
 
         // Binding happens on tab switches and language changes; both can alter
-        // the dominant token type, so rebuild eagerly for the first paint.
+        // the dominant token type. A visible map rebuilds eagerly for the first
+        // paint. A hidden map only marks itself dirty: the build is deferred
+        // until it is shown (and a stale model from the previous tab is dropped
+        // so it can never be drawn).
         pendingEditBand = nil
-        rebuildModelNow(full: true)
+        if isDocumentMapVisible {
+            rebuildModelNow(full: true)
+        } else {
+            pendingRebuild?.cancel()
+            pendingRebuild = nil
+            cachedLineModel = nil
+            overlayRectsAreCurrent = false
+            modelNeedsRebuild = true
+        }
     }
 
     /// Applies the editor's current theme. Repeated calls with the same theme
@@ -599,6 +736,14 @@ final class MinimapView: NSView {
         rebuildModelNow(full: false)
     }
 
+    /// Builds the model if it has never been built. This is the lazy path used
+    /// by diagnostics (and tests) so a hidden map can still be inspected
+    /// without paying for a model at bind time.
+    private func ensureModelBuilt() {
+        guard cachedLineModel == nil, document != nil else { return }
+        rebuildModelNow(full: true)
+    }
+
     private func rebuildModelNow(full: Bool) {
         pendingRebuild?.cancel()
         pendingRebuild = nil
@@ -606,8 +751,9 @@ final class MinimapView: NSView {
 
         guard let document else {
             pendingEditBand = nil
-            if lineModel != nil {
-                lineModel = nil
+            if cachedLineModel != nil {
+                cachedLineModel = nil
+                overlayRectsAreCurrent = false
                 needsDisplay = true
             }
             return
@@ -619,7 +765,7 @@ final class MinimapView: NSView {
         pendingEditBand = nil
 
         let model: MinimapLineModel
-        if !full, let band, let cached = lineModel, cached.language == language {
+        if !full, let band, let cached = cachedLineModel, cached.language == language {
             // Only the rows intersecting the edited band are re-tokenized; the
             // rest of the cached model is preserved (with later rows shifted
             // when the edit added or removed lines).
@@ -633,18 +779,31 @@ final class MinimapView: NSView {
 
         // Equality is the "visible change" test: if the rows are identical the
         // cached model is already correct and no repaint is needed.
-        guard model != lineModel else { return }
-        lineModel = model
+        guard model != cachedLineModel else { return }
+        cachedLineModel = model
+        overlayRectsAreCurrent = false
         needsDisplay = true
     }
 
     /// Coalesces a burst of keystrokes into one model rebuild on the next
     /// run-loop turn. Attribute-only edits never reach this path.
+    ///
+    /// While the map is hidden this only records that the model is stale; the
+    /// band merge, array copies and model comparison are deferred until the
+    /// map is shown.
     private func scheduleModelRebuild() {
         modelNeedsRebuild = true
+        guard isDocumentMapVisible else {
+            pendingRebuild?.cancel()
+            pendingRebuild = nil
+            return
+        }
         guard pendingRebuild == nil else { return }
         let work = DispatchWorkItem { [weak self] in
-            self?.rebuildModelNow()
+            guard let self else { return }
+            self.pendingRebuild = nil
+            guard self.isDocumentMapVisible else { return }
+            self.rebuildModelNow()
         }
         pendingRebuild = work
         DispatchQueue.main.async(execute: work)
@@ -654,6 +813,16 @@ final class MinimapView: NSView {
         guard let storage = notification.object as? NSTextStorage,
               storage === document?.textStorage,
               storage.editedMask.contains(.editedCharacters) else { return }
+
+        // A hidden map with no built model has nothing to keep in step: record
+        // only staleness and defer the line-band mapping until it is shown.
+        // (A model built by a diagnostic while hidden is still updated so the
+        // next inspection is incremental, matching the old behaviour.)
+        guard isDocumentMapVisible || cachedLineModel != nil else {
+            pendingEditBand = nil
+            scheduleModelRebuild()
+            return
+        }
 
         let editedRange = storage.editedRange
         let insertedLength = editedRange.length
@@ -743,11 +912,15 @@ final class MinimapView: NSView {
 
     /// Repaints only the union of the old/new viewport and caret bands.
     private func invalidateOverlay() {
+        // A hidden map has no overlay to keep current; skip the line math
+        // entirely. Showing it resets the cached rects and repaints once.
+        guard !isHidden else { return }
         let viewport = viewportRect() ?? .zero
         let caret = caretRect() ?? .zero
         let dirty = viewport.union(lastViewportRect).union(caret).union(lastCaretRect)
         lastViewportRect = viewport
         lastCaretRect = caret
+        overlayRectsAreCurrent = true
         setNeedsDisplay(dirty.insetBy(dx: -1, dy: -1))
     }
 
@@ -757,7 +930,7 @@ final class MinimapView: NSView {
               let container = textView.textContainer else {
             return NSRange(location: 0, length: 0)
         }
-        let length = (textView.string as NSString).length
+        let length = textView.textStorage?.length ?? 0
         guard length > 0 else { return NSRange(location: 0, length: 0) }
 
         let glyphRange = layoutManager.glyphRange(forBoundingRect: textView.visibleRect,
@@ -772,8 +945,9 @@ final class MinimapView: NSView {
     }
 
     private var lineCount: Int {
-        if let lineModel { return lineModel.lines.count }
+        if let cachedLineModel { return cachedLineModel.lines.count }
         guard let textView else { return 0 }
+        overlayFullTextScanCount += 1
         return GutterGeometry.lineCount(in: textView.string)
     }
 
@@ -786,10 +960,29 @@ final class MinimapView: NSView {
 
     private func viewportRect() -> NSRect? {
         guard let textView, bounds.width > 0, bounds.height > 0 else { return nil }
+        let visible = visibleCharacterRange()
+
+        // The bound model already carries one range per logical line, so the
+        // overlay resolves its line numbers by binary search. No scroll,
+        // resize or caret frame reads the document text.
+        if let model = cachedLineModel {
+            return MinimapGeometry.viewportRect(
+                visibleCharacterRange: visible,
+                lineRanges: model.lineRanges,
+                textLength: model.textLength,
+                lineCount: model.lines.count,
+                width: bounds.width,
+                height: bounds.height,
+                rowHeightOverride: paintedRowHeight
+            )
+        }
+
+        overlayFullTextScanCount += 1
+        let text = textView.string
         return MinimapGeometry.viewportRect(
-            visibleCharacterRange: visibleCharacterRange(),
-            text: textView.string,
-            lineCount: lineCount,
+            visibleCharacterRange: visible,
+            text: text,
+            lineCount: GutterGeometry.lineCount(in: text),
             width: bounds.width,
             height: bounds.height,
             rowHeightOverride: paintedRowHeight
@@ -799,10 +992,16 @@ final class MinimapView: NSView {
     /// One-row band for the primary caret's logical line.
     private func caretRect() -> NSRect? {
         guard let textView, lineCount > 0, bounds.height > 0 else { return nil }
-        let text = textView.string
-        let location = min(max(0, textView.selectedRange().location),
-                           (text as NSString).length)
-        let line = GutterGeometry.logicalLine(of: location, in: text)
+        let location = max(0, textView.selectedRange().location)
+        let line: Int
+        if let model = cachedLineModel {
+            line = MinimapGeometry.logicalLine(of: location,
+                                               lineRanges: model.lineRanges,
+                                               textLength: model.textLength)
+        } else {
+            overlayFullTextScanCount += 1
+            line = GutterGeometry.logicalLine(of: location, in: textView.string)
+        }
         let rowHeight = paintedRowHeight
         let height = max(1.5, rowHeight)
         let y = min(max(0, CGFloat(line - 1) * rowHeight),
@@ -841,7 +1040,7 @@ final class MinimapView: NSView {
         NSColor.separatorColor.withAlphaComponent(0.5).setFill()
         NSRect(x: 0, y: dirty.minY, width: 1, height: dirty.height).fill()
 
-        if let model = lineModel, !model.lines.isEmpty {
+        if let model = cachedLineModel, !model.lines.isEmpty {
             drawLines(model, in: dirty)
         }
         drawOverlay(in: dirty)
@@ -876,7 +1075,23 @@ final class MinimapView: NSView {
     }
 
     private func drawOverlay(in dirtyRect: NSRect) {
-        let viewport = viewportRect() ?? .zero
+        // Scroll/resize/selection already computed both rects in
+        // `invalidateOverlay`; reuse them for this paint instead of running the
+        // line math again. A model change clears the flag, so the first draw
+        // after an edit recomputes once and then caches.
+        let viewport: NSRect
+        let caret: NSRect?
+        if overlayRectsAreCurrent {
+            viewport = lastViewportRect
+            caret = lastCaretRect.isEmpty ? nil : lastCaretRect
+        } else {
+            viewport = viewportRect() ?? .zero
+            caret = caretRect()
+            lastViewportRect = viewport
+            lastCaretRect = caret ?? .zero
+            overlayRectsAreCurrent = true
+        }
+
         if !viewport.isEmpty {
             NSColor.selectedContentBackgroundColor.withAlphaComponent(0.16).setFill()
             viewport.fill()
@@ -887,13 +1102,10 @@ final class MinimapView: NSView {
             border.stroke()
         }
 
-        if let caret = caretRect() {
+        if let caret {
             NSColor.selectedContentBackgroundColor.withAlphaComponent(0.75).setFill()
             NSRect(x: 0, y: caret.minY, width: 2, height: caret.height).fill()
         }
-
-        lastViewportRect = viewport
-        lastCaretRect = caretRect() ?? .zero
     }
 
     // MARK: - Click / drag scrolling

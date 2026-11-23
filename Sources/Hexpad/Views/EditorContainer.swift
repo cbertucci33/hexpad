@@ -262,43 +262,79 @@ class EditorContainer: NSView {
     /// A line index plus the identity of the text it was built from.
     ///
     /// `documentID`/`storageID` prevent a tab switch from reusing another
-    /// buffer's offsets, and `revision`/`length` make the cache valid exactly
-    /// while the bound text is unchanged. This mirrors the status bar's cache.
+    /// buffer's offsets. Edits are spliced in incrementally (see
+    /// ``pendingLineEdits``), so the cached index stays valid across a keystroke
+    /// without a whole-buffer scan. This mirrors the status bar's cache.
     private struct LineIndexCache {
         let documentID: UUID?
         let storageID: ObjectIdentifier
-        let revision: Int
-        let length: Int
         let index: LineIndex
     }
 
     private var lineIndexCache: LineIndexCache?
 
+    /// Character edit waiting to be spliced into the cached index.
+    ///
+    /// `didProcessEditingNotification` records the post-edit range and length
+    /// delta; the next `lineIndex` request replays it through
+    /// ``LineIndex/updating(_:editedRange:changeInLength:)``. More than one
+    /// pending edit between requests falls back to a single full scan rather
+    /// than reconstructing intermediate text.
+    private struct PendingLineEdit {
+        let range: NSRange
+        let changeInLength: Int
+    }
+    private var pendingLineEdits: [PendingLineEdit] = []
+
     /// The line index for the bound document's current text.
     ///
-    /// Shared by gutter drawing, gutter hit-testing and the window controller's
-    /// line-selection drag math. An edit bumps `textRevision`, which rebuilds
-    /// once on the next request instead of on every redraw.
+    /// Shared by gutter drawing, gutter hit-testing, theme refresh and the
+    /// window controller's line-selection drag math. Edits recorded from the
+    /// storage notification are spliced into the cached index on the next
+    /// request, so a redraw after every keystroke is O(edited line band)
+    /// instead of O(document).
     var lineIndex: LineIndex? {
         guard let storage = textView.textStorage else { return nil }
         let documentID = boundDocument?.id
-        let revision = boundDocument?.textRevision ?? 0
         let storageID = ObjectIdentifier(storage)
-        let length = storage.length
+
         if let cache = lineIndexCache,
            cache.documentID == documentID,
-           cache.storageID == storageID,
-           cache.revision == revision,
-           cache.length == length {
-            return cache.index
+           cache.storageID == storageID {
+            if pendingLineEdits.count == 1 {
+                let edit = pendingLineEdits.removeFirst()
+                let updated = cache.index.updating(textView.string,
+                                                   editedRange: edit.range,
+                                                   changeInLength: edit.changeInLength)
+                lineIndexCache = LineIndexCache(documentID: documentID,
+                                                storageID: storageID,
+                                                index: updated)
+                return updated
+            }
+            if pendingLineEdits.isEmpty, cache.index.textLength == storage.length {
+                return cache.index
+            }
         }
+
+        pendingLineEdits.removeAll()
         let index = LineIndex(textView.string)
         lineIndexCache = LineIndexCache(documentID: documentID,
                                         storageID: storageID,
-                                        revision: revision,
-                                        length: length,
                                         index: index)
         return index
+    }
+
+    /// Records one character edit for the line-index splice.
+    ///
+    /// Bounded like the status bar's queue: two coalesced edits already mean a
+    /// full rebuild is cheaper and safer than replaying imaginary intermediate
+    /// text.
+    private func recordPendingLineEdit(range: NSRange, changeInLength: Int) {
+        pendingLineEdits.append(PendingLineEdit(range: range,
+                                                changeInLength: changeInLength))
+        if pendingLineEdits.count > 2 {
+            pendingLineEdits.removeFirst(pendingLineEdits.count - 2)
+        }
     }
 
     /// Used when no tab is selected, so the text view always has a storage.
@@ -406,6 +442,10 @@ class EditorContainer: NSView {
             isSyncingSelection = true
             layoutManager.replaceTextStorage(storage)
             isSyncingSelection = false
+            // Pending edits described the outgoing buffer; the new storage
+            // gets a fresh index on its first request.
+            pendingLineEdits.removeAll()
+            lineIndexCache = nil
             columnAnchor = nil
             beginEndSelectState = BeginEndSelectState()
             // Reset before adopting the incoming document's caret. NSTextView
@@ -857,7 +897,7 @@ class EditorContainer: NSView {
     /// Drops carets that no longer fit the current buffer after a reload or
     /// programmatic whole-document replacement.
     private func normalizedForCurrentText(_ state: MultiCaretState) -> MultiCaretState {
-        let length = (textView.string as NSString).length
+        let length = textView.textStorage?.length ?? 0
         let carets = state.carets.map { caret -> NSRange in
             let location = min(max(0, caret.location), length)
             return NSRange(location: location,
@@ -869,7 +909,7 @@ class EditorContainer: NSView {
     /// Adds (or toggles off) an extra caret. Re-clicking the primary position
     /// collapses back to that single caret.
     func placeAdditionalCaret(atCharacterIndex index: Int) {
-        let length = (textView.string as NSString).length
+        let length = textView.textStorage?.length ?? 0
         let target = min(max(0, index), length)
 
         if let primary = multiCaretState.primaryCaret, target == primary.location {
@@ -1577,6 +1617,9 @@ class EditorContainer: NSView {
             return
         }
         let state = bookmarkStates[document.id] ?? document.bookmarkState
+        // Building a model with no bookmarks is a pure state carrier: the
+        // initializer skips the document-wide line-count scan for an empty
+        // state, so bind stays free when the user has no bookmarks.
         let model = BookmarkModel(text: document.text, bookmarkState: state)
         bookmarkBindCount += 1
         bookmarkStates[document.id] = model.bookmarkState
@@ -1724,6 +1767,17 @@ class EditorContainer: NSView {
         if hideStates[document.id] == nil {
             hideStates[document.id] = document.editorState.hiddenLinesState
         }
+        // Nothing is hidden: there are no ranges to resolve, so skip the
+        // document-wide LineIndex scan. The gutter falls back to plain line
+        // numbers whenever the hidden state is empty, so the cached count is
+        // not needed here.
+        guard hasHiddenLines else {
+            hiddenLineCharacterRanges = []
+            hiddenLineTextLineCount = 0
+            applyHiddenLineVisibility()
+            ruler.needsDisplay = true
+            return
+        }
         recomputeHiddenLineSpans(for: document)
         applyHiddenLineVisibility()
         ruler.needsDisplay = true
@@ -1827,8 +1881,14 @@ class EditorContainer: NSView {
     private func handleFoldEdit(_ notification: Notification) {
         guard let storage = notification.object as? NSTextStorage,
               storage === textView.textStorage,
-              storage.editedMask.contains(.editedCharacters),
-              let document = boundDocument else { return }
+              storage.editedMask.contains(.editedCharacters) else { return }
+
+        // Record the edit for the cached line index before any early return:
+        // the gutter's line math needs it even when there is no fold model.
+        recordPendingLineEdit(range: storage.editedRange,
+                              changeInLength: storage.changeInLength)
+
+        guard let document = boundDocument else { return }
 
         // NSTextStorage reports the post-edit range plus the length delta. A
         // pure insertion has replacedLength 0; a deletion has insertedLength 0.

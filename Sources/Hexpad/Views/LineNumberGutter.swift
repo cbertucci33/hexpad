@@ -418,9 +418,14 @@ final class LineNumberGutter: NSView {
         for row in rows {
             // Hiding renumbers the visible rows: the line after a hidden block
             // takes the next number instead of skipping. Bookmarks and fold
-            // markers still key on `row.line`, the document line.
-            let number = hidden.state.displayNumber(forLine: row.line,
-                                                   lineCount: hidden.lineCount)
+            // markers still key on `row.line`, the document line. With no
+            // hidden ranges every row keeps its own number, so the cached
+            // line count is not needed (and is deliberately left unset by the
+            // bind path to avoid a document scan).
+            let number = hidden.state.isEmpty
+                ? row.line
+                : hidden.state.displayNumber(forLine: row.line,
+                                             lineCount: hidden.lineCount)
             if let number {
                 drawNumber("\(number)", atTopY: row.topY, height: row.height,
                            textView: textView, attributes: attributes)

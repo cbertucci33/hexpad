@@ -2865,7 +2865,7 @@ class MainWindowController: NSViewController {
         // storage (applySyntaxHighlighting refuses that too).
         guard editor.textView.textStorage === doc.textStorage else { return }
 
-        let textLength = (doc.text as NSString).length
+        let textLength = doc.textStorage.length
         let visible = clipped(editor.visibleCharacterRange(), to: textLength)
         if highlightedDoc === doc,
            lastHighlightedRange.length > 0,
