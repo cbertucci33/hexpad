@@ -68,6 +68,10 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         // group. Set before AppKit restores window state: a restored window
         // could otherwise join a native group before the policy took effect.
         Self.applyWindowTabbingPolicy()
+        // Finder → Services → Open in Hexpad. The provider must be in place
+        // before AppKit assembles the Services menu, and it must implement the
+        // selector the NSServices entry names (project.yml → Info.plist).
+        NSApp.servicesProvider = self
     }
 
     /// Applies the app-wide native-tabbing opt-out. Extracted so a headless
@@ -1000,6 +1004,16 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     /// open handler, so `open -a Hexpad file.txt` fails with "cannot open
     /// files in the ... format" before our code ever runs.
     func application(_ application: NSApplication, open urls: [URL]) {
+        openExternalFiles(urls)
+    }
+
+    /// The one path for files arriving from outside the app: Launch Services
+    /// (Finder double-click, Open With, `open -a`) and the Services handler
+    /// below both land here, then hand every path to the controller's standard
+    /// `openFile(atPath:)` (dedupe, encoding detection, recents, tab creation).
+    /// Adding a second door must never mean a second document-open mechanism.
+    private func openExternalFiles(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
         // Ensure at least one window exists so a cold `open -a Hexpad x.py`
         // lands the file in a real editor rather than nowhere (app can launch
         // without windows when launched directly with files and no session).
@@ -1024,6 +1038,42 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         for url in urls {
             activeController?.openFile(atPath: url.path)
         }
+    }
+
+    // MARK: - Services (Finder → Services → Open in Hexpad)
+
+    /// NSServices provider entry point. The Info.plist entry generated from
+    /// project.yml names `openInHexpad` in NSMessage, so AppKit calls this
+    /// selector with the selected files on the pasteboard. The files take the
+    /// same `openExternalFiles` path as Launch Services opens.
+    @objc func openInHexpad(_ pasteboard: NSPasteboard,
+                            userData: String,
+                            error: AutoreleasingUnsafeMutablePointer<NSString>?) {
+        let urls = Self.fileURLs(fromServicePasteboard: pasteboard)
+        guard !urls.isEmpty else {
+            error?.pointee = "No files to open." as NSString
+            return
+        }
+        // A Services request can arrive while another app is frontmost; bring
+        // the window that receives the new tabs forward.
+        NSApp.activate(ignoringOtherApps: true)
+        openExternalFiles(urls)
+    }
+
+    /// File URLs carried by a Services request. NSSendFileTypes normally
+    /// delivers file URLs, but older senders put only the legacy
+    /// NSFilenamesPboardType path list on the board.
+    static func fileURLs(fromServicePasteboard pasteboard: NSPasteboard) -> [URL] {
+        if let urls = pasteboard.readObjects(forClasses: [NSURL.self],
+                                             options: [.urlReadingFileURLsOnly: true]) as? [NSURL],
+           !urls.isEmpty {
+            return urls.map { $0 as URL }
+        }
+        let legacyType = NSPasteboard.PasteboardType("NSFilenamesPboardType")
+        if let paths = pasteboard.propertyList(forType: legacyType) as? [String] {
+            return paths.map { URL(fileURLWithPath: $0) }
+        }
+        return []
     }
 }
 

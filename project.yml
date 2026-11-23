@@ -49,6 +49,28 @@ targets:
             CFBundleTypeRole: Viewer
             LSHandlerRank: None
             LSItemContentTypes: [public.item]
+        # Finder right-click → Services → Open in Hexpad. AppKit routes the
+        # selected files to HexpadAppDelegate.openInHexpad(_:userData:error:)
+        # through NSApp.servicesProvider (set in applicationWillFinishLaunching).
+        # The UTIs mirror the text/source entries above; public.data and
+        # public.item are deliberately omitted so the service does not appear
+        # for binary files the editor cannot decode.
+        NSServices:
+          - NSMenuItem:
+              default: Open in Hexpad
+            NSMessage: openInHexpad
+            NSPortName: $(PRODUCT_NAME)
+            NSSendFileTypes:
+              - public.plain-text
+              - public.utf8-plain-text
+              - public.text
+              - public.source-code
+              - public.script
+              - public.python-script
+              - public.swift-source
+              - public.shell-script
+              - public.json
+              - public.xml
     preBuildScripts:
       - name: "Validate Swift Package"
         script: |
