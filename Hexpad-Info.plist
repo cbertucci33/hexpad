@@ -54,6 +54,10 @@
 	<key>CFBundleShortVersionString</key>
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>1.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.developer-tools</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>© 2026 Carmen Bertucci. All rights reserved.</string>
 </dict>
 </plist>

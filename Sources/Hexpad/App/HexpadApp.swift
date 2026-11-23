@@ -46,6 +46,11 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     private var preferencesWindowController: PreferencesWindowController?
     private var shortcutMapperWindowController: ShortcutMapperWindowController?
     private var characterPanelController: CharacterPanelWindowController?
+    /// First-launch welcome splash. Retained for the session after it is shown.
+    private var welcomeWindowController: WelcomeWindowController?
+
+    /// Test seam: the splash created by the launch path, if any.
+    var welcomeSplashForTest: WelcomeWindowController? { welcomeWindowController }
     private let recentFilesManager = RecentFilesManager()
     var openRecentMenu: NSMenu?
     var appearanceMenu: NSMenu?
@@ -95,11 +100,14 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
         
         controller.recentFilesManager = recentFilesManager
-        restoreSession()
+        let didRestoreSession = restoreSession()
         // Persisted font/wrap/theme preferences are the startup defaults. The
         // restore path binds a tab and would otherwise leave a fresh install on
         // the built-in defaults until the first tab switch.
         controller.applyPreferences()
+        // After restore: the first-launch rule decides whether it appears, and
+        // a restored editor keeps key status.
+        showWelcomeSplashIfNeeded(restoredSession: didRestoreSession)
     }
     
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -261,8 +269,12 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     
     // MARK: - Session
     
-    private func restoreSession() {
-        guard let (tabs, index) = SessionStore.restore() else { return }
+    /// Restores saved tabs into the primary window. Returns whether any
+    /// document survived the restore filter, which the welcome splash uses to
+    /// decide whether it may take key status.
+    @discardableResult
+    private func restoreSession() -> Bool {
+        guard let (tabs, index) = SessionStore.restore() else { return false }
         
         // Resolve the saved selection by identity in the pre-filter array.
         // Restored documents get fresh UUIDs, so the persisted id cannot be
@@ -298,6 +310,18 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         // Binding the selected tab is what materializes its buffer; the other
         // restored tabs stay as metadata until the user first displays them.
         windowController?.updateEditor()
+        return !validDocs.isEmpty
+    }
+
+    /// Shows the first-launch welcome splash after session restore. The
+    /// controller owns the defaults rule; `restoredSession` only decides
+    /// whether the splash may become key (it must not steal focus from a
+    /// restored document window, so it is ordered front instead).
+    func showWelcomeSplashIfNeeded(restoredSession: Bool) {
+        guard welcomeWindowController == nil else { return }
+        let splash = WelcomeWindowController()
+        guard splash.presentIfNeeded(makeKey: !restoredSession) else { return }
+        welcomeWindowController = splash
     }
 
     /// Test seam: runs the same launch restore path against an already-built

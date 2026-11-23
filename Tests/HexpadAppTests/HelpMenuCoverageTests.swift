@@ -49,6 +49,40 @@ final class HelpMenuCoverageTests: XCTestCase {
         XCTAssertTrue(delegate.validateMenuItem(cli))
     }
 
+    // MARK: - About panel
+
+    /// Both the app menu and Help menu route to AppKit's standard About panel,
+    /// which renders the bundled Credits.rtf plus the Info.plist metadata.
+    func testAboutMenuItemsOpenTheStandardAboutPanel() throws {
+        let delegate = HexpadAppDelegate()
+        let helpAbout = try XCTUnwrap(delegate.makeHelpMenu().item(withTitle: "About Hexpad"))
+        let appAbout = try XCTUnwrap(delegate.makeAppMenu().item(withTitle: "About Hexpad"))
+        let expectedAction = #selector(NSApplication.orderFrontStandardAboutPanel(_:))
+
+        XCTAssertEqual(helpAbout.action, expectedAction)
+        XCTAssertEqual(appAbout.action, expectedAction)
+        XCTAssertNil(helpAbout.target, "the standard panel action travels the responder chain")
+        XCTAssertNil(appAbout.target, "the standard panel action travels the responder chain")
+    }
+
+    func testAboutPanelMetadataMatchesReleaseCopy() {
+        let bundle = Bundle.main
+
+        XCTAssertEqual(bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+                       "1.0")
+        XCTAssertEqual(bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
+                       "1.0")
+        XCTAssertEqual(bundle.object(forInfoDictionaryKey: "NSHumanReadableCopyright") as? String,
+                       "© 2026 Carmen Bertucci. All rights reserved.")
+        XCTAssertEqual(bundle.object(forInfoDictionaryKey: "LSApplicationCategoryType") as? String,
+                       "public.app-category.developer-tools")
+    }
+
+    func testAboutPanelCreditsResourceIsBundled() {
+        XCTAssertNotNil(Bundle.main.url(forResource: "Credits", withExtension: "rtf"),
+                        "the standard About panel reads Credits.rtf from the app bundle")
+    }
+
     // MARK: - Debug Info report
 
     func testDebugReportContainsSectionHeadersAndNonEmptyVersion() {

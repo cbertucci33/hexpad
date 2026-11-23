@@ -706,3 +706,113 @@ final class SessionRestoreTests: XCTestCase {
                        "the saved selection follows the document, not its old index")
     }
 }
+
+// MARK: - Welcome splash (card d846032d)
+
+/// First-launch welcome splash: the defaults rule, presentation seam, and the
+/// Start Editing / show-again interactions. The window controller is driven
+/// through its real actions; only the defaults store is swapped for an
+/// isolated suite so the developer's real first-launch state is untouched.
+final class WelcomeSplashTests: XCTestCase {
+
+    private var defaults: UserDefaults!
+    private var suiteName: String!
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        suiteName = "hexpad-welcome-splash-\(UUID().uuidString)"
+        defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+    }
+
+    override func tearDownWithError() throws {
+        if let defaults, let suiteName {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        defaults = nil
+        suiteName = nil
+        try super.tearDownWithError()
+    }
+
+    func testFirstLaunchWithNoPreferencePresentsSplash() {
+        XCTAssertTrue(WelcomeWindowController.shouldShow(defaults: defaults),
+                      "no stored key means this is the first launch")
+
+        let controller = WelcomeWindowController(defaults: defaults)
+        XCTAssertEqual(controller.window?.title, "Welcome to Hexpad")
+        XCTAssertFalse(controller.lastPresentationRequestedKey, "nothing presented yet")
+
+        XCTAssertTrue(controller.presentIfNeeded(makeKey: true))
+        XCTAssertTrue(controller.window?.isVisible == true)
+        XCTAssertTrue(controller.lastPresentationRequestedKey,
+                      "a true first launch has no session to protect")
+        controller.window?.close()
+    }
+
+    func testRestoredSessionPresentsWithoutTakingKeyStatus() {
+        let controller = WelcomeWindowController(defaults: defaults)
+        XCTAssertTrue(controller.presentIfNeeded(makeKey: false))
+        XCTAssertTrue(controller.window?.isVisible == true)
+        XCTAssertFalse(controller.lastPresentationRequestedKey,
+                       "a restored editor keeps key status")
+        controller.window?.close()
+    }
+
+    func testShowAgainCheckboxIsUncheckedByDefaultAndOptsIntoFutureLaunches() {
+        let first = WelcomeWindowController(defaults: defaults)
+        XCTAssertEqual(first.showAgainCheckbox.state, .off,
+                       "the splash shows once by default")
+
+        // Start Editing with the box untouched: settled to false, so the next
+        // launch stays quiet even though the user never opened Preferences.
+        first.startEditing(nil)
+        XCTAssertNotNil(defaults.object(forKey: WelcomeWindowController.showAgainDefaultsKey),
+                        "the first close settles the first-launch rule")
+        XCTAssertFalse(defaults.bool(forKey: WelcomeWindowController.showAgainDefaultsKey))
+        XCTAssertFalse(WelcomeWindowController.shouldShow(defaults: defaults))
+
+        // Second showing (simulated by a fresh controller with the same store):
+        // the checkbox mirrors the saved false. Clicking it persists immediately,
+        // so a Cmd+Q before Start Editing keeps the opt-in.
+        let second = WelcomeWindowController(defaults: defaults)
+        XCTAssertEqual(second.showAgainCheckbox.state, .off)
+        second.showAgainCheckbox.performClick(nil)
+        XCTAssertEqual(second.showAgainCheckbox.state, .on)
+        XCTAssertEqual(defaults.bool(forKey: WelcomeWindowController.showAgainDefaultsKey), true)
+        second.startEditing(nil)
+        XCTAssertEqual(defaults.bool(forKey: WelcomeWindowController.showAgainDefaultsKey), true)
+        XCTAssertTrue(WelcomeWindowController.shouldShow(defaults: defaults),
+                      "a checked box asks for the splash on every next launch")
+
+        let third = WelcomeWindowController(defaults: defaults)
+        XCTAssertEqual(third.showAgainCheckbox.state, .on,
+                       "the saved choice seeds the checkbox")
+    }
+
+    func testStartEditingButtonClosesTheSplash() {
+        let controller = WelcomeWindowController(defaults: defaults)
+        XCTAssertTrue(controller.presentIfNeeded(makeKey: true))
+        XCTAssertTrue(controller.window?.isVisible == true)
+
+        // Drive the button's real target/action wiring, not the method.
+        controller.startEditingButton.performClick(nil)
+
+        XCTAssertTrue(controller.window?.isVisible == false,
+                      "Start Editing closes the splash")
+        XCTAssertNotNil(defaults.object(forKey: WelcomeWindowController.showAgainDefaultsKey),
+                        "closing always settles the first-launch rule")
+    }
+
+    func testApprovedCopyIsVerbatimIncludingParagraphBreaks() {
+        let expected = """
+        Thank you for downloading!
+
+        Hexpad is a fast and focused text and source code editor. Get your work done easily and cleanly. And more importantly, it's free!
+
+        I built Hexpad because Notepad++ doesn't have a native MacOS version and I just wasn't happy with the alternatives. I hope this app helps your work.
+
+        Remember to check my GitHub for updates, post issues or requests, or find other useful software. https://github.com/cbertucci33/hexpad
+        """
+        XCTAssertEqual(WelcomeWindowController.copyText, expected)
+    }
+}
