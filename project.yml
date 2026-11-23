@@ -11,12 +11,17 @@ targets:
       - path: Sources/Hexpad
       - path: Resources
         buildPhase: resources
+      # Liquid Glass icon package (Xcode 26 compiles .icon via actool;
+      # ASSETCATALOG_COMPILER_APPICON_NAME points at the package name)
+      - path: Hexpad.icon
+        buildPhase: resources
     dependencies:
       - package: HexpadKit
         product: HexpadKit
     settings:
       base:
         SWIFT_VERSION: "5.10"
+        ASSETCATALOG_COMPILER_APPICON_NAME: Hexpad
         MACOSX_DEPLOYMENT_TARGET: 14.0
         PRODUCT_BUNDLE_IDENTIFIER: com.hexpad.Hexpad
         GENERATE_INFOPLIST_FILE: YES
