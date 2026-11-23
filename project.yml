@@ -33,9 +33,14 @@ targets:
         CURRENT_PROJECT_VERSION: "1.0"
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
         INFOPLIST_KEY_NSHumanReadableCopyright: "© 2026 Carmen Bertucci. All rights reserved."
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_ENTITLEMENTS: Hexpad/Hexpad.entitlements
     info:
       path: Hexpad-Info.plist
       properties:
+        # Export compliance: HashKit uses only CryptoKit standard digests (MD5/SHA),
+        # which are exempt; no non-exempt encryption is used.
+        ITSAppUsesNonExemptEncryption: false
         CFBundleShortVersionString: "1.0"
         CFBundleVersion: "1.0"
         LSApplicationCategoryType: public.app-category.developer-tools
