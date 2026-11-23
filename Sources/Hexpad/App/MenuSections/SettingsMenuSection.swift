@@ -1,10 +1,15 @@
 import AppKit
 import HexpadKit
+import Sparkle
 
 extension HexpadAppDelegate {
     func makeAppMenu() -> NSMenu {
         let appSubMenu = NSMenu()
         let aboutItem = NSMenuItem(title: "About Hexpad", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        let checkForUpdatesItem = NSMenuItem(title: "Check for Updates…",
+                                             action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
+                                             keyEquivalent: "")
+        checkForUpdatesItem.target = updaterController
         let preferencesItem = NSMenuItem(title: "Preferences…", action: #selector(showPreferences), keyEquivalent: ",")
         preferencesItem.target = self
         // Notepad++ Settings > Shortcut Mapper. Read-only in v1 (editing comes
@@ -29,6 +34,8 @@ extension HexpadAppDelegate {
         let quitItem = NSMenuItem(title: "Quit Hexpad", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         
         appSubMenu.addItem(aboutItem)
+        appSubMenu.addItem(.separator())
+        appSubMenu.addItem(checkForUpdatesItem)
         appSubMenu.addItem(.separator())
         appSubMenu.addItem(preferencesItem)
         appSubMenu.addItem(shortcutMapperItem)

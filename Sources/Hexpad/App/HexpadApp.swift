@@ -1,5 +1,6 @@
 import AppKit
 import HexpadKit
+import Sparkle
 
 @main
 class HexpadAppDelegate: NSObject, NSApplicationDelegate {
@@ -46,6 +47,7 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     private var preferencesWindowController: PreferencesWindowController?
     private var shortcutMapperWindowController: ShortcutMapperWindowController?
     private var characterPanelController: CharacterPanelWindowController?
+    private(set) var updaterController: SPUStandardUpdaterController?
     /// First-launch welcome splash. Retained for the session after it is shown.
     private var welcomeWindowController: WelcomeWindowController?
 
@@ -82,6 +84,9 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         restoreAppearance()
+        updaterController = SPUStandardUpdaterController(startingUpdater: true,
+                                                         updaterDelegate: nil,
+                                                         userDriverDelegate: nil)
         // Keybinding edits rebuild the whole menu: one code path applies the
         // overrides, and the rebuilt Keybindings submenu shows the new chords.
         NotificationCenter.default.addObserver(self,

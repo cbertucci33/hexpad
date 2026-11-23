@@ -18,6 +18,8 @@ targets:
     dependencies:
       - package: HexpadKit
         product: HexpadKit
+      - package: Sparkle
+        product: Sparkle
     settings:
       base:
         SWIFT_VERSION: "5.10"
@@ -45,6 +47,9 @@ targets:
         CFBundleVersion: "1.0"
         LSApplicationCategoryType: public.app-category.developer-tools
         NSHumanReadableCopyright: "© 2026 Carmen Bertucci. All rights reserved."
+        # Pending feed-hosting step: point this at the published appcast once available.
+        SUFeedURL: "https://cbertucci33.github.io/hexpad/appcast.xml"
+        SUScheduledCheckInterval: 86400
         CFBundleDocumentTypes:
           # public.data removed from Editor claims: generic/binary files remain openable
           # via the All Files viewer entry + explicit Open With. NSServices matches this
@@ -102,3 +107,6 @@ targets:
 packages:
   HexpadKit:
     path: .
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: "2.6.0"
