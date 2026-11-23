@@ -46,10 +46,13 @@ targets:
         LSApplicationCategoryType: public.app-category.developer-tools
         NSHumanReadableCopyright: "© 2026 Carmen Bertucci. All rights reserved."
         CFBundleDocumentTypes:
+          # public.data removed from Editor claims: generic/binary files remain openable
+          # via the All Files viewer entry + explicit Open With. NSServices matches this
+          # narrowed text/source set.
           - CFBundleTypeName: Plain Text
             CFBundleTypeRole: Editor
             LSHandlerRank: Alternate
-            LSItemContentTypes: [public.plain-text, public.utf8-plain-text, public.text, public.source-code, public.script, public.python-script, public.swift-source, public.shell-script, public.json, public.xml, public.data]
+            LSItemContentTypes: [public.plain-text, public.utf8-plain-text, public.text, public.source-code, public.script, public.python-script, public.swift-source, public.shell-script, public.json, public.xml]
           - CFBundleTypeName: All Files
             CFBundleTypeRole: Viewer
             LSHandlerRank: None
