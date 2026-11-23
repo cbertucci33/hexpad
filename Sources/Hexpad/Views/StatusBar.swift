@@ -113,6 +113,8 @@ class StatusBar: NSView {
         let pos = NSTextField(labelWithString: "Ln 1, Col 1")
         pos.font = font
         pos.frame = NSRect(x: 8, y: (height - 14) / 2, width: 120, height: 14)
+        pos.setAccessibilityLabel("Cursor position")
+        pos.setAccessibilityValue(pos.stringValue)
         addSubview(pos)
         positionLabel = pos
         
@@ -122,30 +124,41 @@ class StatusBar: NSView {
         mode.font = font
         mode.frame = NSRect(x: 136, y: (height - 14) / 2, width: 34, height: 14)
         mode.onClick = { [weak self] in self?.onToggleOverwriteMode?() }
+        mode.setAccessibilityLabel("Typing mode")
+        mode.setAccessibilityRole(.button)
+        mode.setAccessibilityValue(mode.stringValue)
         addSubview(mode)
         modeLabel = mode
         
         let sel = NSTextField(labelWithString: "0 selected")
         sel.font = font
         sel.frame = NSRect(x: 178, y: (height - 14) / 2, width: 100, height: 14)
+        sel.setAccessibilityLabel("Selection")
+        sel.setAccessibilityValue(sel.stringValue)
         addSubview(sel)
         selectionLabel = sel
         
         let eol = NSTextField(labelWithString: "LF")
         eol.font = font
         eol.frame = NSRect(x: 286, y: (height - 14) / 2, width: 40, height: 14)
+        eol.setAccessibilityLabel("End of line")
+        eol.setAccessibilityValue(eol.stringValue)
         addSubview(eol)
         eolLabel = eol
         
         let enc = NSTextField(labelWithString: "UTF-8")
         enc.font = font
         enc.frame = NSRect(x: 334, y: (height - 14) / 2, width: 70, height: 14)
+        enc.setAccessibilityLabel("Encoding")
+        enc.setAccessibilityValue(enc.stringValue)
         addSubview(enc)
         encodingLabel = enc
         
         let lang = NSTextField(labelWithString: "Plain Text")
         lang.font = font
         lang.frame = NSRect(x: 412, y: (height - 14) / 2, width: 100, height: 14)
+        lang.setAccessibilityLabel("Language")
+        lang.setAccessibilityValue(lang.stringValue)
         addSubview(lang)
         languageLabel = lang
 
@@ -154,12 +167,16 @@ class StatusBar: NSView {
         let length = NSTextField(labelWithString: "length : 0")
         length.font = font
         length.frame = NSRect(x: 520, y: (height - 14) / 2, width: 110, height: 14)
+        length.setAccessibilityLabel("Length")
+        length.setAccessibilityValue(length.stringValue)
         addSubview(length)
         lengthLabel = length
 
         let lines = NSTextField(labelWithString: "lines : 1")
         lines.font = font
         lines.frame = NSRect(x: 638, y: (height - 14) / 2, width: 80, height: 14)
+        lines.setAccessibilityLabel("Lines")
+        lines.setAccessibilityValue(lines.stringValue)
         addSubview(lines)
         linesLabel = lines
 
@@ -250,11 +267,20 @@ class StatusBar: NSView {
         eolLabel?.stringValue = doc?.eolType ?? "LF"
         encodingLabel?.stringValue = doc?.encoding ?? "UTF-8"
         languageLabel?.stringValue = doc?.language ?? "Plain Text"
+
+        positionLabel?.setAccessibilityValue(positionLabel?.stringValue)
+        selectionLabel?.setAccessibilityValue(selectionLabel?.stringValue)
+        eolLabel?.setAccessibilityValue(eolLabel?.stringValue)
+        encodingLabel?.setAccessibilityValue(encodingLabel?.stringValue)
+        languageLabel?.setAccessibilityValue(languageLabel?.stringValue)
+        lengthLabel?.setAccessibilityValue(lengthLabel?.stringValue)
+        linesLabel?.setAccessibilityValue(linesLabel?.stringValue)
     }
 
     /// Shows the typing-mode field's INS or OVR state.
     func setOverwriteMode(_ isOverwrite: Bool) {
         modeLabel?.stringValue = isOverwrite ? "OVR" : "INS"
+        modeLabel?.setAccessibilityValue(modeLabel?.stringValue)
     }
 
     /// Returns the cached index when it still describes the text on screen.

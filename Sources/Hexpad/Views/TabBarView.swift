@@ -609,6 +609,9 @@ class TabButton: NSButton {
         // context menu in one path; a .rightMouseUp action here would select
         // the tab a second time (or fire instead of the menu).
         sendAction(on: [.leftMouseUp])
+        setAccessibilityLabel(doc.name)
+        setAccessibilityRole(.button)
+        setAccessibilityValue(doc.unsavedChanges ? "modified" : nil)
         
         let title = NSTextField(labelWithString: TabLabel.truncated(doc.name,
                                                                     maxLength: maxLabelLength))
@@ -633,6 +636,8 @@ class TabButton: NSButton {
         closeBtn.isBordered = false
         closeBtn.target = self
         closeBtn.action = #selector(closeTabClicked)
+        closeBtn.setAccessibilityLabel("Close \(doc.name)")
+        closeBtn.setAccessibilityRole(.button)
         addSubview(closeBtn)
         closeButton = closeBtn
         
@@ -840,10 +845,14 @@ class TabButton: NSButton {
     /// Updates this button's dot without rebuilding the bar. Called on typing.
     func refreshDirtyIndicator() {
         dirtyIndicator?.isHidden = !doc.unsavedChanges
+        setAccessibilityValue(doc.unsavedChanges ? "modified" : nil)
     }
     
     @objc private func modifiedDidChange() {
         dirtyIndicator?.isHidden = !doc.unsavedChanges
+        setAccessibilityValue(doc.unsavedChanges ? "modified" : nil)
+        setAccessibilityLabel(doc.name)
+        closeButton?.setAccessibilityLabel("Close \(doc.name)")
         refreshToolTip()
     }
     

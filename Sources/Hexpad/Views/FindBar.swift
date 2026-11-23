@@ -146,6 +146,7 @@ class FindBar: NSView, NSSearchFieldDelegate {
         // While typing, the field editor (firstResponder) consumes Enter/Escape
         // before our keyDown ever runs; the delegate sees them first.
         searchField.delegate = self
+        searchField.setAccessibilityLabel("Find")
         addSubview(searchField)
         
         replaceField.placeholderString = "Replace..."
@@ -211,6 +212,7 @@ class FindBar: NSView, NSSearchFieldDelegate {
         
         matchCountLabel.font = font
         matchCountLabel.alignment = .center
+        matchCountLabel.setAccessibilityLabel("Match count")
         addSubview(matchCountLabel)
 
         wrapButton.title = "Wrap"
@@ -227,6 +229,7 @@ class FindBar: NSView, NSSearchFieldDelegate {
         findPrevButton.target = self
         findPrevButton.action = #selector(findPreviousAction)
         findPrevButton.frame = NSRect(x: 596, y: yCenter, width: 60, height: 24)
+        findPrevButton.setAccessibilityLabel("Previous match")
         addSubview(findPrevButton)
         
         findNextButton.title = "Next"
@@ -235,6 +238,7 @@ class FindBar: NSView, NSSearchFieldDelegate {
         findNextButton.target = self
         findNextButton.action = #selector(findNextAction)
         findNextButton.frame = NSRect(x: 660, y: yCenter, width: 60, height: 24)
+        findNextButton.setAccessibilityLabel("Next match")
         addSubview(findNextButton)
         
         replaceButton.title = "Replace"

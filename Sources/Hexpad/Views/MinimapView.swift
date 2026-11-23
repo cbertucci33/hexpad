@@ -562,6 +562,8 @@ final class MinimapView: NSView {
         super.init(frame: NSRect(x: 0, y: 0, width: Self.width, height: 100))
         wantsLayer = true
         isHidden = true
+        setAccessibilityElement(false)
+        setAccessibilityLabel("Minimap")
         startObservingLayout()
     }
 

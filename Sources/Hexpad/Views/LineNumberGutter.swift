@@ -317,12 +317,19 @@ final class LineNumberGutter: NSView {
         super.init(frame: NSRect(x: 0, y: 0, width: Self.width, height: 100))
         wantsLayer = true
         refreshChromeColors()
+        configureAccessibility()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         wantsLayer = true
         refreshChromeColors()
+        configureAccessibility()
+    }
+
+    private func configureAccessibility() {
+        setAccessibilityElement(false)
+        setAccessibilityLabel("Line numbers")
     }
 
     /// Re-resolves the gutter background for the current appearance. A CGColor

@@ -40,6 +40,7 @@ final class CharacterGridView: NSView {
         collectionView.delegate = self
         collectionView.allowsMultipleSelection = false
         collectionView.allowsEmptySelection = true
+        collectionView.setAccessibilityLabel("Character grid")
         collectionView.register(NSCollectionViewItem.self,
                                 forItemWithIdentifier: Self.itemIdentifier)
 
