@@ -369,27 +369,6 @@ enum MinimapGeometry {
     /// `rowHeightOverride` lets the view pass the capped row height it paints
     /// with, so the band always lines up with the rows actually drawn.
     ///
-    /// This convenience overload builds one line index from `text`. The live
-    /// view uses the `lineRanges` overload with its cached minimap model so a
-    /// scroll/caret frame never scans the document.
-    static func viewportRect(visibleCharacterRange: NSRange,
-                             text: String,
-                             lineCount: Int,
-                             width: CGFloat,
-                             height: CGFloat,
-                             rowHeightOverride: CGFloat? = nil) -> NSRect? {
-        let index = LineIndex(text)
-        return viewportRect(visibleCharacterRange: visibleCharacterRange,
-                            lineRanges: lineRanges(from: index),
-                            textLength: index.textLength,
-                            lineCount: lineCount,
-                            width: width,
-                            height: height,
-                            rowHeightOverride: rowHeightOverride)
-    }
-
-    /// Overlay rectangle resolved against cached line ranges.
-    ///
     /// `lineRanges` and `textLength` come from ``MinimapLineModel``; line
     /// numbers are found by binary search, so this is O(log lines) per call
     /// instead of the O(document) scan ``GutterGeometry/logicalLine(of:in:)``
@@ -453,20 +432,6 @@ enum MinimapGeometry {
             }
         }
         return max(1, low)
-    }
-
-    /// Content ranges for every logical line, derived from a full index.
-    /// Mirrors ``MinimapLineModel``'s ranges (LF excluded).
-    private static func lineRanges(from index: LineIndex) -> [NSRange] {
-        var ranges: [NSRange] = []
-        ranges.reserveCapacity(index.lineStarts.count)
-        for (line, start) in index.lineStarts.enumerated() {
-            let end = line + 1 < index.lineStarts.count
-                ? index.lineStarts[line + 1] - 1
-                : index.textLength
-            ranges.append(NSRange(location: start, length: max(0, end - start)))
-        }
-        return ranges
     }
 
     /// Scroll origin that centres `fraction` of the document in the viewport.
@@ -979,10 +944,15 @@ final class MinimapView: NSView {
 
         overlayFullTextScanCount += 1
         let text = textView.string
+        let fallbackModel = MinimapLineModel.compute(
+            text: text,
+            language: Language(rawValue: document?.language ?? "") ?? .plain
+        )
         return MinimapGeometry.viewportRect(
             visibleCharacterRange: visible,
-            text: text,
-            lineCount: GutterGeometry.lineCount(in: text),
+            lineRanges: fallbackModel.lineRanges,
+            textLength: fallbackModel.textLength,
+            lineCount: fallbackModel.lines.count,
             width: bounds.width,
             height: bounds.height,
             rowHeightOverride: paintedRowHeight

@@ -509,11 +509,6 @@ final class FindBarCoverageTests: XCTestCase {
     /// ~10–50 ms scanning per typed character).
     func testLiveSearchDebounceThresholdIsSharedAndLowered() {
         XCTAssertEqual(SearchBarTiming.debounceThreshold, 256 * 1024)
-        XCTAssertEqual(FindBar.debounceSearchLength, SearchBarTiming.debounceThreshold,
-                       "FindBar uses the shared threshold")
-        XCTAssertEqual(IncrementalSearchBar.debounceSearchLength,
-                       SearchBarTiming.debounceThreshold,
-                       "IncrementalSearchBar uses the shared threshold")
 
         XCTAssertFalse(SearchBarTiming.shouldDebounce(length: 256 * 1024),
                        "at the threshold still searches immediately")

@@ -264,6 +264,14 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     private func restoreSession() {
         guard let (tabs, index) = SessionStore.restore() else { return }
         
+        // Resolve the saved selection by identity in the pre-filter array.
+        // Restored documents get fresh UUIDs, so the persisted id cannot be
+        // used; filtering can also drop tabs before the selection, which is
+        // why the saved index itself cannot be reused.
+        let selectedDocument = tabs.documents.indices.contains(index)
+            ? tabs.documents[index]
+            : nil
+
         // Keep untitled buffers and file-backed tabs whose file still exists.
         // A missing file is only dropped when there is nothing to lose; see
         // `restorableDocuments(from:)`. This filter reads metadata only: the
@@ -277,8 +285,11 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
             restoredTabs.addDocument(doc)
         }
         
-        // Restore selected index (clamp to valid range)
-        let restoredIndex = min(index, max(0, restoredTabs.count - 1))
+        // Follow the selected document to its post-filter index; a dropped
+        // selection (or an empty session) falls back to the first tab.
+        let restoredIndex = selectedDocument.flatMap { selected in
+            validDocs.firstIndex { $0 === selected }
+        } ?? 0
         restoredTabs.selectedIndex = restoredIndex
         
         windowController?.tabStore.documents = restoredTabs.documents

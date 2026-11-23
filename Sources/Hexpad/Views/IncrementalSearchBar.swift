@@ -62,7 +62,6 @@ final class IncrementalSearchBar: NSView, NSSearchFieldDelegate {
     /// behave the same: documents over 256 KB wait for a 150 ms pause, smaller
     /// ones search immediately.
     private var pendingSearchWorkItem: DispatchWorkItem?
-    static let debounceSearchLength = SearchBarTiming.debounceThreshold
     private static let debounceInterval = SearchBarTiming.debounceInterval
     /// Set while handling a field-editor command; Return must not be mistaken
     /// for a focus loss and tear the bar down.

@@ -1994,9 +1994,9 @@ class MainWindowController: NSViewController {
         }
 
         // Change histories and tail-monitoring flags are keyed by document id,
-        // not by tab object, so they get their own "last one out" check. A
-        // document restored from a session can reuse an id with a fresh
-        // object, so only clear these once no group holds that id.
+        // not by tab object, so they get their own "last one out" check. The
+        // same document can be open in both split groups under one id; only
+        // clear these once no group holds that id.
         if let closed {
             pruneIDKeyedCaches(for: closed)
         }
@@ -2839,11 +2839,20 @@ class MainWindowController: NSViewController {
             lastHighlightedRange = NSRange(location: 0, length: 0)
         }
 
-        // A cold document or an appearance change cannot know which characters
-        // still carry old theme colours, so reset them once. Switching to an
-        // already-themed tab and the per-keystroke path never do this.
-        var needsReset = forceReset || docChanged
-        if docThemeNames[doc.id] != theme.name {
+        let language = Language(rawValue: doc.language) ?? .plain
+        // The store's own language is part of the staleness check: a cache
+        // tokenized for another grammar can hold colours outside the band this
+        // pass will paint, even when the external theme tag still matches.
+        let languageChanged = syntaxStore.language != language
+
+        // A cold document, a forced reset, a language change, or an appearance
+        // change cannot know which characters still carry old colours, so reset
+        // the whole storage once. Switching to an already-themed tab and the
+        // per-keystroke path never do this.
+        if docChanged || forceReset || languageChanged || docThemeNames[doc.id] != theme.name {
+            // Set the store's language first: the pass below tokenizes for it,
+            // and the condition above already captured the previous value.
+            syntaxStore.reset(language: language)
             textStorage.beginEditing()
             textStorage.setAttributes([
                 .font: editor.bodyFont,
@@ -2853,29 +2862,17 @@ class MainWindowController: NSViewController {
             docThemeNames[doc.id] = theme.name
             lastHighlightedRange = NSRange(location: 0, length: 0)
             syntaxHighlightCache.setLastHighlightedRange(lastHighlightedRange, for: doc)
-            needsReset = true
         }
 
         // Plain Text = no token colors, but keep the editor's monospaced font:
         // an unattributed shared storage would render as Helvetica.
-        guard let language = Language(rawValue: doc.language),
-              language != .plain else {
+        guard language != .plain else {
             clearHighlighting(in: textStorage, range: lastHighlightedRange,
                               theme: theme, font: editor.bodyFont, textLength: textLength)
             lastHighlightedRange = NSRange(location: 0, length: 0)
             syntaxHighlightCache.setLastHighlightedRange(lastHighlightedRange, for: doc)
             syntaxStore.reset(language: .plain)
             return
-        }
-
-        if syntaxStore.language != language {
-            syntaxStore.reset(language: language)
-            clearHighlighting(in: textStorage, range: lastHighlightedRange,
-                              theme: theme, font: editor.bodyFont, textLength: textLength)
-            lastHighlightedRange = NSRange(location: 0, length: 0)
-            syntaxHighlightCache.setLastHighlightedRange(lastHighlightedRange, for: doc)
-        } else if needsReset || docChanged {
-            syntaxStore.reset(language: language)
         }
 
         if let editedRange {
@@ -3598,7 +3595,9 @@ class MainWindowController: NSViewController {
     /// `registersUndo` is `true` for explicit reloads (File > Reload, opening
     /// an already-open clean file) and `false` for watcher-driven reloads: a
     /// tailed log is replaced many times a second, and each undo entry retains
-    /// a full copy of the previous buffer (Pilot P-10).
+    /// a full copy of the previous buffer (Pilot P-10). A watcher reload also
+    /// clears the document's existing undo stack, because those entries were
+    /// registered against the buffer it just replaced.
     private func reloadDocument(_ doc: DocumentModel,
                                 from url: URL,
                                 registersUndo: Bool = true) -> DiskReloadResult {
@@ -3624,6 +3623,14 @@ class MainWindowController: NSViewController {
         isReloadingDocument = true
         doc.reloadText(text, registersUndo: registersUndo)
         isReloadingDocument = false
+        if !registersUndo {
+            // A watcher-driven reload replaces the whole buffer, so undo
+            // closures registered before it capture ranges (and text) from a
+            // buffer that no longer exists. Applying one after the reload would
+            // silently edit the new text at those stale offsets. The reload is
+            // a new baseline: drop the old stack instead of leaving it live.
+            doc.undoManager.removeAllActions()
+        }
         changeHistories[doc.id]?.markSaved()
         return .reloaded
     }
@@ -5256,7 +5263,7 @@ class MainWindowController: NSViewController {
         // that is also open in the other group keeps its caches; everything
         // else drops its fold/bookmark/hide maps, theme tag and watcher
         // baseline here, so repeated loads cannot accumulate them and a stale
-        // baseline for a reused UUID is gone before the watcher consults it.
+        // watcher baseline is gone before the next document consults it.
         for doc in outgoing {
             guard !allPanes.contains(where: { $0.tabStore.documents.contains { $0 === doc } })
             else { continue }

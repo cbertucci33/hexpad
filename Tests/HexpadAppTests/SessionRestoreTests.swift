@@ -132,6 +132,38 @@ final class SessionRestoreTests: XCTestCase {
         XCTAssertTrue(doc.keepsBOM, "the reloaded BOM state is recorded")
     }
 
+    /// BUG 1 (P-10 follow-up): a watcher reload replaces the buffer without
+    /// adding an undo step, but the old stack still holds closures that capture
+    /// ranges from the pre-reload text. Applying one after the reload would
+    /// silently edit the new buffer at stale offsets, so the reload must become
+    /// a new undo baseline.
+    func testExternalReloadAfterSaveClearsStaleUndoEntries() throws {
+        let file = testDir.appendingPathComponent("stale-undo-\(UUID().uuidString).txt")
+        try "original line\n".write(to: file, atomically: true, encoding: .utf8)
+        let (controller, _) = makeController()
+        controller.openFile(atPath: file.path)
+        let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
+
+        doc.text = "saved edit\n"
+        try doc.save()
+        XCTAssertTrue(doc.undoManager.canUndo,
+                      "typing before the save leaves undo history to go stale")
+
+        // Record the post-save watcher baseline.
+        controller.checkExternalChanges()
+
+        try "external line\n".write(to: file, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: 30)],
+            ofItemAtPath: file.path
+        )
+        controller.checkExternalChanges()
+
+        XCTAssertEqual(doc.text, "external line\n")
+        XCTAssertFalse(doc.undoManager.canUndo,
+                       "a watcher reload must drop undo closures from the replaced buffer")
+    }
+
     // MARK: - V19g: Monitoring mode (tail -f)
 
     /// Tail mode owns external changes: a dirty buffer follows the file instead
@@ -181,7 +213,11 @@ final class SessionRestoreTests: XCTestCase {
         controller.openFile(atPath: file.path)
         let doc = try XCTUnwrap(controller.tabStore.selectedDocument)
         controller.setFileMonitoring(true, for: doc)
-        XCTAssertFalse(doc.undoManager.canUndo)
+        // Register undo history before the watcher replaces the buffer: those
+        // entries capture the old text and must be dropped by the reload.
+        doc.text = "local edit\n"
+        try doc.save()
+        XCTAssertTrue(doc.undoManager.canUndo)
 
         try "one\ntwo\n".write(to: file, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes(
@@ -639,5 +675,34 @@ final class SessionRestoreTests: XCTestCase {
                        "a tab switch must not materialize unrelated tabs")
         XCTAssertEqual(documents[1].text, "tab 1\n")
         XCTAssertEqual(controller.editorTextView?.string, "tab 1\n")
+    }
+
+    /// BUG 2: dropping a missing clean tab before the saved selection must not
+    /// shift the selection to a different document. Pilot shape:
+    /// [missing, A, B] with index 1 restores [A, B] and must still select A.
+    func testRestoreFollowsSavedSelectionWhenAnEarlierTabIsDropped() throws {
+        let missingURL = testDir.appendingPathComponent("missing-\(UUID().uuidString).txt")
+        let missing = DocumentModel(text: "gone", filePath: missingURL)
+        let a = DocumentModel(text: "A")
+        a.name = "A"
+        let b = DocumentModel(text: "B")
+        b.name = "B"
+
+        let store = TabStore()
+        store.addDocument(missing)
+        store.addDocument(a)
+        store.addDocument(b)
+        store.selectDocument(at: 1)
+        try SessionStore.save(store)
+
+        let (controller, _) = makeController()
+        let delegate = HexpadAppDelegate()
+        delegate.restoreSessionForTest(into: controller)
+
+        XCTAssertEqual(controller.tabStore.count, 2, "the missing clean tab is dropped")
+        XCTAssertEqual(controller.tabStore.documents.map(\.name), ["A", "B"])
+        XCTAssertEqual(controller.tabStore.selectedIndex, 0)
+        XCTAssertEqual(controller.tabStore.selectedDocument?.name, "A",
+                       "the saved selection follows the document, not its old index")
     }
 }

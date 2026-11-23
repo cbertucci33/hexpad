@@ -75,9 +75,11 @@ final class MinimapTests: XCTestCase {
     func testViewportOverlayCoversVisibleLogicalLines() {
         let text = tenLineText()
         // Lines 3-4 are visible: chars 4..<8 in "1\n2\n3\n4\n...".
+        let model = MinimapLineModel.compute(text: text, language: .plain)
         let rect = MinimapGeometry.viewportRect(
             visibleCharacterRange: NSRange(location: 4, length: 4),
-            text: text,
+            lineRanges: model.lineRanges,
+            textLength: model.textLength,
             lineCount: 10,
             width: 100,
             height: 100
@@ -91,9 +93,11 @@ final class MinimapTests: XCTestCase {
 
     func testViewportOverlayNearEndOfDocumentStaysInsideBounds() {
         let text = tenLineText()
+        let model = MinimapLineModel.compute(text: text, language: .plain)
         let rect = MinimapGeometry.viewportRect(
             visibleCharacterRange: NSRange(location: 16, length: 4),
-            text: text,
+            lineRanges: model.lineRanges,
+            textLength: model.textLength,
             lineCount: 10,
             width: 100,
             height: 100
@@ -106,9 +110,11 @@ final class MinimapTests: XCTestCase {
 
     func testTinyVisibleBandKeepsAMinimumOverlayHeight() {
         let text = (1...1_000).map(String.init).joined(separator: "\n")
+        let model = MinimapLineModel.compute(text: text, language: .plain)
         let rect = MinimapGeometry.viewportRect(
             visibleCharacterRange: NSRange(location: 0, length: 1),
-            text: text,
+            lineRanges: model.lineRanges,
+            textLength: model.textLength,
             lineCount: 1_000,
             width: 100,
             height: 100

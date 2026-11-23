@@ -104,7 +104,6 @@ class FindBar: NSView, NSSearchFieldDelegate {
     /// stay immediate so counts remain instant. Shared with Incremental Search
     /// through ``SearchBarTiming``.
     private var pendingFindWorkItem: DispatchWorkItem?
-    static let debounceSearchLength = SearchBarTiming.debounceThreshold
     private static let debounceInterval = SearchBarTiming.debounceInterval
     
     override init(frame frameRect: NSRect) {

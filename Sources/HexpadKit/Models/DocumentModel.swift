@@ -27,6 +27,9 @@ public final class DocumentModel: Identifiable, ObservableObject {
 
     private struct PendingSessionContent {
         let text: String
+        /// UTF-16 length computed once while the session is parsed, so tab
+        /// sorting never has to bridge the string to measure it.
+        let length: Int
         /// A restored dirty buffer must re-read its saved baseline from disk
         /// when it materializes, exactly as `fromSessionData` used to do
         /// eagerly. A clean buffer's baseline is simply its own text.
@@ -61,7 +64,7 @@ public final class DocumentModel: Identifiable, ObservableObject {
     /// `textStorage.length` for a loaded document, and stays O(1) for a lazy
     /// one so tab sorting by length need not materialize every tab.
     var contentLength: Int {
-        if let pendingContent { return (pendingContent.text as NSString).length }
+        if let pendingContent { return pendingContent.length }
         return textStorage.length
     }
 
@@ -317,6 +320,7 @@ public final class DocumentModel: Identifiable, ObservableObject {
         self.foldState = FoldState()
         self.bookmarkState = BookmarkState()
         self.pendingContent = PendingSessionContent(text: text,
+                                                    length: text.utf16.count,
                                                     restoresDiskBaseline: restoringDiskBaseline)
         if let filePath {
             self.savedModificationDate = try? FileManager.default
@@ -480,7 +484,10 @@ public final class DocumentModel: Identifiable, ObservableObject {
     ///   default (`true`), so an explicit reload stays one undo step. The
     ///   external-change watcher passes `false`: tail mode appends repeatedly
     ///   and each full-buffer undo entry would retain the previous text
-    ///   forever (Pilot P-10). The buffer still becomes the clean baseline.
+    ///   forever (Pilot P-10). The watcher also clears the document's existing
+    ///   undo stack after such a reload, because those entries capture ranges
+    ///   from the buffer being replaced. The buffer still becomes the clean
+    ///   baseline.
     public func reloadText(_ newText: String, registersUndo: Bool = true) {
         _originalText = newText
         _saveConversionPending = false
@@ -684,7 +691,10 @@ public final class DocumentModel: Identifiable, ObservableObject {
     }
     
     public static func fromSessionData(_ data: [String: Any]) -> DocumentModel? {
-        guard let idStr = data["id"] as? String,
+        // The persisted id is validated but intentionally not reused: every
+        // restored document gets a fresh UUID, so per-id caches and watcher
+        // baselines can never collide with an object that is already open.
+        guard data["id"] is String,
               let text = data["text"] as? String,
               let name = data["name"] as? String,
               let encoding = data["encoding"] as? String,
@@ -692,7 +702,6 @@ public final class DocumentModel: Identifiable, ObservableObject {
               let language = data["language"] as? String else {
             return nil
         }
-        let id = UUID(uuidString: idStr) ?? UUID()
         // fileURLWithPath, not URL(string:): paths with spaces, #, ? or % either
         // fail outright or come back percent-encoded and restore as broken tabs.
         let filePath = (data["filePath"] as? String).map { URL(fileURLWithPath: $0) }
