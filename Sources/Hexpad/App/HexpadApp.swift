@@ -364,6 +364,7 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(topLevelMenuItem(title: "File", submenu: makeFileMenu()))
         menu.addItem(topLevelMenuItem(title: "Edit", submenu: makeEditMenu()))
+        menu.addItem(topLevelMenuItem(title: "Format", submenu: makeFormatMenu()))
         menu.addItem(topLevelMenuItem(title: "Text", submenu: makeTextMenu()))
         menu.addItem(topLevelMenuItem(title: "Search", submenu: makeSearchMenu()))
         menu.addItem(topLevelMenuItem(title: "View", submenu: makeViewMenu()))
@@ -374,7 +375,9 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(topLevelMenuItem(title: "Run", submenu: makeRunMenu()))
         menu.addItem(topLevelMenuItem(title: "Tools", submenu: makeToolsMenu()))
         menu.addItem(topLevelMenuItem(title: "Window", submenu: makeWindowMenu()))
-        menu.addItem(topLevelMenuItem(title: "Help", submenu: makeHelpMenu()))
+        let helpMenu = makeHelpMenu()
+        menu.addItem(topLevelMenuItem(title: "Help", submenu: helpMenu))
+        NSApp.helpMenu = helpMenu
 
         NSApplication.shared.menu = menu
         return menu

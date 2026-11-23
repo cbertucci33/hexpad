@@ -14,6 +14,14 @@ extension HexpadAppDelegate {
                                             action: #selector(showShortcutMapper),
                                             keyEquivalent: "")
         shortcutMapperItem.target = self
+
+        // Standard macOS Services submenu. The app registers NSServices in
+        // Info.plist; assigning servicesMenu exposes them in this placeholder.
+        let servicesItem = NSMenuItem(title: "Services", action: nil, keyEquivalent: "")
+        let servicesMenu = NSMenu(title: "Services")
+        servicesItem.submenu = servicesMenu
+        NSApp.servicesMenu = servicesMenu
+
         let hideItem = NSMenuItem(title: "Hide Hexpad", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         let hideOthersItem = NSMenuItem(title: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
         hideOthersItem.keyEquivalentModifierMask = [.command, .option]
@@ -24,6 +32,8 @@ extension HexpadAppDelegate {
         appSubMenu.addItem(.separator())
         appSubMenu.addItem(preferencesItem)
         appSubMenu.addItem(shortcutMapperItem)
+        appSubMenu.addItem(.separator())
+        appSubMenu.addItem(servicesItem)
         appSubMenu.addItem(.separator())
         appSubMenu.addItem(hideItem)
         appSubMenu.addItem(hideOthersItem)

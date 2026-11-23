@@ -55,6 +55,10 @@ extension HexpadAppDelegate {
         let copyItem = NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         let pasteItem = NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         let selectAllItem = NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        let emojiItem = NSMenuItem(title: "Emoji & Symbols",
+                                   action: #selector(NSApplication.orderFrontCharacterPalette(_:)),
+                                   keyEquivalent: " ")
+        emojiItem.keyEquivalentModifierMask = [.command, .control]
         let findItem = NSMenuItem(title: "Find...", action: #selector(toggleFindBar), keyEquivalent: "f")
         findItem.target = self
 
@@ -215,6 +219,7 @@ extension HexpadAppDelegate {
         editMenu.addItem(copyPathItem)
         editMenu.addItem(pasteItem)
         editMenu.addItem(selectAllItem)
+        editMenu.addItem(emojiItem)
         editMenu.addItem(.separator())
         editMenu.addItem(convertCaseItem)
         editMenu.addItem(indentItem)

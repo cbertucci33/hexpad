@@ -6,11 +6,16 @@ extension HexpadAppDelegate {
         let windowMenu = NSMenu(title: "Window")
         let minimizeItem = NSMenuItem(title: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         let zoomItem = NSMenuItem(title: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        let bringAllToFrontItem = NSMenuItem(title: "Bring All to Front",
+                                             action: #selector(NSApplication.arrangeInFront(_:)),
+                                             keyEquivalent: "")
+        bringAllToFrontItem.target = NSApp
         let fullscreenItem = NSMenuItem(title: "Enter Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
         fullscreenItem.keyEquivalentModifierMask = [.command, .control]
         
         windowMenu.addItem(minimizeItem)
         windowMenu.addItem(zoomItem)
+        windowMenu.addItem(bringAllToFrontItem)
         windowMenu.addItem(.separator())
         windowMenu.addItem(fullscreenItem)
 
@@ -44,6 +49,7 @@ extension HexpadAppDelegate {
         // commands. The submenu is shared with the tab context menu.
         windowMenu.addItem(.separator())
         windowMenu.addItem(TabSortMenu.makeItem())
+        NSApp.windowsMenu = windowMenu
         return windowMenu
     }
 }
