@@ -232,6 +232,42 @@ final class TabBarCoverageTests: XCTestCase {
         XCTAssertEqual(changes, 0, "a no-op drag does not notify")
     }
 
+    // MARK: - 9. Width/resize invariants (U3: fitWidthToClip + post-resize bounds)
+
+    func testFitWidthToClipNeverNarrowsBelowClipWidth() throws {
+        // The bar must fill the clip even when three narrow tabs (3 × 142 - 2
+        // = 424pt) are narrower than the clip (800pt): a bar narrower than its
+        // clip leaves a dead zone where clicks fall through to nothing.
+        let (bar, _, _) = makeBar(["a", "b", "c"])
+        bar.fitWidthToClip()
+        XCTAssertGreaterThanOrEqual(bar.frame.width, 800,
+                                    "bar width \(bar.frame.width) fell below the 800pt clip")
+
+        // And when many tabs exceed the clip, the width covers all of them:
+        let (wide, _, _) = makeBar(Array(repeating: "doc", count: 10))
+        wide.fitWidthToClip()
+        XCTAssertEqual(wide.frame.width, 10 * (140 + 2) - 2,
+                       "total-tabs width must be exactly 10 × 142 − 2 = 1418pt")
+    }
+
+    func testTabButtonsStayWithinBoundsAfterClipResize() throws {
+        // After the enclosing clip shrinks, every button must still sit inside
+        // the bar frame and reloadTabs()/fitWidthToClip must keep the bar wide
+        // enough to contain them (the U3 harness invariant, now for tabs).
+        let (bar, _, _) = makeBar(["a", "b", "c", "d", "e"])
+        bar.frame = NSRect(x: 0, y: 0, width: 300, height: 32) // shrink the clip
+        bar.reloadTabs()
+
+        for button in tabButtons(in: bar) {
+            XCTAssertTrue(button.frame.maxX <= bar.frame.width + 0.5,
+                          "tab at x \(button.frame.maxX) exceeds bar width \(bar.frame.width) after resize")
+            XCTAssertTrue(button.frame.minY >= 0 && button.frame.maxY <= bar.frame.height,
+                          "tab vertically out of bounds after resize")
+        }
+        XCTAssertGreaterThanOrEqual(bar.frame.width, 300,
+                                    "bar narrowed below its clip after resize")
+    }
+
     func testLockTabBarRefusesReorder() throws {
         let (bar, store, _) = makeBar(["a", "b", "c"])
         bar.lockTabBar = true
