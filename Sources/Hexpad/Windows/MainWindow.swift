@@ -28,6 +28,10 @@ class MainWindow: NSWindow {
         // small-toolbar metric and measures well under 52pt.
         toolbarStyle = .unifiedCompact
         self.toolbar = toolbar
+        // Kill the system-drawn hairline under the titlebar band (CB: "a white
+        // line around the entire box for the icons"). macOS draws this separator
+        // for unified toolbar styles by default; .none removes it.
+        titlebarSeparatorStyle = .none
     }
 }
 
