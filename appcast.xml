@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Hexpad</title>
+    <link>https://github.com/cbertucci33/hexpad</link>
+    <description>Most recent changes with links to updates.</description>
+    <language>en</language>
+    <item>
+      <title>Version 1.0.0</title>
+      <sparkle:releaseNotesLink>https://github.com/cbertucci33/hexpad/releases/tag/1.0.0</sparkle:releaseNotesLink>
+      <pubDate>Tue, 24 Nov 2026 17:17:00 GMT</pubDate>
+      <sparkle:version>1.0.0</sparkle:version>
+      <sparkle:shortVersionString>1.0.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/cbertucci33/hexpad/releases/download/1.0.0/Hexpad-1.0.0.dmg"
+                 length="5373624"
+                 type="application/x-bzip2-disk-image"
+                 sparkle:edSignature="rP+G9pXo1M1vyE9+ndehBIC1OCR4THY8PPwcXVHtS7uLjLlaioNWadDhEhbI9MCcxNiROWdIhXyLh/r3L0NVBw==" />
+    </item>
+  </channel>
+</rss>

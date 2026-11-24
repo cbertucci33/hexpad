@@ -49,6 +49,7 @@ targets:
         NSHumanReadableCopyright: "© 2026 Carmen Bertucci. All rights reserved."
         # Pending feed-hosting step: point this at the published appcast once available.
         SUFeedURL: "https://cbertucci33.github.io/hexpad/appcast.xml"
+        SUPublicEDKey: "EC9iPeIt1Mxisg1ChxZNW8puFW6n54d8WQHjrPywQRMOcI1onei/ba9wRl5up35jJIRllVPp8fw2A0gKc4CiBw=="
         SUScheduledCheckInterval: 86400
         CFBundleDocumentTypes:
           # public.data removed from Editor claims: generic/binary files remain openable
