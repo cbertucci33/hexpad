@@ -107,14 +107,14 @@ final class WelcomeWindowController: NSWindowController, NSTextViewDelegate {
         guard let content = window?.contentView else { return }
         content.wantsLayer = true
 
-        // No Assets.xcassets ships an app icon yet, so the top mark is a large
-        // text glyph. Swap this for an NSImageView once an icon asset exists.
-        let iconLabel = NSTextField(labelWithString: "H")
-        iconLabel.font = NSFont.systemFont(ofSize: 40, weight: .semibold)
-        iconLabel.textColor = .controlAccentColor
-        iconLabel.alignment = .center
-        iconLabel.frame = NSRect(x: 20, y: 286, width: 380, height: 40)
-        content.addSubview(iconLabel)
+        // Brand mark: flat indigo hexagon (geometry mirrors the icon package's
+        // hex.svg - pointy-top, regular). NOT the app icon: a rounded-rect app
+        // tile reads as a button; the hexagon is a logo, not a control.
+        let hexMark = NSImageView(frame: NSRect(x: 178, y: 252, width: 64, height: 64))
+        hexMark.image = Self.brandHexagonImage(size: NSSize(width: 64, height: 64))
+        hexMark.imageScaling = .scaleProportionallyUpOrDown
+        hexMark.setAccessibilityLabel("Hexpad")
+        content.addSubview(hexMark)
 
         let scrollView = NSScrollView(frame: NSRect(x: 20, y: 88, width: 380, height: 190))
         scrollView.borderType = .noBorder
@@ -155,6 +155,36 @@ final class WelcomeWindowController: NSWindowController, NSTextViewDelegate {
         showAgainCheckbox.action = #selector(showAgainChanged(_:))
         showAgainCheckbox.frame = NSRect(x: 20, y: 16, width: 380, height: 20)
         content.addSubview(showAgainCheckbox)
+    }
+
+    /// Flat brand hexagon, indigo. Pointy-top regular hexagon matching the
+    /// icon package's hex.svg proportions (216.5 wide × 250 tall → inset
+    /// within the square canvas). Draws crisp at any scale.
+    static func brandHexagonImage(size: NSSize) -> NSImage {
+        let image = NSImage(size: size)
+        image.lockFocus()
+        defer { image.unlockFocus() }
+        let inset = size.width * 0.08
+        let w = size.width - inset * 2
+        let h = size.height - inset * 2
+        let cx = size.width / 2
+        let top = CGPoint(x: cx, y: size.height - inset)
+        let upperRight = CGPoint(x: cx + w / 2, y: size.height - inset - h * 0.25)
+        let lowerRight = CGPoint(x: cx + w / 2, y: inset + h * 0.25)
+        let bottom = CGPoint(x: cx, y: inset)
+        let lowerLeft = CGPoint(x: cx - w / 2, y: inset + h * 0.25)
+        let upperLeft = CGPoint(x: cx - w / 2, y: size.height - inset - h * 0.25)
+        let path = NSBezierPath()
+        path.move(to: top)
+        path.line(to: upperRight)
+        path.line(to: lowerRight)
+        path.line(to: bottom)
+        path.line(to: lowerLeft)
+        path.line(to: upperLeft)
+        path.close()
+        NSColor(red: 79/255.0, green: 101/255.0, blue: 196/255.0, alpha: 1).setFill()
+        path.fill()
+        return image
     }
 
     /// The approved copy as a non-editable attributed string. The URL gets an
