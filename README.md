@@ -6,7 +6,7 @@
   <img src="docs/icon.png" alt="Hexpad app icon" width="128">
 </p>
 
-<p align="center">A fast and focused text and source code editor for macOS.</p>
+<p align="center">A no frills, fast, and focused text and source code editor for macOS.</p>
 
 I built Hexpad from scratch because Notepad++ doesn't have a native macOS version and I wasn't happy with the alternatives. Hexpad is that editor: Notepad++ features with real macOS behavior, free and open source.
 
