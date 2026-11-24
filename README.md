@@ -20,23 +20,23 @@ Requirements: macOS 14 or newer. Universal binary: Apple Silicon and Intel.
 
 ## What it does
 
-**Brace matching.** Put the caret next to a bracket, or select one, and both it and its partner outline in indigo. A bracket with no partner shows red, so you can see a broken clause while you edit. Works in every language with declared brackets: JSON, Swift, Python, the C family, shell, and more.
+*Brace matching* Put the caret next to a bracket, or select one, and both it and its partner outline in indigo. A bracket with no partner shows red, so you can see a broken clause while you edit. Works in every language with declared brackets: JSON, Swift, Python, the C family, shell, and more.
 
-**Multiple selections and column editing.** Place carets anywhere and type in all of them at once. Column (box) selection with the mouse or keyboard, Begin/End Select for rectangular regions, and per-caret editing that survives undo.
+*Multiple selections and column editing* Place carets anywhere and type in all of them at once. Column (box) selection with the mouse or keyboard, Begin/End Select for rectangular regions, and per-caret editing that survives undo.
 
-**Find in Files.** Search the whole tree with include and exclude filters. Results group per file, fold and unfold, and every hit double-clicks to the exact line and column. Incremental search highlights as you type; large buffers get a debounced scan so typing stays smooth on files over a megabyte.
+*Find in Files* Search the whole tree with include and exclude filters. Results group per file, fold and unfold, and every hit double-clicks to the exact line and column. Incremental search highlights as you type; large buffers get a debounced scan so typing stays smooth on files over a megabyte.
 
-**Split view with two tab bars.** Two panes side by side, each holding its own tabs. Move a file to the other view, transfer groups, drag tabs between panes, and synchronize scrolling when you're comparing two copies of a file.
+*Split view with two tab bars* Two panes side by side, each holding its own tabs. Move a file to the other view, transfer groups, drag tabs between panes, and synchronize scrolling when you're comparing two copies of a file.
 
-**Syntax highlighting** across a long list of languages, driven by a lexer layer built for extension. Encoding detection on open, UTF-8/UTF-16 handling with BOM, and explicit encoding and line-ending conversion at save time.
+*Syntax highlighting* across a long list of languages, driven by a lexer layer built for extension. Encoding detection on open, UTF-8/UTF-16 handling with BOM, and explicit encoding and line-ending conversion at save time.
 
-**Function List and Document Map.** Jump to the function you need in a large file, or use the minimap to see the whole document's shape while you scroll.
+*Function List and Document Map* Jump to the function you need in a large file, or use the minimap to see the whole document's shape while you scroll.
 
-**Macros.** Record a sequence of edits, play it back, run it a fixed number of times or until it stops changing the document, and save recordings to named slots in the menu.
+*Macros* Record a sequence of edits, play it back, run it a fixed number of times or until it stops changing the document, and save recordings to named slots in the menu.
 
-**Session restore.** Quit and reopen and your tabs come back with their scroll positions, carets, selections, and unsaved-state dots where you left them.
+*Session restore* Quit and reopen and your tabs come back with their scroll positions, carets, selections, and unsaved-state dots where you left them.
 
-**Run menu.** Pipe the current file or selection through external commands and capture the output, with `$(...)` placeholders for the document path and selection.
+*Run menu* Pipe the current file or selection through external commands and capture the output, with `$(...)` placeholders for the document path and selection.
 
 ![Light appearance with syntax highlighting](docs/screenshots/light-mode.png)
 
