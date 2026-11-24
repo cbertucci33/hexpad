@@ -54,7 +54,7 @@ final class ToolbarTests: XCTestCase {
             (.toolbarUndo, "Undo", Selector(("undo:")), false),
             (.toolbarRedo, "Redo", Selector(("redo:")), false),
             (.toolbarFind, "Find", #selector(HexpadAppDelegate.toggleFindBar), true),
-            (.toolbarReplace, "Replace", #selector(HexpadAppDelegate.toggleFindBar), true),
+            (.toolbarReplace, "Replace", #selector(HexpadAppDelegate.toggleReplaceBar), true),
             (.toolbarZoomIn, "Zoom In", #selector(HexpadAppDelegate.zoomIn), true),
             (.toolbarZoomOut, "Zoom Out", #selector(HexpadAppDelegate.zoomOut), true),
             (.toolbarSyncVertical, "Synchronize Vertical Scrolling",
@@ -63,7 +63,28 @@ final class ToolbarTests: XCTestCase {
              #selector(MainWindowController.toggleSynchronizeScrolling(_:)), false),
             (.toolbarWordWrap, "Word Wrap", #selector(HexpadAppDelegate.toggleWordWrap), true),
             (.toolbarShowAllCharacters, "Show All Characters",
-             #selector(HexpadAppDelegate.toggleShowAllCharacters), false)
+             #selector(HexpadAppDelegate.toggleShowAllCharacters), false),
+            // N++ extended View/tools group, appended after the View group.
+            (.toolbarShowIndentGuide, "Show Indent Guide",
+             #selector(HexpadAppDelegate.toggleShowIndentGuide), false),
+            (.toolbarDocumentMap, "Document Map",
+             #selector(HexpadAppDelegate.toggleDocumentMap), true),
+            (.toolbarFunctionList, "Function List",
+             #selector(MainWindowController.toggleFunctionList(_:)), false),
+            (.toolbarFolderAsWorkspace, "Folder as Workspace",
+             #selector(MainWindowController.toggleWorkspacePanel(_:)), false),
+            (.toolbarMonitoring, "Monitoring (tail -f)",
+             #selector(MainWindowController.toggleFileMonitoring(_:)), false),
+            (.toolbarStartRecording, "Start Recording",
+             #selector(MainWindowController.toggleMacroRecording(_:)), false),
+            (.toolbarStopRecording, "Stop Recording",
+             #selector(MainWindowController.stopRecordingMacro(_:)), false),
+            (.toolbarPlayback, "Playback",
+             #selector(MainWindowController.playLastMacro(_:)), false),
+            (.toolbarRunMacroMultipleTimes, "Run a Macro Multiple Times…",
+             #selector(MainWindowController.showRunMacroMultipleTimesDialog(_:)), false),
+            (.toolbarSaveMacro, "Save Current Recorded Macro…",
+             #selector(MainWindowController.saveRecordingAs(_:)), false)
         ]
     }
     
@@ -85,17 +106,22 @@ final class ToolbarTests: XCTestCase {
             .toolbarSeparatorAfterReplace,
             .toolbarZoomIn, .toolbarZoomOut,
             .toolbarSyncVertical, .toolbarSyncHorizontal,
-            .toolbarWordWrap, .toolbarShowAllCharacters
+            .toolbarWordWrap, .toolbarShowAllCharacters,
+            .toolbarShowIndentGuide, .toolbarDocumentMap,
+            .toolbarFunctionList, .toolbarFolderAsWorkspace,
+            .toolbarMonitoring,
+            .toolbarStartRecording, .toolbarStopRecording,
+            .toolbarPlayback, .toolbarRunMacroMultipleTimes, .toolbarSaveMacro
         ]
     }
     
     // MARK: - Ordering / customization
     
-    func testDefaultItemsAreTheTwentyNPlusButtonsPlusFourSeparatorsInOrder() {
+    func testDefaultItemsAreTheThirtyNPlusButtonsPlusFourSeparatorsInOrder() {
         let defaults = window.toolbarDefaultItemIdentifiers(toolbar)
         XCTAssertEqual(defaults, expectedDefaultIdentifiers)
-        XCTAssertEqual(defaults.count, 24, "20 buttons + 4 group separators")
-        XCTAssertEqual(Set(expectedButtons.map(\.0)).count, 20, "20 distinct buttons")
+        XCTAssertEqual(defaults.count, 34, "30 buttons + 4 group separators")
+        XCTAssertEqual(Set(expectedButtons.map(\.0)).count, 30, "30 distinct buttons")
     }
     
     func testAllowedItemsAreASupersetOfDefaultsAndIncludeFlexibleSpace() {
@@ -153,6 +179,42 @@ final class ToolbarTests: XCTestCase {
         }
     }
     
+    // MARK: - Find vs Replace
+
+    /// CB bug: both search icons toggled the same bar in the same mode. Find
+    /// must open query-only; Replace must open with the replacement field.
+    func testFindAndReplaceOpenDistinctFindBarModes() throws {
+        let controller = MainWindowController(window: window)
+        window.contentViewController = controller
+        _ = controller.view
+        let bar = try XCTUnwrap(controller.findBar)
+
+        controller.toggleFindBar()
+        XCTAssertTrue(bar.isVisible)
+        XCTAssertFalse(bar.isReplaceMode, "Find must open find-only mode")
+        XCTAssertTrue(bar.replaceField.isHidden, "Find must hide the replace field")
+
+        controller.toggleFindBar()
+        XCTAssertFalse(bar.isVisible, "a second Find click closes find-only mode")
+
+        controller.toggleReplaceBar()
+        XCTAssertTrue(bar.isVisible)
+        XCTAssertTrue(bar.isReplaceMode, "Replace must open replace mode")
+        XCTAssertFalse(bar.replaceField.isHidden, "Replace must reveal the replace field")
+
+        controller.toggleReplaceBar()
+        XCTAssertFalse(bar.isVisible, "a second Replace click closes replace mode")
+    }
+
+    /// The two search buttons must not share a selector again.
+    func testFindAndReplaceToolbarActionsAreDistinct() {
+        let findAction = item(for: .toolbarFind)?.action
+        let replaceAction = item(for: .toolbarReplace)?.action
+        XCTAssertEqual(findAction, #selector(HexpadAppDelegate.toggleFindBar))
+        XCTAssertEqual(replaceAction, #selector(HexpadAppDelegate.toggleReplaceBar))
+        XCTAssertNotEqual(findAction, replaceAction)
+    }
+
     /// The clipboard/undo buttons must use the exact selectors the Edit menu
     /// installs (including the raw ObjC undo:/redo: names).
     func testTextAndUndoButtonsReuseEditMenuSelectors() {

@@ -22,9 +22,14 @@ enum SearchBarTiming {
 class FindBar: NSView, NSSearchFieldDelegate {
     
     var isVisible = false
+    /// Find opens query-only; Replace opens the same bar with the replacement
+    /// row visible and focused. The mode survives hide/show and is switched by
+    /// ``showFind()`` / ``showReplace()``.
+    private(set) var isReplaceMode = false
     
     let searchField: NSSearchField
-    private let replaceField: NSSearchField
+    /// Internal so the controller can focus it when Replace opens the bar.
+    let replaceField: NSSearchField
     private let regexButton: NSButton
     private let extendedButton: NSButton
     private let literalButton: NSButton
@@ -294,19 +299,32 @@ class FindBar: NSView, NSSearchFieldDelegate {
     }
 
     /// Replace controls hug the right edge when the single-row layout has room.
+    /// Find-only mode omits them entirely, so it also needs a narrower window
+    /// before the controls pack onto one row.
     private var rightAlignedControls: [(NSView, CGFloat)] {
-        [(replaceButton, 70), (replaceAllButton, 80)]
+        isReplaceMode ? [(replaceButton, 70), (replaceAllButton, 80)] : []
     }
 
     /// Single row needs ~1340pt once modes, flags and replace controls share
-    /// it. Narrower windows get one option row per line.
-    private static let wideThreshold: CGFloat = 1340
+    /// it; find-only drops the replacement controls and needs ~1120pt.
+    /// Narrower windows get one option row per line.
+    private var wideThreshold: CGFloat {
+        isReplaceMode ? 1340 : 1120
+    }
+
+    /// Hides the replacement row in find-only mode. Frames stay assigned by
+    /// layout(), so switching modes never strands a control off the bar.
+    private func setReplaceControlsHidden(_ hidden: Bool) {
+        replaceField.isHidden = hidden
+        replaceButton.isHidden = hidden
+        replaceAllButton.isHidden = hidden
+    }
 
     /// Height the bar needs at a given width: one row when there is room, then
     /// as many compact rows as the controls require. The match-case and
     /// extended controls pushed the two-row minimum past 900pt.
     func preferredHeight(for width: CGFloat) -> CGFloat {
-        if width >= Self.wideThreshold { return 36 }
+        if width >= wideThreshold { return 36 }
         return Self.barHeight(rows: 1 + packedOptionRows(for: width).count)
     }
 
@@ -344,17 +362,21 @@ class FindBar: NSView, NSSearchFieldDelegate {
         // narrows instead of pushing the query fields out of view.
         let topY = bounds.height - topInset - h
 
-        if bounds.width >= Self.wideThreshold {
+        if bounds.width >= wideThreshold {
             searchField.frame = NSRect(x: 8, y: topY, width: 180, height: h)
             replaceField.frame = NSRect(x: 196, y: topY, width: 180, height: h)
             closeButton.frame = NSRect(x: closeX, y: topY, width: closeWidth, height: h)
 
-            var x: CGFloat = 384
+            // Find-only has no replacement field, so the options start where
+            // it would have ended instead of leaving a 180pt hole.
+            var x: CGFloat = isReplaceMode ? 384 : 196
             for (control, width) in inlineControls {
                 control.frame = NSRect(x: x, y: topY, width: width, height: h)
                 x += width + 6
             }
-            // Replace controls hug the close button on the right.
+            // Replace controls hug the close button on the right. They keep a
+            // valid (hidden) frame in find-only mode so a later resize cannot
+            // leave stale geometry behind.
             let replaceAllX = max(8, closeX - 84)
             let replaceX = max(8, replaceAllX - 74)
             replaceAllButton.frame = NSRect(x: replaceAllX, y: topY, width: 80, height: h)
@@ -362,11 +384,20 @@ class FindBar: NSView, NSSearchFieldDelegate {
             return
         }
 
-        // Row 1: the query and replacement fields plus close.
+        // Row 1: the query and (in replace mode) replacement fields plus close.
         let fieldWidth = max(120, (closeX - 24) / 2)
         searchField.frame = NSRect(x: 8, y: topY, width: fieldWidth, height: h)
         replaceField.frame = NSRect(x: 12 + fieldWidth, y: topY, width: fieldWidth, height: h)
         closeButton.frame = NSRect(x: closeX, y: topY, width: closeWidth, height: h)
+        if !isReplaceMode {
+            // Give the query the whole first row; the hidden replacement
+            // controls collapse to zero so they can never overlap it.
+            searchField.frame = NSRect(x: 8, y: topY,
+                                       width: max(120, closeX - 16), height: h)
+            replaceField.frame = .zero
+            replaceButton.frame = .zero
+            replaceAllButton.frame = .zero
+        }
 
         // Rows 2…n: every other control, wrapping when the width runs out.
         for (rowIndex, row) in packedOptionRows(for: bounds.width).enumerated() {
@@ -384,7 +415,25 @@ class FindBar: NSView, NSSearchFieldDelegate {
     // AppKit's isHidden together so they can never diverge. There is no
     // removeFromSuperview(): toggling is an infinite loop of add/remove, which
     // is what made Cmd+F die after the first close (nothing re-added the view).
+    /// Default entry point (Find All and direct callers): reopens in whichever
+    /// mode the bar was last showing.
     func show() {
+        show(replaceMode: isReplaceMode)
+    }
+
+    /// Search > Find and the toolbar Find button: query-only.
+    func showFind() {
+        show(replaceMode: false)
+    }
+
+    /// Toolbar Replace: query plus the replacement field.
+    func showReplace() {
+        show(replaceMode: true)
+    }
+
+    private func show(replaceMode: Bool) {
+        isReplaceMode = replaceMode
+        setReplaceControlsHidden(!replaceMode)
         isVisible = true
         isHidden = false
         selectionScope = nil
@@ -405,6 +454,7 @@ class FindBar: NSView, NSSearchFieldDelegate {
         if !searchField.stringValue.isEmpty {
             performFind()
         }
+        needsLayout = true
     }
 
     func hide() {

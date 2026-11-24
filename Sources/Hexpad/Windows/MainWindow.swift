@@ -68,7 +68,13 @@ extension MainWindow {
         .toolbarSeparatorAfterReplace,
         .toolbarZoomIn, .toolbarZoomOut,
         .toolbarSyncVertical, .toolbarSyncHorizontal,
-        .toolbarWordWrap, .toolbarShowAllCharacters
+        .toolbarWordWrap, .toolbarShowAllCharacters,
+        // N++ extended View/tools group (user-interface.txt:222-254).
+        .toolbarShowIndentGuide, .toolbarDocumentMap,
+        .toolbarFunctionList, .toolbarFolderAsWorkspace,
+        .toolbarMonitoring,
+        .toolbarStartRecording, .toolbarStopRecording,
+        .toolbarPlayback, .toolbarRunMacroMultipleTimes, .toolbarSaveMacro
     ]
     
     private static let toolbarSpecs: [NSToolbarItem.Identifier: ToolbarItemSpec] = {
@@ -128,16 +134,17 @@ extension MainWindow {
                             symbolName: "arrow.uturn.forward",
                             action: Selector(("redo:")), targetsDelegate: false),
             
-            // Search group. Hexpad's FindBar holds the replace field, so Replace
-            // reuses the Find toggle (the one search-bar entry point).
+            // Search group. Find and Replace share the one bar but open
+            // distinct modes: Find is query-only, Replace reveals the
+            // replacement field and focuses it.
             ToolbarItemSpec(identifier: .toolbarFind, label: "Find",
-                            toolTip: "Search > Find: Toggles the find bar.",
+                            toolTip: "Search > Find: Opens the find bar in find-only mode.",
                             symbolName: "magnifyingglass",
                             action: #selector(HexpadAppDelegate.toggleFindBar), targetsDelegate: true),
             ToolbarItemSpec(identifier: .toolbarReplace, label: "Replace",
-                            toolTip: "Search > Find: Toggles the find bar (includes replace).",
+                            toolTip: "Search > Replace: Opens the find bar with the replace field.",
                             symbolName: "arrow.left.arrow.right",
-                            action: #selector(HexpadAppDelegate.toggleFindBar), targetsDelegate: true),
+                            action: #selector(HexpadAppDelegate.toggleReplaceBar), targetsDelegate: true),
             
             // View group.
             ToolbarItemSpec(identifier: .toolbarZoomIn, label: "Zoom In",
@@ -166,7 +173,55 @@ extension MainWindow {
             ToolbarItemSpec(identifier: .toolbarShowAllCharacters, label: "Show All Characters",
                             toolTip: "View > Show Symbol > Show All Characters: Shows whitespace and EOL marks.",
                             symbolName: "character",
-                            action: #selector(HexpadAppDelegate.toggleShowAllCharacters), targetsDelegate: false)
+                            action: #selector(HexpadAppDelegate.toggleShowAllCharacters), targetsDelegate: false),
+
+            // N++ extended View group. Each button reuses the exact selector
+            // and target convention of its menu item: delegate-targeted for
+            // View menu items that target the app delegate, nil-targeted for
+            // the first-responder items validated by MainWindowController.
+            ToolbarItemSpec(identifier: .toolbarShowIndentGuide, label: "Show Indent Guide",
+                            toolTip: "View > Show Symbol > Show Indent Guide: Toggles indent guide lines.",
+                            symbolName: "increase.indent",
+                            action: #selector(HexpadAppDelegate.toggleShowIndentGuide), targetsDelegate: false),
+            ToolbarItemSpec(identifier: .toolbarDocumentMap, label: "Document Map",
+                            toolTip: "View > Document Map: Toggles the document minimap.",
+                            symbolName: "map",
+                            action: #selector(HexpadAppDelegate.toggleDocumentMap), targetsDelegate: true),
+            ToolbarItemSpec(identifier: .toolbarFunctionList, label: "Function List",
+                            toolTip: "View > Function List: Shows the document outline.",
+                            symbolName: "list.bullet.rectangle",
+                            action: #selector(MainWindowController.toggleFunctionList(_:)), targetsDelegate: false),
+            ToolbarItemSpec(identifier: .toolbarFolderAsWorkspace, label: "Folder as Workspace",
+                            toolTip: "View > Folder as Workspace: Shows the workspace panel.",
+                            symbolName: "folder.badge.plus",
+                            action: #selector(MainWindowController.toggleWorkspacePanel(_:)), targetsDelegate: false),
+            ToolbarItemSpec(identifier: .toolbarMonitoring, label: "Monitoring (tail -f)",
+                            toolTip: "Tools > Monitor File: Follows the file on disk (tail -f).",
+                            symbolName: "dot.radiowaves.left.and.right",
+                            action: #selector(MainWindowController.toggleFileMonitoring(_:)), targetsDelegate: false),
+
+            // N++ macro group (Macro menu). Recording state is controller-owned,
+            // so every item is nil-targeted and validated by the responder chain.
+            ToolbarItemSpec(identifier: .toolbarStartRecording, label: "Start Recording",
+                            toolTip: "Macro > Record Macro: Starts recording a macro.",
+                            symbolName: "record.circle",
+                            action: #selector(MainWindowController.toggleMacroRecording(_:)), targetsDelegate: false),
+            ToolbarItemSpec(identifier: .toolbarStopRecording, label: "Stop Recording",
+                            toolTip: "Macro > Stop Recording: Stops the current recording.",
+                            symbolName: "stop.circle",
+                            action: #selector(MainWindowController.stopRecordingMacro(_:)), targetsDelegate: false),
+            ToolbarItemSpec(identifier: .toolbarPlayback, label: "Playback",
+                            toolTip: "Macro > Play Last Macro: Plays the most recent macro.",
+                            symbolName: "play.circle",
+                            action: #selector(MainWindowController.playLastMacro(_:)), targetsDelegate: false),
+            ToolbarItemSpec(identifier: .toolbarRunMacroMultipleTimes, label: "Run a Macro Multiple Times…",
+                            toolTip: "Macro > Run a Macro Multiple Times…: Repeats the last macro.",
+                            symbolName: "repeat",
+                            action: #selector(MainWindowController.showRunMacroMultipleTimesDialog(_:)), targetsDelegate: false),
+            ToolbarItemSpec(identifier: .toolbarSaveMacro, label: "Save Current Recorded Macro…",
+                            toolTip: "Macro > Save Recording As…: Saves the current recording.",
+                            symbolName: "tray.and.arrow.down",
+                            action: #selector(MainWindowController.saveRecordingAs(_:)), targetsDelegate: false)
         ]
         let separators = [
             ToolbarItemSpec(identifier: .toolbarSeparatorAfterPrint, label: "", toolTip: "",
@@ -271,6 +326,16 @@ extension NSToolbarItem.Identifier {
     static let toolbarSyncHorizontal = NSToolbarItem.Identifier("toolbar.syncHorizontal")
     static let toolbarWordWrap = NSToolbarItem.Identifier("toolbar.wordWrap")
     static let toolbarShowAllCharacters = NSToolbarItem.Identifier("toolbar.showAllCharacters")
+    static let toolbarShowIndentGuide = NSToolbarItem.Identifier("toolbar.showIndentGuide")
+    static let toolbarDocumentMap = NSToolbarItem.Identifier("toolbar.documentMap")
+    static let toolbarFunctionList = NSToolbarItem.Identifier("toolbar.functionList")
+    static let toolbarFolderAsWorkspace = NSToolbarItem.Identifier("toolbar.folderAsWorkspace")
+    static let toolbarMonitoring = NSToolbarItem.Identifier("toolbar.monitoring")
+    static let toolbarStartRecording = NSToolbarItem.Identifier("toolbar.startRecording")
+    static let toolbarStopRecording = NSToolbarItem.Identifier("toolbar.stopRecording")
+    static let toolbarPlayback = NSToolbarItem.Identifier("toolbar.playback")
+    static let toolbarRunMacroMultipleTimes = NSToolbarItem.Identifier("toolbar.runMacroMultipleTimes")
+    static let toolbarSaveMacro = NSToolbarItem.Identifier("toolbar.saveMacro")
     
     static let toolbarSeparatorAfterPrint = NSToolbarItem.Identifier("toolbar.separator.afterPrint")
     static let toolbarSeparatorAfterPaste = NSToolbarItem.Identifier("toolbar.separator.afterPaste")

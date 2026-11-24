@@ -573,6 +573,13 @@ class HexpadAppDelegate: NSObject, NSApplicationDelegate {
     @objc func toggleFindBar() {
         activeController?.toggleFindBar()
     }
+
+    /// Toolbar Replace. Same bar as Find but opens in replace mode so the
+    /// replacement field is visible and focused; the menu's Find item keeps
+    /// its existing toggleFindBar wiring.
+    @objc func toggleReplaceBar() {
+        activeController?.toggleReplaceBar()
+    }
     
     @objc func findNext() {
         activeController?.findNext()

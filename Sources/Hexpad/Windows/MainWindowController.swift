@@ -3080,14 +3080,31 @@ class MainWindowController: NSViewController {
     
     // MARK: - Find
     
+    /// Search > Find and the toolbar Find button: opens the bar query-only.
+    /// Clicking Find again (or while replace mode is open) returns to the
+    /// find-only mode; only a second click in the same mode closes the bar.
     func toggleFindBar() {
         guard let find = findBar else { return }
-        if find.isVisible {
+        if find.isVisible, !find.isReplaceMode {
             find.hide()
         } else {
-            find.show()
-            // show() now handles seeding from history/selection and performing one search.
+            find.showFind()
+            // showFind() seeds from history/selection and performs one search.
             view.window?.makeFirstResponder(find.searchField)
+        }
+        updateLayout()
+    }
+
+    /// Toolbar Replace: same bar as Find, opened with the replacement field
+    /// visible. The menu's Find item deliberately keeps its toggleFindBar
+    /// wiring; this is a separate entry point with its own selector.
+    func toggleReplaceBar() {
+        guard let find = findBar else { return }
+        if find.isVisible, find.isReplaceMode {
+            find.hide()
+        } else {
+            find.showReplace()
+            view.window?.makeFirstResponder(find.replaceField)
         }
         updateLayout()
     }
