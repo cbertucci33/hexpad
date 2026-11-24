@@ -28,44 +28,48 @@ class MainWindow: NSWindow {
         // small-toolbar metric and measures well under 52pt.
         toolbarStyle = .unifiedCompact
         self.toolbar = toolbar
-        // Kill the system-drawn hairline under the titlebar band (CB: "a white
-        // line around the entire box for the icons"). macOS draws this separator
-        // for unified toolbar styles by default; .none removes it.
+        // CB: ZERO lines around the toolbar icons. macOS 26 still paints the
+        // 1pt titlebar separator even when titlebarSeparatorStyle is .none
+        // (verified on 26.7.1; NSToolbar.showsBaselineSeparator is a deprecated
+        // no-op). A transparent titlebar is the only switch that actually
+        // removes that hairline, and it also clears the band behind the icons.
         titlebarSeparatorStyle = .none
+        titlebarAppearsTransparent = true
     }
 }
 
 // MARK: - V19t: N++ default toolbar (20 buttons)
 
-/// One toolbar button/separator, pinned so the N++ order, label, SF Symbol and
-/// action target convention live in a single table. `symbolName == nil` marks
-/// a separator; `targetsDelegate` mirrors the menu section that owns the action:
-/// true for delegate-targeted menu items (File/Search/View actions), false for
-/// the nil-targeted first-responder items (clipboard, undo, Print, Show Symbol,
-/// scroll sync).
+/// One toolbar button, pinned so the N++ order, label, SF Symbol and action
+/// target convention live in a single table. `targetsDelegate` mirrors the menu
+/// section that owns the action: true for delegate-targeted menu items
+/// (File/Search/View actions), false for the nil-targeted first-responder items
+/// (clipboard, undo, Print, Show Symbol, scroll sync).
 private struct ToolbarItemSpec {
     let identifier: NSToolbarItem.Identifier
     let label: String
     let toolTip: String
-    let symbolName: String?
+    let symbolName: String
     let action: Selector?
     let targetsDelegate: Bool
 }
 
 extension MainWindow {
     
-    /// N++ default order. Separators split the five groups:
-    /// file / clipboard / undo / search / view.
+    /// N++ default order. Standard `.space` items split the five groups:
+    /// file / clipboard / undo / search / view. They are created by AppKit and
+    /// draw nothing — unlike a custom-view spacer, which macOS 26 wraps in a
+    /// visible glass capsule.
     static let defaultToolbarIdentifiers: [NSToolbarItem.Identifier] = [
         .toolbarNew, .toolbarOpen, .toolbarSave, .toolbarSaveAll,
         .toolbarClose, .toolbarCloseAll, .toolbarPrint,
-        .toolbarSeparatorAfterPrint,
+        .space,
         .toolbarCut, .toolbarCopy, .toolbarPaste,
-        .toolbarSeparatorAfterPaste,
+        .space,
         .toolbarUndo, .toolbarRedo,
-        .toolbarSeparatorAfterRedo,
+        .space,
         .toolbarFind, .toolbarReplace,
-        .toolbarSeparatorAfterReplace,
+        .space,
         .toolbarZoomIn, .toolbarZoomOut,
         .toolbarSyncVertical, .toolbarSyncHorizontal,
         .toolbarWordWrap, .toolbarShowAllCharacters,
@@ -223,74 +227,31 @@ extension MainWindow {
                             symbolName: "tray.and.arrow.down",
                             action: #selector(MainWindowController.saveRecordingAs(_:)), targetsDelegate: false)
         ]
-        let separators = [
-            ToolbarItemSpec(identifier: .toolbarSeparatorAfterPrint, label: "", toolTip: "",
-                            symbolName: nil, action: nil, targetsDelegate: false),
-            ToolbarItemSpec(identifier: .toolbarSeparatorAfterPaste, label: "", toolTip: "",
-                            symbolName: nil, action: nil, targetsDelegate: false),
-            ToolbarItemSpec(identifier: .toolbarSeparatorAfterRedo, label: "", toolTip: "",
-                            symbolName: nil, action: nil, targetsDelegate: false),
-            ToolbarItemSpec(identifier: .toolbarSeparatorAfterReplace, label: "", toolTip: "",
-                            symbolName: nil, action: nil, targetsDelegate: false)
-        ]
-        return Dictionary(uniqueKeysWithValues: (specs + separators).map { ($0.identifier, $0) })
+        return Dictionary(uniqueKeysWithValues: specs.map { ($0.identifier, $0) })
     }()
-    
-    /// Separator items are invisible fixed-width spacers and are not clickable
-    /// (no action, nil target). A clear `.custom` box draws no rule and no fill,
-    /// so the group separation is spacing only. The navigational flag is kept
-    /// for the delegate contract (ToolbarTests pins it and the NSBox view type);
-    /// `toolbarWillAddItem` clears it when the item is actually inserted,
-    /// because macOS 26 renders navigational custom views as empty leading
-    /// capsules in a unified compact titlebar.
-    private func makeSeparatorItem(_ identifier: NSToolbarItem.Identifier) -> NSToolbarItem {
-        let item = NSToolbarItem(itemIdentifier: identifier)
-        item.isNavigational = true
-        let spacer = NSBox(frame: NSRect(x: 0, y: 0, width: 10, height: 24))
-        spacer.boxType = .custom
-        spacer.titlePosition = .noTitle
-        spacer.borderWidth = 0
-        spacer.fillColor = .clear
-        spacer.isTransparent = true
-        item.view = spacer
-        return item
-    }
 }
 
 extension MainWindow: NSToolbarDelegate {
-    /// macOS 26 puts navigational custom-view items in the titlebar's leading
-    /// navigation area and wraps them in empty glass capsules: the three ghost
-    /// panes CB saw between the traffic lights and the title are these
-    /// separators. The separator factory still returns `isNavigational = true`
-    /// (ToolbarTests pins that flag), so clear it as each item is inserted:
-    /// separators must stay inline between their button groups, not lead.
-    func toolbarWillAddItem(_ notification: Notification) {
-        guard let item = notification.userInfo?["item"] as? NSToolbarItem,
-              item.view is NSBox else { return }
-        item.isNavigational = false
-    }
-
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar _: Bool) -> NSToolbarItem? {
-        if itemIdentifier == .flexibleSpace {
-            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-            item.isNavigational = true
-            return item
+        // Standard spacing identifiers are built by AppKit itself; asking the
+        // delegate for one would produce an empty custom item, i.e. chrome.
+        if itemIdentifier == .space || itemIdentifier == .flexibleSpace {
+            return nil
         }
         guard let spec = Self.toolbarSpecs[itemIdentifier] else { return nil }
-        
-        guard let symbolName = spec.symbolName else {
-            return makeSeparatorItem(itemIdentifier)
-        }
         
         let item = NSToolbarItem(itemIdentifier: itemIdentifier)
         item.label = spec.label
         item.toolTip = spec.toolTip
-        item.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: spec.label)
+        item.image = NSImage(systemSymbolName: spec.symbolName, accessibilityDescription: spec.label)
         item.action = spec.action
         // Delegate-targeted actions resolve to the app delegate, exactly as
         // their menu-section counterparts do. First-responder actions keep a
         // nil target and travel the same responder chain as the menu items.
         item.target = spec.targetsDelegate ? (NSApp.delegate as? HexpadAppDelegate) : nil
+        // CB: ZERO lines around icons — transparent spacing only, no button
+        // border/box in light or dark appearance.
+        item.isBordered = false
         return item
     }
     
@@ -304,8 +265,8 @@ extension MainWindow: NSToolbarDelegate {
 }
 
 extension NSToolbarItem.Identifier {
-    static let flexibleSpace = NSToolbarItem.Identifier("flexibleSpace")
-    
+    // `.space` and `.flexibleSpace` are the AppKit standard identifiers; the
+    // toolbar builds them itself and never asks this delegate for a view.
     static let toolbarNew = NSToolbarItem.Identifier("toolbar.new")
     static let toolbarOpen = NSToolbarItem.Identifier("toolbar.open")
     static let toolbarSave = NSToolbarItem.Identifier("toolbar.save")
@@ -336,9 +297,4 @@ extension NSToolbarItem.Identifier {
     static let toolbarPlayback = NSToolbarItem.Identifier("toolbar.playback")
     static let toolbarRunMacroMultipleTimes = NSToolbarItem.Identifier("toolbar.runMacroMultipleTimes")
     static let toolbarSaveMacro = NSToolbarItem.Identifier("toolbar.saveMacro")
-    
-    static let toolbarSeparatorAfterPrint = NSToolbarItem.Identifier("toolbar.separator.afterPrint")
-    static let toolbarSeparatorAfterPaste = NSToolbarItem.Identifier("toolbar.separator.afterPaste")
-    static let toolbarSeparatorAfterRedo = NSToolbarItem.Identifier("toolbar.separator.afterRedo")
-    static let toolbarSeparatorAfterReplace = NSToolbarItem.Identifier("toolbar.separator.afterReplace")
 }

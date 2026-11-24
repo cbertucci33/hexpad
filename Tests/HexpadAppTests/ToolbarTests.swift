@@ -88,22 +88,17 @@ final class ToolbarTests: XCTestCase {
         ]
     }
     
-    private var expectedSeparators: [NSToolbarItem.Identifier] {
-        [.toolbarSeparatorAfterPrint, .toolbarSeparatorAfterPaste,
-         .toolbarSeparatorAfterRedo, .toolbarSeparatorAfterReplace]
-    }
-    
     private var expectedDefaultIdentifiers: [NSToolbarItem.Identifier] {
         [
             .toolbarNew, .toolbarOpen, .toolbarSave, .toolbarSaveAll,
             .toolbarClose, .toolbarCloseAll, .toolbarPrint,
-            .toolbarSeparatorAfterPrint,
+            .space,
             .toolbarCut, .toolbarCopy, .toolbarPaste,
-            .toolbarSeparatorAfterPaste,
+            .space,
             .toolbarUndo, .toolbarRedo,
-            .toolbarSeparatorAfterRedo,
+            .space,
             .toolbarFind, .toolbarReplace,
-            .toolbarSeparatorAfterReplace,
+            .space,
             .toolbarZoomIn, .toolbarZoomOut,
             .toolbarSyncVertical, .toolbarSyncHorizontal,
             .toolbarWordWrap, .toolbarShowAllCharacters,
@@ -117,10 +112,10 @@ final class ToolbarTests: XCTestCase {
     
     // MARK: - Ordering / customization
     
-    func testDefaultItemsAreTheThirtyNPlusButtonsPlusFourSeparatorsInOrder() {
+    func testDefaultItemsAreTheThirtyNPlusButtonsPlusFourSpacesInOrder() {
         let defaults = window.toolbarDefaultItemIdentifiers(toolbar)
         XCTAssertEqual(defaults, expectedDefaultIdentifiers)
-        XCTAssertEqual(defaults.count, 34, "30 buttons + 4 group separators")
+        XCTAssertEqual(defaults.count, 34, "30 buttons + 4 group spaces")
         XCTAssertEqual(Set(expectedButtons.map(\.0)).count, 30, "30 distinct buttons")
     }
     
@@ -128,11 +123,14 @@ final class ToolbarTests: XCTestCase {
         let allowed = window.toolbarAllowedItemIdentifiers(toolbar)
         let defaults = window.toolbarDefaultItemIdentifiers(toolbar)
         XCTAssertTrue(Set(allowed).isSuperset(of: Set(defaults)))
-        XCTAssertTrue(allowed.contains(NSToolbarItem.Identifier("flexibleSpace")))
+        XCTAssertTrue(allowed.contains(.flexibleSpace))
     }
     
-    func testDelegateReturnsAnItemForEveryAllowedIdentifier() {
+    func testDelegateReturnsAnItemForEveryAllowedButtonIdentifier() {
         for identifier in window.toolbarAllowedItemIdentifiers(toolbar) {
+            // `.space`/`.flexibleSpace` are standard identifiers built by
+            // AppKit; returning an item for them would create custom chrome.
+            if identifier == .space || identifier == .flexibleSpace { continue }
             guard let built = item(for: identifier) else {
                 XCTFail("no item for \(identifier.rawValue)")
                 continue
@@ -153,14 +151,33 @@ final class ToolbarTests: XCTestCase {
         }
     }
     
-    func testSeparatorItemsAreNavigationalRulesWithoutActions() {
-        for identifier in expectedSeparators {
+    /// CB requirement: zero visible lines around toolbar icons. macOS 26 wraps
+    /// every custom-view toolbar item in a glass capsule that reads as an
+    /// outlined empty pill, even when the view itself is clear. Group spacing
+    /// must therefore use AppKit's standard `.space` item (no view at all), and
+    /// every button stays borderless.
+    func testGroupSpacingAndButtonsDrawNoCustomChrome() {
+        let defaults = window.toolbarDefaultItemIdentifiers(toolbar)
+        XCTAssertEqual(defaults.filter { $0 == .space }.count, 4,
+                       "four standard spaces separate the five N++ groups")
+
+        for identifier in window.toolbarAllowedItemIdentifiers(toolbar) {
+            if identifier == .space || identifier == .flexibleSpace { continue }
             let built = item(for: identifier)
-            XCTAssertNotNil(built, identifier.rawValue)
-            XCTAssertTrue(built?.isNavigational ?? false, identifier.rawValue)
-            XCTAssertNil(built?.action, identifier.rawValue)
-            XCTAssertTrue(built?.view is NSBox, identifier.rawValue)
+            XCTAssertNil(built?.view,
+                         "\(identifier.rawValue) must not use a custom view")
+            if expectedButtons.contains(where: { $0.0 == identifier }) {
+                XCTAssertFalse(built?.isBordered ?? true,
+                               "\(identifier.rawValue) must render without a button border")
+            }
         }
+    }
+
+    /// macOS 26 ignores `.none` on its own, so the titlebar must also be
+    /// transparent or the 1pt hairline under the icons comes back.
+    func testTitlebarDrawsNoSeparatorHairline() {
+        XCTAssertEqual(window.titlebarSeparatorStyle, .none)
+        XCTAssertTrue(window.titlebarAppearsTransparent)
     }
     
     // MARK: - Action / target wiring (mirrors the menu sections)

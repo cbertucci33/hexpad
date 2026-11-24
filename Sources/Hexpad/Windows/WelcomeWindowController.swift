@@ -18,7 +18,7 @@ final class WelcomeWindowController: NSWindowController, NSTextViewDelegate {
     /// close writes an explicit `false` unless the user checked the box.
     static let showAgainDefaultsKey = "welcomeSplashShowAgain"
 
-    static let githubURLString = "https://github.com/cbertucci33/hexpad"
+    static let githubURLString = "https://github.com/cbertucci33"
 
     /// Approved copy. Do not paraphrase or reflow; the blank lines are the
     /// paragraph breaks the card specifies.
@@ -29,7 +29,7 @@ final class WelcomeWindowController: NSWindowController, NSTextViewDelegate {
 
     I built Hexpad because Notepad++ doesn't have a native MacOS version and I just wasn't happy with the alternatives. I hope this app helps your work.
 
-    Remember to check my GitHub for updates, post issues or requests, or find other useful software. https://github.com/cbertucci33/hexpad
+    Remember to check my GitHub for updates, post issues or requests, or find other useful software. https://github.com/cbertucci33
     """
 
     /// "Start Editing" primary button. Exposed for tests to drive the same
