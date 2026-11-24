@@ -162,7 +162,6 @@ public final class SessionStore {
                     lastError = nil
                 } catch {
                     lastError = error
-                    print("Failed to save session: \(error)")
                 }
             }
             pendingWorkItem = item
@@ -221,7 +220,6 @@ public final class SessionStore {
             do {
                 return try loadSnapshot(from: sessionFile)
             } catch {
-                print("Failed to restore session: \(error)")
                 return nil
             }
         }
