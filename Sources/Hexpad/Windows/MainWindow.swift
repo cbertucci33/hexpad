@@ -9,6 +9,12 @@ class MainWindow: NSWindow {
         
         title = "Hexpad"
         isReleasedWhenClosed = false
+        // Custom session restore owns persistence (HexpadApp session.json).
+        // macOS's own window state restoration must stay OFF: with it on,
+        // Saved Application State resurrects stale NATIVE window-tab groups
+        // from older builds (ghost capsule tiles in the titlebar ahead of the
+        // title). CB-reported header spacer bug, 2026-11-23.
+        isRestorable = false
         minSize = NSSize(width: 800, height: 500)
         // Hexpad tabs documents in its own TabBarView. Native window tabs would
         // merge Cmd+N windows into a macOS tab group and draw their own titlebar
