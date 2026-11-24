@@ -6,7 +6,9 @@
   <img src="docs/icon.png" alt="Hexpad app icon" width="128">
 </p>
 
-A fast and focused text and source code editor for macOS. I built Hexpad because Notepad++ doesn't have a native macOS version and I wasn't happy with the alternatives. Hexpad is that editor: the Notepad++ feature set, real macOS behavior, free and open source.
+<p align="center">A fast and focused text and source code editor for macOS.</p>
+
+I built Hexpad because Notepad++ doesn't have a native macOS version and I wasn't happy with the alternatives. Hexpad is that editor: the Notepad++ feature set, real macOS behavior, free and open source.
 
 ![Brace matching active while editing Hexpad's own source](docs/screenshots/brace-highlight.png)
 
@@ -39,8 +41,6 @@ Requirements: macOS 14 or newer. Universal binary: Apple Silicon and Intel.
 ![Light appearance with syntax highlighting](docs/screenshots/light-mode.png)
 
 Everything is native AppKit: fast launch, no Electron, no web views. Also on board: bookmarks, blank and line operations, date/time insertion with configurable formats, character panel, document summary with exact counts, read-only mode, keybinding remapping with a full shortcut mapper, and file monitoring that picks up external changes live.
-
-## Split view
 
 ![Two panes, each with its own tab bar](docs/screenshots/split-view.png)
 
