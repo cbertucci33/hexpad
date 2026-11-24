@@ -13,9 +13,9 @@
       <sparkle:shortVersionString>1.0.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
       <enclosure url="https://github.com/cbertucci33/hexpad/releases/download/1.0.0/Hexpad-1.0.0.dmg"
-                 length="5373624"
-                 type="application/x-bzip2-disk-image"
-                 sparkle:edSignature="rP+G9pXo1M1vyE9+ndehBIC1OCR4THY8PPwcXVHtS7uLjLlaioNWadDhEhbI9MCcxNiROWdIhXyLh/r3L0NVBw==" />
+                 sparkle:edSignature="aDf8kQKcAsQLihZZXt9WiE9yX6rDXKhzzSYUU03k30Wp74TCAP1BmxK+NaPUR70IDYR9ynqkXvlx9kLMaBFqAQ=="
+                 length="5374610"
+                 type="application/x-bzip2-disk-image" />
     </item>
   </channel>
 </rss>
