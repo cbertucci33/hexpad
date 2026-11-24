@@ -8,7 +8,7 @@
 
 <p align="center">A fast and focused text and source code editor for macOS.</p>
 
-I built Hexpad because Notepad++ doesn't have a native macOS version and I wasn't happy with the alternatives. Hexpad is that editor: the Notepad++ feature set, real macOS behavior, free and open source.
+I built Hexpad from scratch because Notepad++ doesn't have a native macOS version and I wasn't happy with the alternatives. Hexpad is that editor: Notepad++ features with real macOS behavior, free and open source.
 
 ![Brace matching active while editing Hexpad's own source](docs/screenshots/brace-highlight.png)
 
