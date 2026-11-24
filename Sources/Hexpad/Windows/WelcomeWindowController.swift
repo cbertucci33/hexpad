@@ -67,6 +67,10 @@ final class WelcomeWindowController: NSWindowController, NSTextViewDelegate {
                               defer: false)
         window.title = "Welcome to Hexpad"
         window.isReleasedWhenClosed = false
+        // Helper window: never join a native window-tab group and never let
+        // Saved Application State restore a stale copy of the splash.
+        window.tabbingMode = .disallowed
+        window.isRestorable = false
         super.init(window: window)
         window.delegate = self
         window.center()
@@ -110,19 +114,22 @@ final class WelcomeWindowController: NSWindowController, NSTextViewDelegate {
         // Brand mark: flat indigo hexagon (geometry mirrors the icon package's
         // hex.svg - pointy-top, regular). NOT the app icon: a rounded-rect app
         // tile reads as a button; the hexagon is a logo, not a control.
-        let hexMark = NSImageView(frame: NSRect(x: 178, y: 252, width: 64, height: 64))
+        // Vertical stack, top to bottom: brand mark, 16pt clear gap, copy
+        // (scrolls if needed), Start Editing, show-again checkbox. The mark's
+        // bottom is 268; the copy's top is 252, so no text can collide with it.
+        let hexMark = NSImageView(frame: NSRect(x: 178, y: 268, width: 64, height: 64))
         hexMark.image = Self.brandHexagonImage(size: NSSize(width: 64, height: 64))
         hexMark.imageScaling = .scaleProportionallyUpOrDown
         hexMark.setAccessibilityLabel("Hexpad")
         content.addSubview(hexMark)
 
-        let scrollView = NSScrollView(frame: NSRect(x: 20, y: 88, width: 380, height: 190))
+        let scrollView = NSScrollView(frame: NSRect(x: 20, y: 84, width: 380, height: 168))
         scrollView.borderType = .noBorder
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
 
-        let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 380, height: 190))
+        let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 380, height: 168))
         textView.isEditable = false
         textView.isSelectable = true
         textView.drawsBackground = false

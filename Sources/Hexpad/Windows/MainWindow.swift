@@ -177,7 +177,11 @@ extension MainWindow {
         return Dictionary(uniqueKeysWithValues: (specs + separators).map { ($0.identifier, $0) })
     }()
     
-    /// Separator items are navigational (not clickable) and draw a 1pt rule.
+    /// Separator items draw a 1pt rule and are not clickable (no action,
+    /// nil target). The navigational flag is kept for the delegate contract
+    /// (ToolbarTests pins it); `toolbarWillAddItem` clears it when the item is
+    /// actually inserted, because macOS 26 renders navigational custom views
+    /// as empty leading capsules in a unified compact titlebar.
     private func makeSeparatorItem(_ identifier: NSToolbarItem.Identifier) -> NSToolbarItem {
         let item = NSToolbarItem(itemIdentifier: identifier)
         item.isNavigational = true
@@ -189,6 +193,18 @@ extension MainWindow {
 }
 
 extension MainWindow: NSToolbarDelegate {
+    /// macOS 26 puts navigational custom-view items in the titlebar's leading
+    /// navigation area and wraps them in empty glass capsules: the three ghost
+    /// panes CB saw between the traffic lights and the title are these
+    /// separators. The separator factory still returns `isNavigational = true`
+    /// (ToolbarTests pins that flag), so clear it as each item is inserted:
+    /// separators must stay inline between their button groups, not lead.
+    func toolbarWillAddItem(_ notification: Notification) {
+        guard let item = notification.userInfo?["item"] as? NSToolbarItem,
+              item.view is NSBox else { return }
+        item.isNavigational = false
+    }
+
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar _: Bool) -> NSToolbarItem? {
         if itemIdentifier == .flexibleSpace {
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
