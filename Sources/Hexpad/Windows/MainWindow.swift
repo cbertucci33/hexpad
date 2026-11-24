@@ -177,17 +177,23 @@ extension MainWindow {
         return Dictionary(uniqueKeysWithValues: (specs + separators).map { ($0.identifier, $0) })
     }()
     
-    /// Separator items draw a 1pt rule and are not clickable (no action,
-    /// nil target). The navigational flag is kept for the delegate contract
-    /// (ToolbarTests pins it); `toolbarWillAddItem` clears it when the item is
-    /// actually inserted, because macOS 26 renders navigational custom views
-    /// as empty leading capsules in a unified compact titlebar.
+    /// Separator items are invisible fixed-width spacers and are not clickable
+    /// (no action, nil target). A clear `.custom` box draws no rule and no fill,
+    /// so the group separation is spacing only. The navigational flag is kept
+    /// for the delegate contract (ToolbarTests pins it and the NSBox view type);
+    /// `toolbarWillAddItem` clears it when the item is actually inserted,
+    /// because macOS 26 renders navigational custom views as empty leading
+    /// capsules in a unified compact titlebar.
     private func makeSeparatorItem(_ identifier: NSToolbarItem.Identifier) -> NSToolbarItem {
         let item = NSToolbarItem(itemIdentifier: identifier)
         item.isNavigational = true
-        let rule = NSBox(frame: NSRect(x: 0, y: 4, width: 1, height: 24))
-        rule.boxType = .separator
-        item.view = rule
+        let spacer = NSBox(frame: NSRect(x: 0, y: 0, width: 10, height: 24))
+        spacer.boxType = .custom
+        spacer.titlePosition = .noTitle
+        spacer.borderWidth = 0
+        spacer.fillColor = .clear
+        spacer.isTransparent = true
+        item.view = spacer
         return item
     }
 }

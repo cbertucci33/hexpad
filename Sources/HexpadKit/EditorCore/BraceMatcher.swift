@@ -43,6 +43,23 @@ public struct BraceMatcher {
         let range: NSRange
     }
 
+    /// Range of the declared bracket token touching `caret` (the token ending
+    /// at the caret wins, then the one starting there), or `nil` when the caret
+    /// is not adjacent to any bracket.
+    ///
+    /// This is the cheap adjacency pre-check for callers that react to every
+    /// caret move: it compares at most one short token per declared pair and
+    /// never scans the document. A `nil` result means there is nothing to
+    /// match, so the caller can skip ``matchDetail(text:caret:brackets:)``.
+    public static func adjacentBracketRange(text: String,
+                                           caret: Int,
+                                           brackets: [LexerDefinition.BracketPair]) -> NSRange? {
+        let document = text as NSString
+        guard !brackets.isEmpty, caret >= 0, caret <= document.length else { return nil }
+        return (tokenEnding(at: caret, in: document, brackets: brackets)
+                ?? tokenStarting(at: caret, in: document, brackets: brackets))?.range
+    }
+
     /// Returns the range of the bracket matched with the bracket adjacent to
     /// `caret`, or `nil` if the caret is not adjacent to a bracket or that
     /// bracket is unmatched.

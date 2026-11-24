@@ -7,6 +7,10 @@ class EditorContainer: NSView {
     let textView: MultiCaretTextView
     let ruler: LineNumberGutter
 
+    /// Live brace-match overlay for the focused document. It owns its private
+    /// temporary-attribute marks and draws the boxes above the glyphs.
+    let braceHighlight: BraceHighlight
+
     /// Fixed-width document overview on the trailing edge. It observes the
     /// shared storage and scroll view itself; the container only binds it,
     /// themes it, and makes room for it in the layout.
@@ -397,6 +401,7 @@ class EditorContainer: NSView {
         scrollView = NSScrollView()
         let view = MultiCaretTextView()
         textView = view
+        braceHighlight = BraceHighlight(textView: view)
         ruler = LineNumberGutter(textView: view)
         minimap = MinimapView(textView: view, scrollView: scrollView)
         
@@ -477,6 +482,10 @@ class EditorContainer: NSView {
         // the storage swap and fold/bookmark binding so the caret is clamped
         // against the buffer that is actually visible.
         applyEditorState(from: document)
+
+        // The adopted caret may not produce a selection notification when it
+        // already matched the previous document's, so seed the overlay here.
+        updateBraceHighlight()
     }
 
     deinit {
@@ -818,6 +827,7 @@ class EditorContainer: NSView {
         minimap.frame = NSRect(x: LineNumberGutter.width + editorWidth, y: 0,
                                width: minimapWidth,
                                height: height)
+        braceHighlight.syncFrameToTextView()
     }
 
     override func layout() {
@@ -846,7 +856,12 @@ class EditorContainer: NSView {
             object: textView,
             queue: nil
         ) { [weak self] _ in
-            guard let self, !self.isSyncingSelection else { return }
+            guard let self else { return }
+            // Brace highlighting follows every selection move, including the
+            // container's own programmatic mirrors, so it updates before the
+            // multi-caret guard below can return.
+            self.updateBraceHighlight()
+            guard !self.isSyncingSelection else { return }
             let selection = self.textView.selectedRange
             // A notification that merely echoes the primary caret must not
             // erase the extra carets it belongs to. NSTextView can post such a
@@ -1251,16 +1266,85 @@ class EditorContainer: NSView {
 
     // MARK: - Bracket matching
 
+    /// Bracket pairs for the bound document's language, or `nil` for plain
+    /// text and a language without bracket metadata.
+    private var activeBracketPairs: [LexerDefinition.BracketPair]? {
+        guard let languageName = boundDocument?.language,
+              let language = Language(rawValue: languageName),
+              let brackets = LexerDefinitions.definition(for: language)?.brackets,
+              !brackets.isEmpty else { return nil }
+        return brackets
+    }
+
     /// Resolves the focused document's bracket pairs and asks `BraceMatcher`
     /// for the pair adjacent to the primary caret. Returns `nil` for plain
     /// text, a language without bracket metadata, or a caret with no match.
     private func activeBracketMatch() -> BraceMatcher.Match? {
-        guard let languageName = boundDocument?.language,
-              let language = Language(rawValue: languageName),
-              let brackets = LexerDefinitions.definition(for: language)?.brackets else { return nil }
+        guard let brackets = activeBracketPairs else { return nil }
         return BraceMatcher.matchDetail(text: textView.string,
                                         caret: textView.selectedRange.location,
                                         brackets: brackets)
+    }
+
+    /// Recomputes the live brace highlight for the current selection.
+    ///
+    /// A single-character selection (the bracket itself) counts as adjacent;
+    /// any other non-empty selection clears the overlay. The adjacency check
+    /// is O(number of declared pairs) and runs before `matchDetail`, so the
+    /// common case — a caret nowhere near a bracket — never scans the document.
+    private func updateBraceHighlight() {
+        guard let brackets = activeBracketPairs else {
+            braceHighlight.clear()
+            return
+        }
+
+        let text = textView.string
+        let selection = textView.selectedRange
+
+        let caret: Int
+        let adjacent: NSRange
+        switch selection.length {
+        case 0:
+            caret = selection.location
+            guard let touching = BraceMatcher.adjacentBracketRange(text: text,
+                                                                   caret: caret,
+                                                                   brackets: brackets) else {
+                braceHighlight.clear()
+                return
+            }
+            adjacent = touching
+        case 1:
+            // N++ also highlights a bracket the user selected: treat a
+            // one-character selection as a caret just after it, but only when
+            // that character itself is the bracket (not a neighbour).
+            caret = selection.location + 1
+            guard let touching = BraceMatcher.adjacentBracketRange(text: text,
+                                                                   caret: caret,
+                                                                   brackets: brackets),
+                  touching.location == selection.location,
+                  touching.length == selection.length else {
+                braceHighlight.clear()
+                return
+            }
+            adjacent = touching
+        default:
+            braceHighlight.clear()
+            return
+        }
+
+        if let match = BraceMatcher.matchDetail(text: text,
+                                                caret: caret,
+                                                brackets: brackets) {
+            braceHighlight.show(BraceHighlight.Highlight(
+                ranges: [match.caretBracket, match.matchedBracket],
+                style: .match
+            ))
+        } else {
+            // Adjacent to a declared bracket that has no partner: N++'s
+            // "bad brace" tone, drawn on the bracket that failed to match.
+            braceHighlight.show(BraceHighlight.Highlight(ranges: [adjacent],
+                                                         style: .unmatched))
+        }
     }
 
     /// Search > Go to Matching Brace. Selects the bracket paired with the one
