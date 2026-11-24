@@ -1336,6 +1336,7 @@ extension MenuWiringTests {
         let status = try statusBar(of: controller)
         let originalFrame = window.frame
         let originalToolbar = try XCTUnwrap(window.toolbar)
+        let originallyTransparent = window.titlebarAppearsTransparent
 
         XCTAssertFalse(pane.tabScrollView.isHidden)
         XCTAssertFalse(status.isHidden)
@@ -1367,7 +1368,7 @@ extension MenuWiringTests {
         XCTAssertEqual(controller.chromeMode, .normal)
         XCTAssertTrue(window.toolbar === originalToolbar, "the same toolbar object comes back")
         XCTAssertEqual(window.titleVisibility, .visible)
-        XCTAssertFalse(window.titlebarAppearsTransparent)
+        XCTAssertEqual(window.titlebarAppearsTransparent, originallyTransparent)
         XCTAssertFalse(window.styleMask.contains(.fullSizeContentView))
         XCTAssertFalse(pane.tabScrollView.isHidden)
         XCTAssertEqual(pane.tabScrollView.frame.height, 32, accuracy: 0.5)
@@ -1429,6 +1430,7 @@ extension MenuWiringTests {
         let (controller, window) = makeController()
         let pane = controller.allPanes[0]
         let originalToolbar = try XCTUnwrap(window.toolbar)
+        let originallyTransparent = window.titlebarAppearsTransparent
 
         controller.togglePostIt(nil)
         XCTAssertEqual(controller.chromeMode, .postIt)
@@ -1438,7 +1440,7 @@ extension MenuWiringTests {
         XCTAssertEqual(controller.chromeMode, .distractionFree)
         XCTAssertTrue(window.toolbar === originalToolbar, "Post-It chrome was restored on exit")
         XCTAssertEqual(window.titleVisibility, .visible)
-        XCTAssertFalse(window.titlebarAppearsTransparent)
+        XCTAssertEqual(window.titlebarAppearsTransparent, originallyTransparent)
         XCTAssertFalse(window.styleMask.contains(.fullSizeContentView))
 
         // Entering Post-It from Distraction Free leaves full screen first.
