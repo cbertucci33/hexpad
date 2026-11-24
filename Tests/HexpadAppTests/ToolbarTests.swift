@@ -92,13 +92,9 @@ final class ToolbarTests: XCTestCase {
         [
             .toolbarNew, .toolbarOpen, .toolbarSave, .toolbarSaveAll,
             .toolbarClose, .toolbarCloseAll, .toolbarPrint,
-            .space,
             .toolbarCut, .toolbarCopy, .toolbarPaste,
-            .space,
             .toolbarUndo, .toolbarRedo,
-            .space,
             .toolbarFind, .toolbarReplace,
-            .space,
             .toolbarZoomIn, .toolbarZoomOut,
             .toolbarSyncVertical, .toolbarSyncHorizontal,
             .toolbarWordWrap, .toolbarShowAllCharacters,
@@ -112,10 +108,10 @@ final class ToolbarTests: XCTestCase {
     
     // MARK: - Ordering / customization
     
-    func testDefaultItemsAreTheThirtyNPlusButtonsPlusFourSpacesInOrder() {
+    func testDefaultItemsAreTheThirtyNPlusButtonsInOrder() {
         let defaults = window.toolbarDefaultItemIdentifiers(toolbar)
         XCTAssertEqual(defaults, expectedDefaultIdentifiers)
-        XCTAssertEqual(defaults.count, 34, "30 buttons + 4 group spaces")
+        XCTAssertEqual(defaults.count, 30, "30 buttons, no separator items: every spacing representation draws chrome on macOS 26")
         XCTAssertEqual(Set(expectedButtons.map(\.0)).count, 30, "30 distinct buttons")
     }
     
@@ -151,15 +147,16 @@ final class ToolbarTests: XCTestCase {
         }
     }
     
-    /// CB requirement: zero visible lines around toolbar icons. macOS 26 wraps
-    /// every custom-view toolbar item in a glass capsule that reads as an
-    /// outlined empty pill, even when the view itself is clear. Group spacing
-    /// must therefore use AppKit's standard `.space` item (no view at all), and
+    /// CB requirement: zero visible lines around toolbar icons. On macOS 26 every
+    /// spacing representation draws chrome: custom-view items get glass
+    /// capsules, and even AppKit's native `.space` renders a circular glass
+    /// knob in unified compact toolbars. The groups therefore flow with
+    /// AppKit's natural inter-item spacing — no separator items at all — and
     /// every button stays borderless.
     func testGroupSpacingAndButtonsDrawNoCustomChrome() {
         let defaults = window.toolbarDefaultItemIdentifiers(toolbar)
-        XCTAssertEqual(defaults.filter { $0 == .space }.count, 4,
-                       "four standard spaces separate the five N++ groups")
+        XCTAssertEqual(defaults.filter { $0 == .space }.count, 0,
+                       "no separator items: every spacing representation draws chrome on macOS 26")
 
         for identifier in window.toolbarAllowedItemIdentifiers(toolbar) {
             if identifier == .space || identifier == .flexibleSpace { continue }

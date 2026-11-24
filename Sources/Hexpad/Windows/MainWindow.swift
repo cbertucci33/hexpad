@@ -56,20 +56,16 @@ private struct ToolbarItemSpec {
 
 extension MainWindow {
     
-    /// N++ default order. Standard `.space` items split the five groups:
-    /// file / clipboard / undo / search / view. They are created by AppKit and
-    /// draw nothing — unlike a custom-view spacer, which macOS 26 wraps in a
-    /// visible glass capsule.
+    /// N++ default order. NO separator items at all: every representation of
+    /// spacing draws chrome on macOS 26 (custom NSBox → glass capsule, native
+    /// .space → circular glass knob). The button groups read from AppKit's
+    /// natural inter-item spacing alone — nothing between groups can draw.
     static let defaultToolbarIdentifiers: [NSToolbarItem.Identifier] = [
         .toolbarNew, .toolbarOpen, .toolbarSave, .toolbarSaveAll,
         .toolbarClose, .toolbarCloseAll, .toolbarPrint,
-        .space,
         .toolbarCut, .toolbarCopy, .toolbarPaste,
-        .space,
         .toolbarUndo, .toolbarRedo,
-        .space,
         .toolbarFind, .toolbarReplace,
-        .space,
         .toolbarZoomIn, .toolbarZoomOut,
         .toolbarSyncVertical, .toolbarSyncHorizontal,
         .toolbarWordWrap, .toolbarShowAllCharacters,
