@@ -51,9 +51,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.0</string>
+	<string>1.0.1</string>
 	<key>CFBundleVersion</key>
-	<string>1.0.0</string>
+	<string>1.0.1</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>LSApplicationCategoryType</key>
@@ -89,6 +89,8 @@
 	</array>
 	<key>SUFeedURL</key>
 	<string>https://cbertucci33.github.io/hexpad/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>PijIuEB7jv6idtA0mdBUPXoOjeXzqERA2oPPjBtxmlg=</string>
 	<key>SUScheduledCheckInterval</key>
 	<integer>86400</integer>
 </dict>
