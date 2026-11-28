@@ -6,6 +6,18 @@
     <description>Most recent changes with links to updates.</description>
     <language>en</language>
     <item>
+      <title>Version 1.0.1</title>
+      <sparkle:releaseNotesLink>https://github.com/cbertucci33/hexpad/releases/tag/1.0.1</sparkle:releaseNotesLink>
+      <pubDate>Sat, 28 Nov 2026 16:39:00 GMT</pubDate>
+      <sparkle:version>1.0.1</sparkle:version>
+      <sparkle:shortVersionString>1.0.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/cbertucci33/hexpad/releases/download/1.0.1/Hexpad-1.0.1.dmg"
+                 sparkle:edSignature="2QxMPeYFU28C+2FL5YcFH2Qv5Bk2q9mwJBqCYNnr3NmcWPhYTcQaIP6hnsNB8094X6357BW6oI2RRV1KSjC4BQ=="
+                 length="4223373"
+                 type="application/x-apple-diskimage" />
+    </item>
+    <item>
       <title>Version 1.0.0</title>
       <sparkle:releaseNotesLink>https://github.com/cbertucci33/hexpad/releases/tag/1.0.0</sparkle:releaseNotesLink>
       <pubDate>Tue, 24 Nov 2026 17:17:00 GMT</pubDate>
