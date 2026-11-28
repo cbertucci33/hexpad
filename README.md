@@ -14,7 +14,7 @@ I built Hexpad from scratch because Notepad++ doesn't have a native macOS versio
 
 ## Install
 
-Grab `Hexpad-1.0.0.dmg` from [Releases](https://github.com/cbertucci33/hexpad/releases), open it, and drag Hexpad to Applications. The app is signed and notarized, so Gatekeeper stays quiet.
+Grab `Hexpad-1.0.1.dmg` from [Releases](https://github.com/cbertucci33/hexpad/releases), open it, and drag Hexpad to Applications. The app is signed and notarized, so Gatekeeper stays quiet.
 
 Updates are automatic: Hexpad checks for new releases once a day and offers to update itself. You can also check manually from the app menu. Updates are verified with a signed key before anything is installed.
 
